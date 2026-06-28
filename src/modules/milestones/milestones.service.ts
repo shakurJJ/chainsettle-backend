@@ -449,12 +449,89 @@ export class MilestonesService {
       throw new NotFoundException('Evidence not found or no file attached');
     }
 
-    const fileBuffer = await this.ipfs.getFile(evidence.ipfsCid);
+    const { buffer: fileBuffer } = await this.ipfs.getFile(evidence.ipfsCid);
 
     return {
       fileBuffer,
       fileName: evidence.fileName || 'download',
       mimeType: evidence.mimeType || 'application/octet-stream',
     };
+  }
+
+  // ----------------------------------------------------------
+  // REBALANCE — atomically redistribute payment percentages
+  // ----------------------------------------------------------
+
+  async rebalance(
+    shipmentId: string,
+    callerAddress: string,
+    updates: Array<{ milestoneIndex: number; paymentPercent: number }>,
+  ) {
+    const shipment = await this.prisma.shipment.findUnique({
+      where: { id: shipmentId },
+    });
+
+    if (!shipment) {
+      throw new NotFoundException(`Shipment ${shipmentId} not found`);
+    }
+
+    if (shipment.buyerAddress !== callerAddress) {
+      throw new ForbiddenException('Only the shipment buyer may rebalance milestones');
+    }
+
+    const allMilestones = await this.prisma.milestone.findMany({
+      where: { shipmentId },
+      orderBy: { milestoneIndex: 'asc' },
+    });
+
+    const milestoneMap = new Map(allMilestones.map((m) => [m.milestoneIndex, m]));
+
+    for (const update of updates) {
+      const milestone = milestoneMap.get(update.milestoneIndex);
+      if (!milestone) {
+        throw new NotFoundException(
+          `Milestone ${update.milestoneIndex} not found on shipment ${shipmentId}`,
+        );
+      }
+      if (milestone.status !== MilestoneStatus.PENDING) {
+        throw new ConflictException(
+          `Milestone ${update.milestoneIndex} is not PENDING (status: ${milestone.status})`,
+        );
+      }
+    }
+
+    const updateMap = new Map(updates.map((u) => [u.milestoneIndex, u.paymentPercent]));
+    const totalPercent = allMilestones.reduce(
+      (sum, m) =>
+        sum +
+        (updateMap.has(m.milestoneIndex)
+          ? updateMap.get(m.milestoneIndex)!
+          : m.paymentPercent),
+      0,
+    );
+
+    if (totalPercent !== 100) {
+      throw new BadRequestException(
+        `Rebalanced percentages must sum to 100. Got ${totalPercent}.`,
+      );
+    }
+
+    await this.prisma.$transaction(
+      updates.map((u) =>
+        this.prisma.milestone.update({
+          where: {
+            shipmentId_milestoneIndex: { shipmentId, milestoneIndex: u.milestoneIndex },
+          },
+          data: { paymentPercent: u.paymentPercent },
+        }),
+      ),
+    );
+
+    this.logger.log(`Milestones rebalanced for ${shipmentId} by buyer ${callerAddress}`);
+
+    return this.prisma.milestone.findMany({
+      where: { shipmentId },
+      orderBy: { milestoneIndex: 'asc' },
+    });
   }
 }

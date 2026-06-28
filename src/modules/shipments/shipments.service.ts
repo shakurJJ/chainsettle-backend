@@ -174,12 +174,14 @@ export class ShipmentsService {
     tags?: string[];
     page?: number;
     limit?: number;
+    cursor?: string;
     createdAfter?: string;
     createdBefore?: string;
     updatedAfter?: string;
     updatedBefore?: string;
     callerStellarAddress?: string;
     isAdmin?: boolean;
+    includeArchived?: boolean;
     search?: string;
   }) {
     const {
@@ -190,6 +192,7 @@ export class ShipmentsService {
       tags,
       page = 1,
       limit = 20,
+      cursor,
       createdAfter,
       createdBefore,
       updatedAfter,
@@ -199,6 +202,10 @@ export class ShipmentsService {
       includeArchived = false,
       search,
     } = filters;
+
+    if (cursor && page && page !== 1) {
+      throw new BadRequestException('cursor and page are mutually exclusive');
+    }
 
     const where: any = {};
 
@@ -242,25 +249,28 @@ export class ShipmentsService {
       });
     }
 
-    let shipments, total;
+    let shipments: any[];
+    let total: number | null = null;
+    let nextCursor: string | null = null;
 
     if (search) {
-      const searchWhere = { ...where };
-      delete searchWhere.AND;
-      const participantCondition = !isAdmin && callerStellarAddress ? 
-        `AND (buyer_address = $1 OR supplier_address = $1 OR logistics_address = $1 OR arbiter_address = $1)` : '';
-      const participantParams = !isAdmin && callerStellarAddress ? [callerStellarAddress] : [];
-      
+      const participantCondition =
+        !isAdmin && callerStellarAddress
+          ? `AND (buyer_address = $1 OR supplier_address = $1 OR logistics_address = $1 OR arbiter_address = $1)`
+          : '';
+      const participantParams =
+        !isAdmin && callerStellarAddress ? [callerStellarAddress] : [];
+
       const query = `
-        SELECT * FROM shipments 
+        SELECT * FROM shipments
         WHERE description_search @@ plainto_tsquery('english', $2)
         ${participantCondition}
         ORDER BY created_at DESC
         LIMIT $3 OFFSET $4
       `;
-      
+
       const countQuery = `
-        SELECT COUNT(*) FROM shipments 
+        SELECT COUNT(*) FROM shipments
         WHERE description_search @@ plainto_tsquery('english', $2)
         ${participantCondition}
       `;
@@ -270,15 +280,48 @@ export class ShipmentsService {
         ...participantParams,
         search,
         limit,
-        (page - 1) * limit
+        (page - 1) * limit,
       );
 
       const countResult = await this.prisma.$queryRawUnsafe(
         countQuery,
         ...participantParams,
-        search
+        search,
       );
-      total = Number(countResult[0].count);
+      total = Number((countResult as any[])[0].count);
+
+      for (const s of shipments) {
+        s.milestones = await this.prisma.milestone.findMany({
+          where: { shipmentId: s.id },
+          orderBy: { milestoneIndex: 'asc' },
+        });
+      }
+    } else if (cursor) {
+      let decoded: { createdAt: string; id: string };
+      try {
+        decoded = JSON.parse(Buffer.from(cursor, 'base64').toString('utf-8'));
+      } catch {
+        throw new BadRequestException('Invalid cursor format');
+      }
+
+      shipments = await this.prisma.shipment.findMany({
+        where: { ...where, createdAt: { lte: new Date(decoded.createdAt) } },
+        include: { milestones: { orderBy: { milestoneIndex: 'asc' } } },
+        orderBy: { createdAt: 'desc' },
+        cursor: { id: decoded.id },
+        skip: 1,
+        take: limit,
+      });
+
+      nextCursor =
+        shipments.length === limit
+          ? Buffer.from(
+              JSON.stringify({
+                createdAt: shipments[shipments.length - 1].createdAt.toISOString(),
+                id: shipments[shipments.length - 1].id,
+              }),
+            ).toString('base64')
+          : null;
     } else {
       [shipments, total] = await this.prisma.$transaction([
         this.prisma.shipment.findMany({
@@ -292,18 +335,17 @@ export class ShipmentsService {
       ]);
     }
 
-    if (search) {
-      for (const s of shipments) {
-        s.milestones = await this.prisma.milestone.findMany({
-          where: { shipmentId: s.id },
-          orderBy: { milestoneIndex: 'asc' },
-        });
-      }
-    }
-
     return {
       data: shipments.map((s) => this.serialize(s)),
-      meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
+      meta: cursor
+        ? { nextCursor, limit }
+        : {
+            total,
+            page,
+            limit,
+            totalPages: total !== null ? Math.ceil(total / limit) : null,
+            nextCursor: null,
+          },
     };
   }
 

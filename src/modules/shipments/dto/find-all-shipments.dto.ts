@@ -1,6 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsISO8601, IsInt, IsOptional, IsString, Min } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform } from 'class-transformer';
+import { IsBoolean, IsISO8601, IsOptional, IsString } from 'class-validator';
 import { ShipmentStatus } from '@prisma/client';
 
 export class FindAllShipmentsDto {
@@ -19,36 +19,7 @@ export class FindAllShipmentsDto {
   @IsString()
   status?: ShipmentStatus;
 
-  @ApiPropertyOptional({ description: 'Filter by reference number' })
-  @IsOptional()
-  @IsString()
-  referenceNumber?: string;
-
-  @ApiPropertyOptional({ description: 'Comma-separated list of tags to filter by' })
-  @IsOptional()
-  @IsString()
-  tags?: string;
-
-  @ApiPropertyOptional({ description: 'Page number (1-based)', default: 1 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  page?: number;
-
-  @ApiPropertyOptional({ description: 'Results per page', default: 20 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  limit?: number;
-
-  @ApiPropertyOptional({ description: 'Search in description (full-text search)' })
-  @IsOptional()
-  @IsString()
-  search?: string;
-
-  @ApiPropertyOptional({ description: 'Filter by reference number (exact prefix match)' })
+  @ApiPropertyOptional({ description: 'Filter by reference number (exact match)' })
   @IsOptional()
   @IsString()
   referenceNumber?: string;
@@ -58,7 +29,7 @@ export class FindAllShipmentsDto {
   @IsString()
   tags?: string;
 
-  @ApiPropertyOptional({ description: 'Page number (default: 1)' })
+  @ApiPropertyOptional({ description: 'Page number (1-based, default: 1)' })
   @IsOptional()
   @IsString()
   page?: string;
@@ -68,26 +39,38 @@ export class FindAllShipmentsDto {
   @IsString()
   limit?: string;
 
-  // New Date Filters
-  @ApiPropertyOptional({ 
-    description: 'Filter shipments created on or after this ISO date', 
-    example: '2026-01-01T00:00:00.000Z' 
+  @ApiPropertyOptional({
+    description:
+      'Opaque base64 cursor for forward pagination. Mutually exclusive with page.',
+  })
+  @IsOptional()
+  @IsString()
+  cursor?: string;
+
+  @ApiPropertyOptional({ description: 'Search in description (full-text search)' })
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @ApiPropertyOptional({
+    description: 'Filter shipments created on or after this ISO date',
+    example: '2026-01-01T00:00:00.000Z',
   })
   @IsOptional()
   @IsISO8601()
   createdAfter?: string;
 
-  @ApiPropertyOptional({ 
-    description: 'Filter shipments created on or before this ISO date', 
-    example: '2026-03-31T23:59:59.999Z' 
+  @ApiPropertyOptional({
+    description: 'Filter shipments created on or before this ISO date',
+    example: '2026-03-31T23:59:59.999Z',
   })
   @IsOptional()
   @IsISO8601()
   createdBefore?: string;
 
-  @ApiPropertyOptional({ 
-    description: 'Filter shipments updated on or after this ISO date', 
-    example: '2026-01-01T00:00:00.000Z' 
+  @ApiPropertyOptional({
+    description: 'Filter shipments updated on or after this ISO date',
+    example: '2026-01-01T00:00:00.000Z',
   })
   @IsOptional()
   @IsISO8601()
@@ -95,7 +78,7 @@ export class FindAllShipmentsDto {
 
   @ApiPropertyOptional({
     description: 'Filter shipments updated on or before this ISO date',
-    example: '2026-03-31T23:59:59.999Z'
+    example: '2026-03-31T23:59:59.999Z',
   })
   @IsOptional()
   @IsISO8601()

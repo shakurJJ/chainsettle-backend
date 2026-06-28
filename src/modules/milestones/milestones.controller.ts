@@ -15,6 +15,7 @@ import {
   Res,
   NotFoundException,
 } from '@nestjs/common';
+
 import { FileInterceptor } from '@nestjs/platform-express';
 import {
   ApiTags,
@@ -28,6 +29,7 @@ import { memoryStorage } from 'multer';
 import { Response } from 'express';
 import { MilestonesService } from './milestones.service';
 import { ConfirmMilestoneDto } from './dto/confirm-milestone.dto';
+import { RebalanceMilestonesDto } from './dto/rebalance-milestones.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ShipmentParticipantGuard } from '../shipments/guards/shipment-participant.guard';
@@ -160,6 +162,29 @@ export class MilestonesController {
       callerAddress,
       file,
     );
+  }
+
+  /**
+   * POST /api/v1/shipments/:shipmentId/milestones/rebalance
+   *
+   * Atomically redistributes payment percentages across PENDING milestones.
+   * Restricted to the shipment's buyerAddress.
+   */
+  @Post('rebalance')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Rebalance payment percentages across PENDING milestones (buyer only)' })
+  @ApiResponse({ status: 200, description: 'All milestones after rebalance' })
+  @ApiResponse({ status: 400, description: 'Percentages do not sum to 100' })
+  @ApiResponse({ status: 403, description: 'Only the buyer may rebalance' })
+  @ApiResponse({ status: 404, description: 'Shipment or milestone not found' })
+  @ApiResponse({ status: 409, description: 'A target milestone is not PENDING' })
+  rebalance(
+    @Param('shipmentId') shipmentId: string,
+    @Body() dto: RebalanceMilestonesDto,
+    @CurrentUser() user: any,
+  ) {
+    const callerAddress: string = user?.stellarAddress ?? user?.sub;
+    return this.milestonesService.rebalance(shipmentId, callerAddress, dto.milestones);
   }
 
   /**

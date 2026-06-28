@@ -225,3 +225,50 @@ export class StellarService implements OnModuleInit {
       return null;
     }
   }
+
+  // ----------------------------------------------------------
+  // STREAMING SUBSCRIPTION
+  // ----------------------------------------------------------
+
+  /**
+   * Subscribes to contract events using a tight polling loop (1-second interval)
+   * that approximates real-time streaming from the Soroban RPC.
+   *
+   * @param startLedger - Ledger to begin scanning from
+   * @param onEvent     - Called for each new event in order
+   * @param onError     - Called when the loop encounters an RPC error
+   * @returns           - Unsubscribe function; call it to stop the loop
+   */
+  subscribeToContractEvents(
+    startLedger: number,
+    onEvent: (event: SorobanRpc.Api.EventResponse) => Promise<void>,
+    onError: (error: Error) => void,
+  ): () => void {
+    let active = true;
+    let currentLedger = startLedger;
+
+    const loop = async () => {
+      while (active) {
+        try {
+          const events = await this.fetchContractEvents(currentLedger);
+          for (const event of events) {
+            if (!active) return;
+            await onEvent(event);
+            currentLedger = Math.max(currentLedger, event.ledger + 1);
+          }
+          await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
+        } catch (err) {
+          if (active) {
+            onError(err as Error);
+          }
+          return;
+        }
+      }
+    };
+
+    void loop();
+    return () => {
+      active = false;
+    };
+  }
+}

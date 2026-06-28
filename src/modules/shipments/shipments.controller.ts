@@ -64,7 +64,10 @@ export class ShipmentsController {
   @ApiOperation({ summary: 'List shipments with chronological filters and pagination' })
   @ApiResponse({ status: 200, description: 'Filtered list of shipments' })
   findAll(@CurrentUser() user: any, @Query() query: FindAllShipmentsDto) {
-    // 1. Cross-field Date Validations
+    if (query.cursor && query.page) {
+      throw new BadRequestException('cursor and page are mutually exclusive');
+    }
+
     if (query.createdAfter && query.createdBefore && new Date(query.createdAfter) > new Date(query.createdBefore)) {
       throw new BadRequestException('createdAfter date cannot be further in the future than createdBefore date');
     }
@@ -73,13 +76,9 @@ export class ShipmentsController {
       throw new BadRequestException('updatedAfter date cannot be further in the future than updatedBefore date');
     }
 
-    // 2. Evaluate administrative scope constraints
     const isAdmin = user?.role === UserRole.ADMIN;
-    
-    // Parse tag array structures safely from string formats
     const tags = query.tags ? query.tags.split(',').map((t) => t.trim()).filter(Boolean) : undefined;
 
-    // 3. Delegate execution context payload down to service layers
     return this.shipmentsService.findAll({
       buyerAddress: isAdmin ? query.buyerAddress : undefined,
       supplierAddress: isAdmin ? query.supplierAddress : undefined,
@@ -88,6 +87,7 @@ export class ShipmentsController {
       tags,
       page: query.page ? parseInt(query.page) : undefined,
       limit: query.limit ? parseInt(query.limit) : undefined,
+      cursor: query.cursor,
       createdAfter: query.createdAfter,
       createdBefore: query.createdBefore,
       updatedAfter: query.updatedAfter,

@@ -154,18 +154,18 @@ export class IpfsService implements OnModuleInit {
   }
 
   /**
-   * Fetches a file from IPFS by CID and returns its buffer.
+   * Fetches a file from IPFS by CID and returns its buffer and MIME type.
    *
    * @param cid - IPFS CID of the file
-   * @returns File buffer
+   * @returns { buffer, mimeType }
    * @throws InternalServerErrorException on fetch failure
    */
-  async getFile(cid: string): Promise<Buffer> {
+  async getFile(cid: string): Promise<{ buffer: Buffer; mimeType: string }> {
     if (!this.apiKey) {
       this.logger.warn(
         'IPFS_API_KEY not configured — returning empty buffer for development',
       );
-      return Buffer.alloc(0);
+      return { buffer: Buffer.alloc(0), mimeType: 'application/octet-stream' };
     }
 
     try {
@@ -175,7 +175,12 @@ export class IpfsService implements OnModuleInit {
       });
 
       this.logger.log(`File fetched from IPFS: ${cid}`);
-      return Buffer.from(response.data);
+      return {
+        buffer: Buffer.from(response.data),
+        mimeType:
+          (response.headers['content-type'] as string | undefined) ??
+          'application/octet-stream',
+      };
     } catch (error) {
       const detail = error.response?.data?.error?.details ?? error.message;
       this.logger.error(`Failed to fetch file from IPFS`, detail);

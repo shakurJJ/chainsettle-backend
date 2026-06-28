@@ -27,8 +27,10 @@ const MAX_ATTEMPTS = 5;
 @Injectable()
 export class EventsService implements OnModuleInit {
   private readonly logger = new Logger(EventsService.name);
-  /** In-memory mirror of the DB cursor — updated after each successful tick. */
+  /** In-memory mirror of the DB cursor — updated after each processed event. */
   private lastProcessedLedger: number = 0;
+  private unsubscribeFn: (() => void) | null = null;
+  private reconnectBackoffMs = 0;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -71,7 +73,6 @@ export class EventsService implements OnModuleInit {
       this.logger.warn(
         `Could not initialise event cursor from DB: ${error.message} — will retry on first poll`,
       );
-      // Fall back to the Stellar chain tip so we don't replay the entire history
       try {
         const latest = await this.stellar.getLatestLedger();
         this.lastProcessedLedger = Math.max(1, latest - 10);
@@ -79,21 +80,28 @@ export class EventsService implements OnModuleInit {
         this.lastProcessedLedger = 1;
       }
     }
+
+    this.startStreamSubscription();
   }
 
   // ----------------------------------------------------------
-  // CRON JOB — runs every 5 seconds
+  // STREAMING SUBSCRIPTION
   // ----------------------------------------------------------
 
-  @Cron(CronExpression.EVERY_5_SECONDS)
-  async pollEvents() {
-    try {
-      const events = await this.stellar.fetchContractEvents(this.lastProcessedLedger);
-      if (events.length === 0) return;
+  private startStreamSubscription(): void {
+    if (this.unsubscribeFn) {
+      this.unsubscribeFn();
+      this.unsubscribeFn = null;
+    }
 
-      this.logger.log(`Processing ${events.length} new chain event(s)`);
+    this.logger.log(
+      `Starting event stream from ledger ${this.lastProcessedLedger}`,
+    );
 
-      for (const event of events) {
+    this.unsubscribeFn = this.stellar.subscribeToContractEvents(
+      this.lastProcessedLedger,
+      async (event) => {
+        this.reconnectBackoffMs = 0;
         try {
           await this.processEvent(event);
         } catch (error) {
