@@ -331,6 +331,21 @@ export class ShipmentsController {
     return this.shipmentsService.createTracking(id, user.stellarAddress, dto);
   }
 
+  /**
+   * GET /api/v1/shipments/:id/value-released-over-time
+   * Returns a cumulative payment release time series for dashboard charts.
+   * Protected by ShipmentParticipantGuard.
+   */
+  @Get(':id/value-released-over-time')
+  @UseGuards(ShipmentParticipantGuard)
+  @ApiOperation({ summary: 'Get cumulative payment release time series for charting' })
+  @ApiResponse({ status: 200, description: 'Payment release time series with summary' })
+  @ApiResponse({ status: 403, description: 'Not a shipment participant' })
+  @ApiResponse({ status: 404, description: 'Shipment not found' })
+  getPaymentTimeSeries(@Param('id') id: string) {
+    return this.shipmentsService.getPaymentTimeSeries(id);
+  }
+
     /**
      * GET /api/v1/shipments/:id/tracking
      * Get all tracking updates for a shipment in chronological order.

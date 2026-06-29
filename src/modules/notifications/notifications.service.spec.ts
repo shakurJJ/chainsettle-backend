@@ -114,7 +114,14 @@ describe('NotificationsService — preferences', () => {
 
       await service.notifyUser('GABC', NotificationType.PROOF_SUBMITTED, 'title', 'msg');
 
-      expect(sendEmailSpy).toHaveBeenCalledWith('user@example.com', 'title', 'msg');
+      expect(sendEmailSpy).toHaveBeenCalledWith(
+        'user@example.com',
+        'title',
+        'msg',
+        undefined,
+        NotificationType.PROOF_SUBMITTED,
+        undefined,
+      );
     });
   });
 

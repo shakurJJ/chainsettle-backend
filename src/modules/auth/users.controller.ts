@@ -1,10 +1,22 @@
-import { Controller, Get, Patch, Param, Body, UseGuards, ForbiddenException } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
+import {
+  Controller,
+  Get,
+  Patch,
+  Param,
+  Body,
+  Query,
+  UseGuards,
+  ForbiddenException,
+  BadRequestException,
+} from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
+import { UserRole } from '@prisma/client';
 import { AuthService } from './auth.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Roles } from '../../common/decorators/roles.decorator';
 
 @ApiTags('users')
 @Controller('users')
@@ -30,6 +42,41 @@ export class UsersController {
     return this.authService.updateProfile(user.id, dto);
   }
 
+  /**
+   * GET /api/v1/admin/users
+   * Paginated user list with role and email verification filters.
+   * Restricted to ADMIN role.
+   */
+  @Get('admin/users')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: '[Admin] List platform users with role and email verification filters' })
+  @ApiResponse({ status: 200, description: 'Paginated user list' })
+  @ApiResponse({ status: 403, description: 'Admin access required' })
+  @ApiQuery({ name: 'role', required: false, enum: UserRole })
+  @ApiQuery({ name: 'emailVerified', required: false, type: Boolean })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiQuery({ name: 'orderBy', required: false, enum: ['createdAt', 'name'] })
+  findAllUsers(
+    @CurrentUser() user: any,
+    @Query('role') role?: UserRole,
+    @Query('emailVerified') emailVerified?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('orderBy') orderBy?: 'createdAt' | 'name',
+  ) {
+    if (user?.role !== UserRole.ADMIN) {
+      throw new ForbiddenException('Admin access required');
+    }
+    return this.authService.findAllUsers({
+      role,
+      emailVerified: emailVerified !== undefined ? emailVerified === 'true' : undefined,
+      page: page ? parseInt(page, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : undefined,
+      orderBy,
+    });
+  }
+
   @Get(':stellarAddress')
   @ApiOperation({ summary: 'Get public profile by Stellar address' })
   @ApiResponse({ status: 200, description: 'Returns public profile' })
@@ -40,6 +87,8 @@ export class UsersController {
       throw new BadRequestException('Invalid Stellar address format');
     }
     return this.authService.getPublicProfile(stellarAddress);
+  }
+
   @Patch('admin/:id/role')
   @ApiOperation({ summary: "[Admin] Change a user's role" })
   @ApiResponse({ status: 200, description: 'Updated user profile' })

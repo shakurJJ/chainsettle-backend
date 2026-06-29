@@ -1,6 +1,9 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as Handlebars from 'handlebars';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationType } from '@prisma/client';
 import { NotificationsGateway } from './notifications.gateway';
@@ -70,7 +73,7 @@ export class NotificationsService {
       });
 
       if (emailEnabled && user.email) {
-        await this.sendEmail(user.email, title, message);
+        await this.sendEmail(user.email, title, message, undefined, type, data);
         await this.prisma.notification.update({
           where: { id: notification.id },
           data: { emailSent: true },
@@ -179,14 +182,44 @@ export class NotificationsService {
     return { subject: `Daily digest — ${unread.length} unread notification(s)`, html };
   }
 
-  async sendEmail(to: string, subject: string, text: string, html?: string) {
+  /**
+   * Loads and renders a Handlebars template for the given notification type.
+   * Returns null when no template file exists for that type (triggers plain-text fallback).
+   */
+  private renderTemplate(type: NotificationType, data: Record<string, any>): string | null {
+    const templatePath = path.join(__dirname, 'templates', `${type}.hbs`);
+    if (!fs.existsSync(templatePath)) {
+      return null;
+    }
     try {
+      const source = fs.readFileSync(templatePath, 'utf-8');
+      const template = Handlebars.compile(source);
+      return template(data ?? {});
+    } catch (error) {
+      this.logger.error(`Failed to render template for ${type}`, error.message);
+      return null;
+    }
+  }
+
+  async sendEmail(
+    to: string,
+    subject: string,
+    text: string,
+    html?: string,
+    type?: NotificationType,
+    data?: Record<string, any>,
+  ) {
+    try {
+      let renderedHtml = html;
+      if (!renderedHtml && type) {
+        renderedHtml = this.renderTemplate(type, data ?? {}) ?? undefined;
+      }
       await this.transporter.sendMail({
         from: this.config.get('EMAIL_FROM', 'noreply@chainsetttle.com'),
         to,
         subject: `ChainSettle — ${subject}`,
         text,
-        html: html ?? `
+        html: renderedHtml ?? `
           <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
             <h2 style="color: #1a1a2e;">ChainSettle</h2>
             <p>${text}</p>

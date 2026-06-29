@@ -213,6 +213,49 @@ export class AuthService {
     return this.getProfile(id);
   }
 
+  async findAllUsers(filters: {
+    role?: UserRole;
+    emailVerified?: boolean;
+    page?: number;
+    limit?: number;
+    orderBy?: 'createdAt' | 'name';
+  }) {
+    const { role, emailVerified, page = 1, limit = 20, orderBy = 'createdAt' } = filters;
+
+    const where: any = {};
+    if (role !== undefined) where.role = role;
+    if (emailVerified !== undefined) where.emailVerified = emailVerified;
+
+    const [users, total] = await this.prisma.$transaction([
+      this.prisma.user.findMany({
+        where,
+        select: {
+          id: true,
+          stellarAddress: true,
+          email: true,
+          emailVerified: true,
+          name: true,
+          role: true,
+          createdAt: true,
+        },
+        orderBy: orderBy === 'name' ? { name: 'asc' } : { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.user.count({ where }),
+    ]);
+
+    return {
+      data: users,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
   async verifyEmail(token: string) {
     let payload: { sub: string; email: string };
     try {
