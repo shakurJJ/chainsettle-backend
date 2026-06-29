@@ -424,6 +424,68 @@ export class MilestonesService {
   }
 
   /**
+   * Fetch a single dispute evidence record by ID.
+   * Verifies the evidence belongs to the correct milestone.
+   * Accessible by shipment participants or admins.
+   */
+  async getOneEvidence(
+    shipmentId: string,
+    milestoneIndex: number,
+    evidenceId: string,
+    requestedBy: string,
+    isAdmin: boolean,
+  ) {
+    const milestone = await this.prisma.milestone.findUnique({
+      where: { shipmentId_milestoneIndex: { shipmentId, milestoneIndex } },
+      include: { shipment: true },
+    });
+
+    if (!milestone) {
+      throw new NotFoundException(
+        `Milestone ${milestoneIndex} not found on shipment ${shipmentId}`,
+      );
+    }
+
+    if (!isAdmin) {
+      const isParticipant = [
+        milestone.shipment.buyerAddress,
+        milestone.shipment.supplierAddress,
+        milestone.shipment.logisticsAddress,
+        milestone.shipment.arbiterAddress,
+      ].includes(requestedBy);
+
+      if (!isParticipant) {
+        throw new ForbiddenException(
+          'Only shipment participants can view dispute evidence',
+        );
+      }
+    }
+
+    const evidence = await this.prisma.disputeEvidence.findFirst({
+      where: { id: evidenceId, milestoneId: milestone.id },
+      include: {
+        user: {
+          select: {
+            stellarAddress: true,
+            name: true,
+          },
+        },
+      },
+    });
+
+    if (!evidence) {
+      throw new NotFoundException(
+        `Evidence ${evidenceId} not found or belongs to a different milestone`,
+      );
+    }
+
+    return {
+      ...evidence,
+      ipfsUrl: evidence.ipfsCid ? this.ipfs.getGatewayUrl(evidence.ipfsCid) : null,
+    };
+  }
+
+  /**
    * Download a dispute evidence file through the backend proxy
    */
   async downloadEvidence(

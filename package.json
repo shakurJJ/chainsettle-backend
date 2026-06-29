@@ -41,6 +41,7 @@
     "class-validator": "^0.14.0",
     "compression": "^1.8.1",
     "form-data": "^4.0.5",
+    "handlebars": "^4.7.9",
     "helmet": "^7.1.0",
     "ioredis": "^5.11.0",
     "ipfs-http-client": "^60.0.1",

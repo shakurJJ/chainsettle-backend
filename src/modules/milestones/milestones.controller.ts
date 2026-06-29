@@ -188,6 +188,27 @@ export class MilestonesController {
   }
 
   /**
+   * GET /api/v1/shipments/:shipmentId/milestones/:index/evidence/:evidenceId
+   * Fetch a single dispute evidence record by ID.
+   * Includes the IPFS gateway URL when an ipfsCid is present.
+   */
+  @Get(':index/evidence/:evidenceId')
+  @ApiOperation({ summary: 'Fetch a single dispute evidence record by ID' })
+  @ApiResponse({ status: 200, description: 'Evidence record with ipfsUrl populated' })
+  @ApiResponse({ status: 403, description: 'Not a shipment participant' })
+  @ApiResponse({ status: 404, description: 'Evidence not found or wrong shipment/milestone combination' })
+  async getOneEvidence(
+    @Param('shipmentId') shipmentId: string,
+    @Param('index', ParseIntPipe) index: number,
+    @Param('evidenceId') evidenceId: string,
+    @CurrentUser() user: any,
+  ) {
+    const callerAddress: string = user?.stellarAddress ?? user?.sub;
+    const isAdmin: boolean = user?.role === 'ADMIN';
+    return this.milestonesService.getOneEvidence(shipmentId, index, evidenceId, callerAddress, isAdmin);
+  }
+
+  /**
    * GET /api/v1/shipments/:shipmentId/milestones/:index/evidence/:evidenceId/download
    * Download a dispute evidence file through the backend proxy.
    */

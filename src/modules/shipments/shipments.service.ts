@@ -1097,6 +1097,71 @@ export class ShipmentsService {
   }
 
   // ----------------------------------------------------------
+  // VALUE RELEASED OVER TIME — time series for charting
+  // ----------------------------------------------------------
+
+  async getPaymentTimeSeries(id: string) {
+    const shipment = await this.prisma.shipment.findUnique({
+      where: { id },
+      select: {
+        totalAmount: true,
+        tokenDecimals: true,
+        tokenSymbol: true,
+      },
+    });
+    if (!shipment) throw new NotFoundException(`Shipment ${id} not found`);
+
+    const milestones = await this.prisma.milestone.findMany({
+      where: {
+        shipmentId: id,
+        status: { in: ['CONFIRMED', 'RESOLVED'] as any },
+        confirmedAt: { not: null },
+      },
+      orderBy: { confirmedAt: 'asc' },
+    });
+
+    const decimals: number = shipment.tokenDecimals ?? 7;
+    const totalAmount: bigint = shipment.totalAmount ?? 0n;
+
+    let cumulative = 0n;
+    const entries = milestones.map((m) => {
+      const amount: bigint = m.paymentReleased ?? 0n;
+      cumulative += amount;
+      const percentComplete =
+        totalAmount > 0n
+          ? Math.round(Number((cumulative * 10000n) / totalAmount)) / 100
+          : 0;
+
+      return {
+        milestoneIndex: m.milestoneIndex,
+        name: m.name,
+        releasedAt: m.confirmedAt!.toISOString(),
+        amount: this.stellar.toHumanAmount(amount, decimals),
+        cumulativeReleased: this.stellar.toHumanAmount(cumulative, decimals),
+        percentComplete,
+      };
+    });
+
+    const percentComplete =
+      totalAmount > 0n
+        ? Math.round(Number((cumulative * 10000n) / totalAmount)) / 100
+        : 0;
+
+    return {
+      entries,
+      summary: {
+        totalReleased: this.stellar.toHumanAmount(cumulative, decimals),
+        totalAmount: this.stellar.toHumanAmount(totalAmount, decimals),
+        percentComplete,
+        remainingAmount: this.stellar.toHumanAmount(
+          totalAmount > cumulative ? totalAmount - cumulative : 0n,
+          decimals,
+        ),
+      },
+    };
+  }
+
+  // ----------------------------------------------------------
   // INTERNAL HELPERS
   // ----------------------------------------------------------
 
