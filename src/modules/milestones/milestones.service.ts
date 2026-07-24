@@ -3,7 +3,8 @@ import {
   NotFoundException, 
   Logger, 
   ForbiddenException, 
-  ConflictException 
+  ConflictException,
+  BadRequestException
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { IpfsService } from '../../common/ipfs/ipfs.service';
@@ -22,11 +23,27 @@ export class MilestonesService {
     private readonly shipments: ShipmentsService,
   ) {}
 
-  async findByShipment(shipmentId: string) {
-    return this.prisma.milestone.findMany({
-      where: { shipmentId },
+  async findByShipment(shipmentId: string, status?: string, overdueOnly = false) {
+    const where: any = { shipmentId };
+
+    if (status) {
+      where.status = status;
+    }
+
+    if (overdueOnly) {
+      where.dueAt = { lt: new Date() };
+      where.status = { notIn: [MilestoneStatus.CONFIRMED, MilestoneStatus.RESOLVED] };
+    }
+
+    const milestones = await this.prisma.milestone.findMany({
+      where,
       orderBy: { milestoneIndex: 'asc' },
     });
+
+    return milestones.map((m) => ({
+      ...m,
+      isOverdue: m.dueAt ? m.dueAt < new Date() && m.status !== MilestoneStatus.CONFIRMED && m.status !== MilestoneStatus.RESOLVED : false,
+    }));
   }
 
   async findOne(shipmentId: string, milestoneIndex: number) {
@@ -313,7 +330,8 @@ export class MilestonesService {
           `Evidence file uploaded to IPFS: ${fileName} -> ${ipfsCid}`
         );
       } catch (error) {
-        this.logger.error('Failed to upload evidence to IPFS', error.message);
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        this.logger.error('Failed to upload evidence to IPFS', errorMessage);
         throw new Error('Failed to upload file to IPFS');
       }
     }
