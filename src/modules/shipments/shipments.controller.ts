@@ -150,6 +150,17 @@ export class ShipmentsController {
   }
 
   /**
+   * GET /api/v1/shipments/mine/summary
+   * Returns a breakdown of the caller's ACTIVE shipments by participant role.
+   */
+  @Get('mine/summary')
+  @ApiOperation({ summary: "Get ACTIVE shipment counts grouped by the caller's role" })
+  @ApiResponse({ status: 200, description: 'Role summary for the caller' })
+  getRoleSummary(@CurrentUser() user: any) {
+    return this.shipmentsService.getRoleSummary(user.stellarAddress);
+  }
+
+  /**
    * GET /api/v1/shipments/:id/participants
    * Returns all four participant roles with Stellar address and name.
    */

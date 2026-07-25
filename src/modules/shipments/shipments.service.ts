@@ -390,6 +390,43 @@ export class ShipmentsService {
     return { results };
   }
 
+  async getRoleSummary(stellarAddress: string): Promise<{
+    asBuyer: number;
+    asSupplier: number;
+    asLogistics: number;
+    asArbiter: number;
+    total: number;
+  }> {
+    const activeWhere = { status: ShipmentStatus.ACTIVE };
+
+    const [asBuyer, asSupplier, asLogistics, asArbiter, shipmentIds] = await Promise.all([
+      this.prisma.shipment.count({ where: { ...activeWhere, buyerAddress: stellarAddress } }),
+      this.prisma.shipment.count({ where: { ...activeWhere, supplierAddress: stellarAddress } }),
+      this.prisma.shipment.count({ where: { ...activeWhere, logisticsAddress: stellarAddress } }),
+      this.prisma.shipment.count({ where: { ...activeWhere, arbiterAddress: stellarAddress } }),
+      this.prisma.shipment.findMany({
+        where: {
+          ...activeWhere,
+          OR: [
+            { buyerAddress: stellarAddress },
+            { supplierAddress: stellarAddress },
+            { logisticsAddress: stellarAddress },
+            { arbiterAddress: stellarAddress },
+          ],
+        },
+        select: { id: true },
+      }),
+    ]);
+
+    return {
+      asBuyer,
+      asSupplier,
+      asLogistics,
+      asArbiter,
+      total: new Set(shipmentIds.map((shipment) => shipment.id)).size,
+    };
+  }
+
   /**
    * Update shipment metadata (description, referenceNumber, metadata, tags).
    * Only the buyer can update a shipment.
