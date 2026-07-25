@@ -31,6 +31,7 @@ import { FindAllShipmentsDto } from './dto/find-all-shipments.dto';
 import { AddTagDto } from './dto/tag.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { ValidateMetadataDto } from './dto/metadata.dto';
 import { ShipmentParticipantGuard } from './guards/shipment-participant.guard';
 import { UserRole } from '@prisma/client';
 
@@ -196,6 +197,61 @@ export class ShipmentsController {
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="chainsettle-shipment-${id}-${timestamp}.pdf"`);
     res.end(pdf);
+  }
+
+  /**
+   * POST /api/v1/shipments/:id/metadata/validate
+   * Validates a shipment's existing metadata against a built-in schema (e.g. incoterms, customs).
+   * Read-only operation; does not mutate metadata.
+   */
+  @Post(':id/metadata/validate')
+  @UseGuards(ShipmentParticipantGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Validate shipment metadata against a JSON schema' })
+  @ApiResponse({ status: 200, description: 'Validation result' })
+  @ApiResponse({ status: 403, description: 'Not a shipment participant' })
+  @ApiResponse({ status: 404, description: 'Shipment not found or no metadata set' })
+  validateMetadata(@Param('id') id: string, @Body() dto: ValidateMetadataDto) {
+    return this.shipmentsService.validateMetadata(id, dto.schema);
+  }
+
+  /**
+   * POST /api/v1/shipments/:id/watch
+   * Subscribe to shipment updates.
+   */
+  @Post(':id/watch')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Watch a shipment for updates' })
+  @ApiResponse({ status: 200, description: 'Watching shipment' })
+  @ApiResponse({ status: 404, description: 'Shipment not found' })
+  watchShipment(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.shipmentsService.watchShipment(id, user.stellarAddress);
+  }
+
+  /**
+   * DELETE /api/v1/shipments/:id/watch
+   * Unsubscribe from shipment updates.
+   */
+  @Delete(':id/watch')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Unwatch a shipment' })
+  @ApiResponse({ status: 200, description: 'Unwatched shipment' })
+  unwatchShipment(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.shipmentsService.unwatchShipment(id, user.stellarAddress);
+  }
+
+  /**
+   * GET /api/v1/shipments/:id/watchers
+   * Get all watchers for a shipment.
+   */
+  @Get(':id/watchers')
+  @UseGuards(ShipmentParticipantGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Get all watchers for a shipment' })
+  @ApiResponse({ status: 200, description: 'List of watchers' })
+  @ApiResponse({ status: 403, description: 'Not a shipment participant' })
+  getWatchers(@Param('id') id: string) {
+    return this.shipmentsService.getWatchers(id);
   }
 
   /**

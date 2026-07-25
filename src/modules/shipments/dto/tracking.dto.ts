@@ -2,7 +2,7 @@ import {
   IsString,
   IsNotEmpty,
   IsOptional,
-  IsFloat,
+  IsNumber,
   IsISO8601,
   MaxLength,
   IsIn,
@@ -25,7 +25,7 @@ export class CreateTrackingDto {
     example: 6.5244,
   })
   @IsOptional()
-  @IsFloat()
+  @IsNumber()
   latitude?: number;
 
   @ApiPropertyOptional({
@@ -33,7 +33,7 @@ export class CreateTrackingDto {
     example: 3.3792,
   })
   @IsOptional()
-  @IsFloat()
+  @IsNumber()
   longitude?: number;
 
   @ApiProperty({

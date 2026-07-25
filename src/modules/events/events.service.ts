@@ -109,20 +109,17 @@ export class EventsService implements OnModuleInit {
           await this.saveToDlq(event, error as Error);
         }
         this.lastProcessedLedger = Math.max(this.lastProcessedLedger, event.ledger + 1);
+        try {
+          await this.prisma.eventCursor.update({
+            where: { id: 'main' },
+            data: { lastProcessedLedger: this.lastProcessedLedger },
+          });
+          this.logger.debug(`Cursor persisted at ledger ${this.lastProcessedLedger}`);
+        } catch (err) {
+          this.logger.warn(`Cursor DB write failed (in-memory value still correct): ${(err as Error).message}`);
+        }
       }
-
-      try {
-        await this.prisma.eventCursor.update({
-          where: { id: 'main' },
-          data: { lastProcessedLedger: this.lastProcessedLedger },
-        });
-        this.logger.debug(`Cursor persisted at ledger ${this.lastProcessedLedger}`);
-      } catch (err) {
-        this.logger.warn(`Cursor DB write failed (in-memory value still correct): ${(err as Error).message}`);
-      }
-    } catch (error) {
-      this.logger.error('Event polling failed', (error as Error).message);
-    }
+    );
   }
 
   // ----------------------------------------------------------
@@ -305,6 +302,14 @@ export class EventsService implements OnModuleInit {
         'Payment released',
         `${humanAmount} ${shipment.tokenSymbol} has been released for milestone ${milestoneIndex} on shipment ${shipmentId}.`,
         { shipmentId, milestoneIndex, paymentAmount: humanAmount, tokenSymbol: shipment.tokenSymbol },
+      );
+      
+      await this.notifications.notifyWatchers(
+        shipmentId,
+        NotificationType.MILESTONE_CONFIRMED,
+        'Milestone Confirmed',
+        `Milestone ${milestoneIndex} for shipment ${shipmentId} has been confirmed.`,
+        { shipmentId, milestoneIndex }
       );
     }
   }
@@ -571,7 +576,7 @@ export class EventsService implements OnModuleInit {
   }
 
   private async saveRawEvent(eventName: string, event: any, payload: any, tx?: any) {
-    const client = tx ?? this.prisma;
+    const client = tx || this.prisma;
     try {
       const shipmentId = this.extractShipmentId(payload);
 

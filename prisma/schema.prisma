@@ -101,6 +101,7 @@ model User {
   webhookEndpoints      WebhookEndpoint[]
   apiKeys     ApiKey[]
   notificationPreference NotificationPreference?
+  shipmentWatchers ShipmentWatcher[] @relation("ShipmentWatchers")
 
   @@map("users")
 }
@@ -125,6 +126,7 @@ model Shipment {
 
   // Human-readable context fields
   description      String?         // what goods are being shipped (max 1000 chars)
+  description_search Unsupported("tsvector")?
   referenceNumber  String?         @unique // contract/PO reference for external systems
   metadata         Json?           // arbitrary key-value pairs (incoterms, port, etc)
   tags             String[]        @default([]) // searchable tags
@@ -145,6 +147,7 @@ model Shipment {
   events    ChainEvent[]
   comments  ShipmentComment[]
   trackingUpdates TrackingUpdate[]
+  watchers  ShipmentWatcher[]
 
   @@map("shipments")
 }
@@ -410,4 +413,18 @@ model ApiKey {
   @@index([keyHash])
   @@index([userId])
   @@map("api_keys")
+}
+
+model ShipmentWatcher {
+  id         String   @id @default(uuid())
+  shipmentId String
+  userId     String
+  createdAt  DateTime @default(now())
+
+  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  user     User     @relation("ShipmentWatchers", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([shipmentId, userId])
+  @@index([userId])
+  @@map("shipment_watchers")
 }

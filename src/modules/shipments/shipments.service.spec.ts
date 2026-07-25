@@ -1,11 +1,15 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { ConflictException, NotFoundException } from '@nestjs/common';
-import { ShipmentsService } from './shipments.service';
-import { PrismaService } from '../../common/prisma/prisma.service';
-import { StellarService } from '../../common/stellar/stellar.service';
-import { TokenRegistryService } from '../../common/token-registry/token-registry.service';
-import { NotificationsService } from '../notifications/notifications.service';
-import { NotificationType, ShipmentStatus, ArbiterStatus } from '@prisma/client';
+import { Test, TestingModule } from "@nestjs/testing";
+import { ConflictException, NotFoundException } from "@nestjs/common";
+import { ShipmentsService } from "./shipments.service";
+import { PrismaService } from "../../common/prisma/prisma.service";
+import { StellarService } from "../../common/stellar/stellar.service";
+import { TokenRegistryService } from "../../common/token-registry/token-registry.service";
+import { NotificationsService } from "../notifications/notifications.service";
+import {
+  NotificationType,
+  ShipmentStatus,
+  ArbiterStatus,
+} from "@prisma/client";
 
 const mockPrisma = {
   shipment: {
@@ -18,24 +22,33 @@ const mockPrisma = {
   shipmentTemplate: {
     findUnique: jest.fn(),
   },
+  user: {
+    findUnique: jest.fn(),
+  },
+  shipmentWatcher: {
+    findFirst: jest.fn(),
+    create: jest.fn(),
+    deleteMany: jest.fn(),
+    findMany: jest.fn(),
+  },
   $transaction: jest.fn(),
 };
 
 const mockStellar = {
   simulateContractCall: jest.fn(),
-  stroopsToUsdc: jest.fn().mockReturnValue('100.0000000'),
-  toHumanAmount: jest.fn().mockReturnValue('100.0000000'),
+  stroopsToUsdc: jest.fn().mockReturnValue("100.0000000"),
+  toHumanAmount: jest.fn().mockReturnValue("100.0000000"),
 };
 
 const mockTokenRegistry = {
-  getToken: jest.fn().mockReturnValue({ symbol: 'USDC', decimals: 7 }),
+  getToken: jest.fn().mockReturnValue({ symbol: "USDC", decimals: 7 }),
 };
 
 const mockNotifications = {
   notifyUser: jest.fn().mockResolvedValue(undefined),
 };
 
-describe('ShipmentsService', () => {
+describe("ShipmentsService", () => {
   let service: ShipmentsService;
 
   beforeEach(async () => {
@@ -53,33 +66,33 @@ describe('ShipmentsService', () => {
     jest.clearAllMocks();
 
     // Sensible defaults
-    mockStellar.toHumanAmount.mockReturnValue('100.0000000');
-    mockTokenRegistry.getToken.mockReturnValue({ symbol: 'USDC', decimals: 7 });
+    mockStellar.toHumanAmount.mockReturnValue("100.0000000");
+    mockTokenRegistry.getToken.mockReturnValue({ symbol: "USDC", decimals: 7 });
     mockNotifications.notifyUser.mockResolvedValue(undefined);
   });
 
-  describe('create()', () => {
+  describe("create()", () => {
     const dto = {
-      shipmentId: 'SHIP-001',
-      buyerAddress: 'GABC',
-      supplierAddress: 'GDEF',
-      logisticsAddress: 'GHIJ',
-      arbiterAddress: 'GKLM',
-      tokenAddress: 'CNOP',
-      totalAmount: '1000000000',
-      txHash: 'tx_hash',
-      description: 'desc',
-      referenceNumber: 'PO-2026-001',
-      metadata: { incoterms: 'FOB' },
-      tags: ['urgent'],
+      shipmentId: "SHIP-001",
+      buyerAddress: "GABC",
+      supplierAddress: "GDEF",
+      logisticsAddress: "GHIJ",
+      arbiterAddress: "GKLM",
+      tokenAddress: "CNOP",
+      totalAmount: "1000000000",
+      txHash: "tx_hash",
+      description: "desc",
+      referenceNumber: "PO-2026-001",
+      metadata: { incoterms: "FOB" },
+      tags: ["urgent"],
       milestones: [
-        { name: 'Dispatch', paymentPercent: 25, dueDays: 1 },
-        { name: 'Transit', paymentPercent: 50, dueDays: 2 },
-        { name: 'Delivered', paymentPercent: 25, dueDays: 3 },
+        { name: "Dispatch", paymentPercent: 25, dueDays: 1 },
+        { name: "Transit", paymentPercent: 50, dueDays: 2 },
+        { name: "Delivered", paymentPercent: 25, dueDays: 3 },
       ],
     };
 
-    it('creates a shipment successfully and serializes totalAmount as string', async () => {
+    it("creates a shipment successfully and serializes totalAmount as string", async () => {
       mockPrisma.shipment.findUnique.mockResolvedValueOnce(null); // shipmentId guard
       mockPrisma.shipment.findUnique.mockResolvedValueOnce(null); // referenceNumber guard
       mockPrisma.shipment.create.mockResolvedValue({
@@ -90,7 +103,7 @@ describe('ShipmentsService', () => {
         arbiterAddress: dto.arbiterAddress,
         tokenAddress: dto.tokenAddress,
         tokenDecimals: 7,
-        tokenSymbol: 'USDC',
+        tokenSymbol: "USDC",
         totalAmount: BigInt(dto.totalAmount),
         releasedAmount: BigInt(0),
         txHash: dto.txHash,
@@ -107,7 +120,7 @@ describe('ShipmentsService', () => {
           paymentPercent: m.paymentPercent,
           dueAt: new Date(),
           paymentReleased: null,
-          status: 'PENDING',
+          status: "PENDING",
           proofHash: null,
           confirmedAt: null,
         })),
@@ -118,10 +131,10 @@ describe('ShipmentsService', () => {
       expect(result).toBeDefined();
       expect(result.id).toBe(dto.shipmentId);
       // Acceptance: serialized bigint conversion
-      expect(typeof result.totalAmount).toBe('string');
+      expect(typeof result.totalAmount).toBe("string");
       expect(result.totalAmount).toBe(dto.totalAmount);
-      expect(typeof result.releasedAmount).toBe('string');
-      expect(result.releasedAmount).toBe('0');
+      expect(typeof result.releasedAmount).toBe("string");
+      expect(result.releasedAmount).toBe("0");
 
       expect(mockPrisma.shipment.create).toHaveBeenCalledTimes(1);
       expect(mockNotifications.notifyUser).toHaveBeenCalledWith(
@@ -129,42 +142,54 @@ describe('ShipmentsService', () => {
         NotificationType.ARBITER_INVITED,
         expect.any(String),
         expect.any(String),
-        expect.objectContaining({ shipmentId: dto.shipmentId, buyerAddress: dto.buyerAddress }),
+        expect.objectContaining({
+          shipmentId: dto.shipmentId,
+          buyerAddress: dto.buyerAddress,
+        }),
       );
     });
 
-    it('throws ConflictException for duplicate shipmentId values', async () => {
-      mockPrisma.shipment.findUnique.mockResolvedValueOnce({ id: dto.shipmentId });
+    it("throws ConflictException for duplicate shipmentId values", async () => {
+      mockPrisma.shipment.findUnique.mockResolvedValueOnce({
+        id: dto.shipmentId,
+      });
 
-      await expect(service.create(dto as any)).rejects.toBeInstanceOf(ConflictException);
+      await expect(service.create(dto as any)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
       expect(mockPrisma.shipment.create).not.toHaveBeenCalled();
     });
 
-    it('throws ConflictException for duplicate referenceNumber values', async () => {
+    it("throws ConflictException for duplicate referenceNumber values", async () => {
       mockPrisma.shipment.findUnique
         .mockResolvedValueOnce(null) // shipmentId guard
-        .mockResolvedValueOnce({ id: 'SHIP-002', referenceNumber: dto.referenceNumber }); // referenceNumber guard
+        .mockResolvedValueOnce({
+          id: "SHIP-002",
+          referenceNumber: dto.referenceNumber,
+        }); // referenceNumber guard
 
-      await expect(service.create(dto as any)).rejects.toBeInstanceOf(ConflictException);
+      await expect(service.create(dto as any)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
     });
   });
 
-  describe('findAll()', () => {
-    it('paginates and sets meta.totalPages = Math.ceil(total/limit)', async () => {
+  describe("findAll()", () => {
+    it("paginates and sets meta.totalPages = Math.ceil(total/limit)", async () => {
       const shipments = [
         {
-          id: 'SHIP-1',
-          buyerAddress: 'G1',
-          supplierAddress: 'S1',
-          logisticsAddress: 'L1',
-          arbiterAddress: 'A1',
-          tokenAddress: 'T1',
+          id: "SHIP-1",
+          buyerAddress: "G1",
+          supplierAddress: "S1",
+          logisticsAddress: "L1",
+          arbiterAddress: "A1",
+          tokenAddress: "T1",
           tokenDecimals: 7,
-          tokenSymbol: 'USDC',
+          tokenSymbol: "USDC",
           totalAmount: BigInt(10),
           releasedAmount: BigInt(0),
           status: ShipmentStatus.ACTIVE,
-          createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          createdAt: new Date("2026-01-01T00:00:00.000Z"),
           milestones: [],
         },
       ];
@@ -187,33 +212,37 @@ describe('ShipmentsService', () => {
       );
     });
 
-    it('filters by buyerAddress when the filter is provided', async () => {
+    it("filters by buyerAddress when the filter is provided", async () => {
       mockPrisma.$transaction.mockResolvedValueOnce([[], 0]);
 
-      await service.findAll({ buyerAddress: 'G-BUYER' });
+      await service.findAll({ buyerAddress: "G-BUYER" });
 
       const calledWith = mockPrisma.shipment.findMany.mock.calls[0][0];
-      expect(calledWith.where).toEqual(expect.objectContaining({ buyerAddress: 'G-BUYER' }));
+      expect(calledWith.where).toEqual(
+        expect.objectContaining({ buyerAddress: "G-BUYER" }),
+      );
     });
   });
 
-  describe('findOne()', () => {
-    it('throws NotFoundException when shipment is not found', async () => {
+  describe("findOne()", () => {
+    it("throws NotFoundException when shipment is not found", async () => {
       mockPrisma.shipment.findUnique.mockResolvedValueOnce(null);
 
-      await expect(service.findOne('SHIP-MISSING')).rejects.toBeInstanceOf(NotFoundException);
+      await expect(service.findOne("SHIP-MISSING")).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
     });
 
-    it('serializes bigint fields to strings', async () => {
+    it("serializes bigint fields to strings", async () => {
       mockPrisma.shipment.findUnique.mockResolvedValueOnce({
-        id: 'SHIP-1',
-        buyerAddress: 'G1',
-        supplierAddress: 'S1',
-        logisticsAddress: 'L1',
-        arbiterAddress: 'A1',
-        tokenAddress: 'T1',
+        id: "SHIP-1",
+        buyerAddress: "G1",
+        supplierAddress: "S1",
+        logisticsAddress: "L1",
+        arbiterAddress: "A1",
+        tokenAddress: "T1",
         tokenDecimals: 7,
-        tokenSymbol: 'USDC',
+        tokenSymbol: "USDC",
         totalAmount: BigInt(123),
         releasedAmount: BigInt(45),
         status: ShipmentStatus.ACTIVE,
@@ -223,12 +252,53 @@ describe('ShipmentsService', () => {
         events: [],
       });
 
-      const res = await service.findOne('SHIP-1');
-      expect(typeof res.totalAmount).toBe('string');
-      expect(res.totalAmount).toBe('123');
-      expect(typeof res.releasedAmount).toBe('string');
-      expect(res.releasedAmount).toBe('45');
+      const res = await service.findOne("SHIP-1");
+      expect(typeof res.totalAmount).toBe("string");
+      expect(res.totalAmount).toBe("123");
+      expect(typeof res.releasedAmount).toBe("string");
+      expect(res.releasedAmount).toBe("45");
     });
   });
-});
 
+  describe("validateMetadata()", () => {
+    it("returns valid=true for metadata matching the built-in schema", async () => {
+      mockPrisma.shipment.findUnique.mockResolvedValueOnce({
+        id: "SHIP-1",
+        metadata: { incoterms: "FOB", portOfOrigin: "Lagos" },
+      });
+
+      const result = await service.validateMetadata("SHIP-1", "incoterms");
+
+      expect(result).toEqual({ valid: true, errors: [] });
+    });
+
+    it("returns field-level errors for invalid metadata", async () => {
+      mockPrisma.shipment.findUnique.mockResolvedValueOnce({
+        id: "SHIP-1",
+        metadata: { incoterms: "NOT_VALID", portOfOrigin: 42 },
+      });
+
+      const result = await service.validateMetadata("SHIP-1", "incoterms");
+
+      expect(result.valid).toBe(false);
+      expect(result.errors).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: "/incoterms" }),
+          expect.objectContaining({ path: "/portOfOrigin" }),
+        ]),
+      );
+    });
+
+    it("throws NotFoundException when the shipment has no metadata", async () => {
+      mockPrisma.shipment.findUnique.mockResolvedValueOnce({
+        id: "SHIP-1",
+        metadata: null,
+      });
+
+      await expect(
+        service.validateMetadata("SHIP-1", "incoterms"),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+});
