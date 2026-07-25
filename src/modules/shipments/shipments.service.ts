@@ -441,6 +441,106 @@ export class ShipmentsService {
   }
 
   // ----------------------------------------------------------
+  // TAGS — atomic add/remove
+  // ----------------------------------------------------------
+
+  /**
+   * Atomically add a tag to a shipment.
+   * Only the buyer can add tags, and only when shipment is ACTIVE.
+   * Uses Prisma `push` for atomic append at the DB level.
+   */
+  async addTag(id: string, buyerAddress: string, tag: string) {
+    const shipment = await this.prisma.shipment.findUnique({
+      where: { id },
+      select: { buyerAddress: true, status: true, tags: true },
+    });
+
+    if (!shipment) {
+      throw new NotFoundException(`Shipment ${id} not found`);
+    }
+
+    if (shipment.buyerAddress !== buyerAddress) {
+      throw new ForbiddenException('Only the shipment buyer can modify tags');
+    }
+
+    if (shipment.status !== ShipmentStatus.ACTIVE) {
+      throw new ConflictException(`Shipment is not ACTIVE (current status: ${shipment.status})`);
+    }
+
+    // Check if tag already exists
+    if (shipment.tags.includes(tag)) {
+      throw new ConflictException(`Tag "${tag}" already exists on shipment ${id}`);
+    }
+
+    // Atomic append using Prisma push
+    const updated = await this.prisma.shipment.update({
+      where: { id },
+      data: {
+        tags: {
+          push: [tag],
+        },
+      },
+      include: {
+        milestones: { orderBy: { milestoneIndex: 'asc' } },
+        events: { orderBy: { ledger: 'desc' }, take: 20 },
+      },
+    });
+
+    this.logger.log(`Tag "${tag}" added to shipment ${id} by buyer ${buyerAddress}`);
+    await this.invalidateUserCache(buyerAddress);
+    return this.serialize(updated);
+  }
+
+  /**
+   * Atomically remove a tag from a shipment.
+   * Only the buyer can remove tags, and only when shipment is ACTIVE.
+   * Uses PostgreSQL array_remove via $executeRaw for atomic removal.
+   */
+  async removeTag(id: string, buyerAddress: string, tag: string) {
+    const shipment = await this.prisma.shipment.findUnique({
+      where: { id },
+      select: { buyerAddress: true, status: true, tags: true },
+    });
+
+    if (!shipment) {
+      throw new NotFoundException(`Shipment ${id} not found`);
+    }
+
+    if (shipment.buyerAddress !== buyerAddress) {
+      throw new ForbiddenException('Only the shipment buyer can modify tags');
+    }
+
+    if (shipment.status !== ShipmentStatus.ACTIVE) {
+      throw new ConflictException(`Shipment is not ACTIVE (current status: ${shipment.status})`);
+    }
+
+    // Check if tag exists
+    if (!shipment.tags.includes(tag)) {
+      throw new NotFoundException(`Tag "${tag}" not found on shipment ${id}`);
+    }
+
+    // Atomic removal using PostgreSQL array_remove
+    await this.prisma.$executeRaw`
+      UPDATE shipments 
+      SET tags = array_remove(tags, ${tag})
+      WHERE id = ${id}
+    `;
+
+    // Fetch the updated shipment
+    const updated = await this.prisma.shipment.findUnique({
+      where: { id },
+      include: {
+        milestones: { orderBy: { milestoneIndex: 'asc' } },
+        events: { orderBy: { ledger: 'desc' }, take: 20 },
+      },
+    });
+
+    this.logger.log(`Tag "${tag}" removed from shipment ${id} by buyer ${buyerAddress}`);
+    await this.invalidateUserCache(buyerAddress);
+    return this.serialize(updated);
+  }
+
+  // ----------------------------------------------------------
   // ARBITER ACCEPT / DECLINE
   // ----------------------------------------------------------
 
@@ -874,7 +974,7 @@ export class ShipmentsService {
       this.logger.log(
         `Synced shipment ${shipmentId} from chain: status=${mappedStatus}, releasedAmount=${releasedAmount}`
       );
-    } catch (error) {
+    } catch (error: any) {
       // Check if it's a "shipment not found in DB" error
       if (error.code === 'P2025') {
         this.logger.warn(
