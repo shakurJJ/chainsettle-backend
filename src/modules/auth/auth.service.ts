@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, ConflictException, Logger } from '@nestjs/common';
+import { Injectable, UnauthorizedException, ConflictException, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Keypair } from '@stellar/stellar-sdk';
@@ -31,6 +31,7 @@ export class AuthService {
   private readonly logger = new Logger(AuthService.name);
   private readonly NONCE_PREFIX = 'chainsettle:nonce:';
   private readonly NONCE_TTL_MS = 5 * 60 * 1000; // 5 minutes in milliseconds
+  private readonly EMAIL_VERIFICATION_TOKEN_PREFIX = 'chainsettle:email-verification-token:';
 
 
   constructor(
@@ -160,18 +161,7 @@ export class AuthService {
         throw new ConflictException('Email is already in use');
       }
 
-      const token = this.jwt.sign(
-        { sub: userId, email: dto.email },
-        { expiresIn: '24h' },
-      );
-
-      const verificationLink = `${this.config.get('API_BASE_URL', 'http://localhost:3000')}/api/v1/auth/verify-email?token=${token}`;
-
-      await this.notifications.sendEmail(
-        dto.email,
-        'Verify your email address',
-        `Click this link to verify your email: ${verificationLink}`,
-      );
+      await this.sendVerificationEmail(userId, dto.email);
 
       updateData.pendingEmail = dto.email;
     }
@@ -258,9 +248,15 @@ export class AuthService {
 
   async verifyEmail(token: string) {
     let payload: { sub: string; email: string };
+    let payload: { sub: string; email: string };
     try {
       payload = this.jwt.verify<{ sub: string; email: string }>(token);
     } catch {
+      throw new UnauthorizedException('Invalid or expired verification token');
+    }
+
+    const storedToken = await this.redis.get(this.getVerificationTokenKey(payload.sub));
+    if (!storedToken || storedToken !== token) {
       throw new UnauthorizedException('Invalid or expired verification token');
     }
 
@@ -293,6 +289,48 @@ export class AuthService {
       },
     });
 
+    await this.redis.del(this.getVerificationTokenKey(user.id));
+
     return { message: 'Email verified successfully' };
+  }
+
+  async resendVerificationEmail(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, pendingEmail: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (!user.pendingEmail) {
+      throw new BadRequestException('No pending email to verify');
+    }
+
+    return this.sendVerificationEmail(user.id, user.pendingEmail);
+  }
+
+  private getVerificationTokenKey(userId: string) {
+    return `${this.EMAIL_VERIFICATION_TOKEN_PREFIX}${userId}`;
+  }
+
+  private async sendVerificationEmail(userId: string, email: string) {
+    const token = this.jwt.sign(
+      { sub: userId, email },
+      { expiresIn: '24h' },
+    );
+
+    await this.redis.setPx(this.getVerificationTokenKey(userId), token, 24 * 60 * 60 * 1000);
+
+    const verificationLink = `${this.config.get('API_BASE_URL', 'http://localhost:3000')}/api/v1/auth/verify-email?token=${token}`;
+
+    await this.notifications.sendEmail(
+      email,
+      'Verify your email address',
+      `Click this link to verify your email: ${verificationLink}`,
+    );
+
+    return { message: 'Verification email sent' };
   }
 }
