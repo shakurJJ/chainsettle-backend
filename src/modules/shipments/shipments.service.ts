@@ -14,6 +14,7 @@ import { TokenRegistryService } from '../../common/token-registry/token-registry
 import { NotificationsService } from '../notifications/notifications.service';
 import { RedisService } from '../../common/redis/redis.service';
 import { MetricsService } from '../../common/metrics/metrics.service';
+import { AuditLogService } from '../audit-logs/audit-log.service';
 import { CreateShipmentDto, CloneShipmentDto } from './dto/create-shipment.dto';
 import { CreateTrackingDto } from './dto/tracking.dto';
 import { ShipmentStatus, NotificationType, ArbiterStatus } from '@prisma/client';
@@ -33,6 +34,7 @@ export class ShipmentsService {
     private readonly redis: RedisService,
     private readonly config: ConfigService,
     private readonly metrics: MetricsService,
+    private readonly auditLog: AuditLogService,
   ) {
     this.cacheTtl = this.config.get<number>('SHIPMENTS_CACHE_TTL_SECONDS', 30);
   }
@@ -474,6 +476,73 @@ export class ShipmentsService {
 
     this.logger.log(`Shipment updated: ${id}`);
     await this.invalidateUserCache(buyerAddress);
+    return this.serialize(updated);
+  }
+
+  async replaceTags(
+    id: string,
+    tags: string[] | undefined,
+    callerAddress?: string,
+    callerId?: string,
+  ) {
+    const shipment = await this.prisma.shipment.findUnique({
+      where: { id },
+      select: { id: true, tags: true },
+    });
+
+    if (!shipment) {
+      throw new NotFoundException(`Shipment ${id} not found`);
+    }
+
+    if (!Array.isArray(tags)) {
+      throw new BadRequestException('tags must be an array');
+    }
+
+    const normalizedTags = new Map<string, string>();
+    for (const tag of tags) {
+      if (typeof tag !== 'string') {
+        throw new BadRequestException('each tag must be a string');
+      }
+
+      const trimmed = tag.trim();
+      if (trimmed.length < 1 || trimmed.length > 30) {
+        throw new BadRequestException('each tag must be between 1 and 30 characters');
+      }
+
+      const key = trimmed.toLowerCase();
+      if (!normalizedTags.has(key)) {
+        normalizedTags.set(key, trimmed);
+      }
+    }
+
+    if (normalizedTags.size > 20) {
+      throw new BadRequestException('A shipment can have at most 20 tags');
+    }
+
+    const nextTags = Array.from(normalizedTags.values());
+
+    const updated = await this.prisma.shipment.update({
+      where: { id },
+      data: { tags: nextTags },
+      include: {
+        milestones: { orderBy: { milestoneIndex: 'asc' } },
+        events: { orderBy: { ledger: 'desc' }, take: 20 },
+      },
+    });
+
+    await this.auditLog.record({
+      actorId: callerId,
+      actorAddress: callerAddress ?? 'unknown',
+      action: 'SHIPMENT_TAGS_REPLACED',
+      resourceType: 'Shipment',
+      resourceId: id,
+      metadata: {
+        previousTags: shipment.tags,
+        nextTags,
+      },
+    });
+
+    this.logger.log(`Shipment tags replaced: ${id}`);
     return this.serialize(updated);
   }
 

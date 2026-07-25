@@ -3,11 +3,12 @@ import { ShipmentsController } from './shipments.controller';
 import { ShipmentsService } from './shipments.service';
 import { CommentsController } from './comments.controller';
 import { CommentsService } from './comments.service';
+import { AuditLogsModule } from '../audit-logs/audit-logs.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { RedisModule } from '../../common/redis/redis.module';
 
 @Module({
-  imports: [NotificationsModule, RedisModule],
+  imports: [NotificationsModule, RedisModule, AuditLogsModule],
   controllers: [ShipmentsController, CommentsController],
   providers: [ShipmentsService, CommentsService],
   exports: [ShipmentsService],

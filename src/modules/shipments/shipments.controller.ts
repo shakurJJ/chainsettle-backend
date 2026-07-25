@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Patch,
+  Put,
   Body,
   Param,
   Query,
@@ -147,6 +148,21 @@ export class ShipmentsController {
   bulkStatus(@Body() dto: BulkStatusDto, @CurrentUser() user: any) {
     const isAdmin = user?.role === UserRole.ADMIN;
     return this.shipmentsService.bulkStatus(dto.ids, user.stellarAddress, isAdmin);
+  }
+
+  /**
+   * PUT /api/v1/shipments/:id/tags
+   * Replace all shipment tags in a single request.
+   */
+  @Put(':id/tags')
+  @UseGuards(ShipmentParticipantGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Replace all shipment tags' })
+  @ApiResponse({ status: 200, description: 'Shipment tags replaced successfully' })
+  @ApiResponse({ status: 400, description: 'Invalid tag list' })
+  @ApiResponse({ status: 403, description: 'Not a shipment participant' })
+  replaceTags(@Param('id') id: string, @Body() body: { tags: string[] }, @CurrentUser() user: any) {
+    return this.shipmentsService.replaceTags(id, body?.tags, user?.stellarAddress, user?.id);
   }
 
   /**
