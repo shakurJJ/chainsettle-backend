@@ -114,6 +114,15 @@ export class MilestonesService {
     // Persist CID + status transition
     const updated = await this.markProofSubmitted(shipmentId, milestoneIndex, cid);
 
+    // Record proof submission in audit trail (immutable history)
+    await this.prisma.proofSubmission.create({
+      data: {
+        milestoneId: milestone.id,
+        ipfsCid: cid,
+        submittedBy: callerAddress,
+      },
+    });
+
     this.logger.log(
       `Proof submitted for ${shipmentId}[${milestoneIndex}] — CID: ${cid}`,
     );
@@ -536,6 +545,38 @@ export class MilestonesService {
       fileName: evidence.fileName || 'download',
       mimeType: evidence.mimeType || 'application/octet-stream',
     };
+  }
+
+  // ----------------------------------------------------------
+  // PROOF HISTORY — immutable audit trail of all proof submissions
+  // ----------------------------------------------------------
+
+  /**
+   * Returns all ProofSubmission rows for a milestone in chronological order.
+   * Pre-migration milestones with no history rows will return an empty array.
+   * Access is gated by ShipmentParticipantGuard in the controller.
+   */
+  async getProofHistory(shipmentId: string, milestoneIndex: number) {
+    const milestone = await this.prisma.milestone.findUnique({
+      where: { shipmentId_milestoneIndex: { shipmentId, milestoneIndex } },
+    });
+
+    if (!milestone) {
+      throw new NotFoundException(
+        `Milestone ${milestoneIndex} not found on shipment ${shipmentId}`,
+      );
+    }
+
+    const submissions = await this.prisma.proofSubmission.findMany({
+      where: { milestoneId: milestone.id },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return submissions.map((s) => ({
+      ipfsCid: s.ipfsCid,
+      submittedBy: s.submittedBy,
+      createdAt: s.createdAt.toISOString(),
+    }));
   }
 
   // ----------------------------------------------------------
