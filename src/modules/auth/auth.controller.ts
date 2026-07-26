@@ -1,9 +1,11 @@
-import { Controller, Post, Get, Body, Query, HttpCode, HttpStatus, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Body, Query, HttpCode, HttpStatus, UseGuards, BadRequestException } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { StellarAddressThrottlerGuard } from '../../common/guards/stellar-address-throttler.guard';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -38,5 +40,21 @@ export class AuthController {
   @ApiResponse({ status: 401, description: 'Invalid or expired token' })
   async verifyEmail(@Query('token') token: string) {
     return this.authService.verifyEmail(token);
+  }
+
+  @Post('resend-verification')
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 1, ttl: 60_000 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Resend the pending email verification link' })
+  @ApiResponse({ status: 200, description: 'Verification email resent' })
+  @ApiResponse({ status: 400, description: 'No pending email to verify' })
+  @ApiResponse({ status: 429, description: 'Too many requests - rate limit exceeded' })
+  async resendVerification(@CurrentUser() user: any) {
+    if (!user?.id) {
+      throw new BadRequestException('User not found');
+    }
+
+    return this.authService.resendVerificationEmail(user.id);
   }
 }
