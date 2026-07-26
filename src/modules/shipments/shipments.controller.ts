@@ -3,7 +3,7 @@ import {
   Get,
   Post,
   Patch,
-  Put,
+  Delete,
   Body,
   Param,
   Query,
@@ -13,6 +13,7 @@ import {
   HttpStatus,
   ForbiddenException,
   BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
 import { Response } from 'express';
 import {
@@ -27,6 +28,7 @@ import { ShipmentsService } from './shipments.service';
 import { CreateShipmentDto, UpdateShipmentDto, CancelShipmentDto, CloneShipmentDto, BulkStatusDto } from './dto/create-shipment.dto';
 import { CreateTrackingDto } from './dto/tracking.dto';
 import { FindAllShipmentsDto } from './dto/find-all-shipments.dto';
+import { AddTagDto } from './dto/tag.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ShipmentParticipantGuard } from './guards/shipment-participant.guard';
@@ -387,4 +389,34 @@ export class ShipmentsController {
     getTracking(@Param('id') id: string, @CurrentUser() user: any) {
       return this.shipmentsService.getTracking(id, user.stellarAddress);
     }
-}
+
+    /**
+     * POST /api/v1/shipments/:id/tags
+     * Atomically add a tag to a shipment. Buyer only, shipment must be ACTIVE.
+     */
+    @Post(':id/tags')
+    @HttpCode(HttpStatus.OK)
+    @ApiOperation({ summary: 'Add a tag to a shipment (buyer only, ACTIVE only)' })
+    @ApiResponse({ status: 200, description: 'Tag added successfully' })
+    @ApiResponse({ status: 403, description: 'Only the buyer can modify tags' })
+    @ApiResponse({ status: 404, description: 'Shipment not found' })
+    @ApiResponse({ status: 409, description: 'Tag already exists or shipment is not ACTIVE' })
+    addTag(@Param('id') id: string, @Body() dto: AddTagDto, @CurrentUser() user: any) {
+      return this.shipmentsService.addTag(id, user.stellarAddress, dto.tag);
+    }
+
+    /**
+     * DELETE /api/v1/shipments/:id/tags/:tag
+     * Atomically remove a tag from a shipment. Buyer only, shipment must be ACTIVE.
+     */
+    @Delete(':id/tags/:tag')
+    @HttpCode(HttpStatus.OK)
+    @ApiOperation({ summary: 'Remove a tag from a shipment (buyer only, ACTIVE only)' })
+    @ApiResponse({ status: 200, description: 'Tag removed successfully' })
+    @ApiResponse({ status: 403, description: 'Only the buyer can modify tags' })
+    @ApiResponse({ status: 404, description: 'Shipment not found or tag not present' })
+    @ApiResponse({ status: 409, description: 'Shipment is not ACTIVE' })
+    removeTag(@Param('id') id: string, @Param('tag') tag: string, @CurrentUser() user: any) {
+      return this.shipmentsService.removeTag(id, user.stellarAddress, tag);
+    }
+  }

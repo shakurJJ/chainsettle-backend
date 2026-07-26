@@ -5,6 +5,7 @@ import {
   Delete,
   Param,
   Body,
+  Query,
   ParseIntPipe,
   UseGuards,
   UseInterceptors,
@@ -24,6 +25,7 @@ import {
   ApiConsumes,
   ApiBody,
   ApiResponse,
+  ApiQuery,
 } from '@nestjs/swagger';
 import { memoryStorage } from 'multer';
 import { Response } from 'express';
@@ -33,6 +35,8 @@ import { RebalanceMilestonesDto } from './dto/rebalance-milestones.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ShipmentParticipantGuard } from '../shipments/guards/shipment-participant.guard';
+import { StellarAddressThrottlerGuard } from '../../common/guards/stellar-address-throttler.guard';
+import { Throttle } from '@nestjs/throttler';
 
 /** Maximum allowed proof file size: 50 MB */
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -56,9 +60,20 @@ export class MilestonesController {
   constructor(private readonly milestonesService: MilestonesService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List all milestones for a shipment' })
-  findAll(@Param('shipmentId') shipmentId: string) {
-    return this.milestonesService.findByShipment(shipmentId);
+  @UseGuards(ShipmentParticipantGuard)
+  @ApiOperation({ summary: 'List all milestones for a shipment with optional filters' })
+  @ApiQuery({ name: 'status', required: false, enum: ['PENDING', 'PROOF_SUBMITTED', 'CONFIRMED', 'DISPUTED', 'RESOLVED'] })
+  @ApiQuery({ name: 'overdue', required: false, type: Boolean })
+  @ApiResponse({ status: 200, description: 'List of milestones with isOverdue computed' })
+  @ApiResponse({ status: 403, description: 'Not a shipment participant' })
+  @ApiResponse({ status: 404, description: 'Shipment not found' })
+  findAll(
+    @Param('shipmentId') shipmentId: string,
+    @Query('status') status?: string,
+    @Query('overdue') overdue?: string,
+  ) {
+    const isOverdueFilter = overdue === 'true';
+    return this.milestonesService.findByShipment(shipmentId, status, isOverdueFilter);
   }
 
   @Get(':index')
@@ -81,11 +96,14 @@ export class MilestonesController {
    */
   @Post(':index/proof')
   @HttpCode(HttpStatus.CREATED)
+  @UseGuards(JwtAuthGuard, StellarAddressThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 3_600_000 } })
   @ApiOperation({
     summary: 'Submit proof of delivery for a milestone',
     description:
       'Pins the uploaded file to IPFS (via Pinata) and stores the CID in the milestone record. ' +
-      'Only the shipment\'s supplierAddress or logisticsAddress may call this endpoint.',
+      'Only the shipment\'s supplierAddress or logisticsAddress may call this endpoint. ' +
+      'Rate limited to 5 uploads per hour per user.',
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -122,6 +140,7 @@ export class MilestonesController {
   @ApiResponse({ status: 400, description: 'No file uploaded or invalid type' })
   @ApiResponse({ status: 403, description: 'Caller is not the supplier or logistics provider' })
   @ApiResponse({ status: 404, description: 'Shipment or milestone not found' })
+  @ApiResponse({ status: 429, description: 'Rate limit exceeded - maximum 5 uploads per hour' })
   @UseInterceptors(
     FileInterceptor('file', {
       storage: memoryStorage(),
