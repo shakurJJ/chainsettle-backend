@@ -20,6 +20,8 @@ import { CreateTrackingDto } from './dto/tracking.dto';
 import { ShipmentStatus, NotificationType, ArbiterStatus } from '@prisma/client';
 import { nativeToScVal } from '@stellar/stellar-sdk';
 import { randomUUID } from 'crypto';
+import Ajv from 'ajv';
+import { metadataSchemas } from './schemas/metadata.schemas';
 
 @Injectable()
 export class ShipmentsService {
@@ -265,7 +267,7 @@ export class ShipmentsService {
 
       const query = `
         SELECT * FROM shipments
-        WHERE description_search @@ plainto_tsquery('english', $2)
+        WHERE (description_search @@ plainto_tsquery('english', $2) OR reference_number ILIKE '%' || $2 || '%')
         ${participantCondition}
         ORDER BY created_at DESC
         LIMIT $3 OFFSET $4
@@ -273,7 +275,7 @@ export class ShipmentsService {
 
       const countQuery = `
         SELECT COUNT(*) FROM shipments
-        WHERE description_search @@ plainto_tsquery('english', $2)
+        WHERE (description_search @@ plainto_tsquery('english', $2) OR reference_number ILIKE '%' || $2 || '%')
         ${participantCondition}
       `;
 
@@ -753,6 +755,15 @@ export class ShipmentsService {
     this.logger.log(`Shipment ${id} cancelled by buyer ${buyerAddress}`);
     this.metrics.decrementActiveShipments();
     await this.invalidateUserCache(buyerAddress);
+    
+    await this.notifications.notifyWatchers(
+      id,
+      NotificationType.SHIPMENT_CANCELLED,
+      'Shipment Cancelled',
+      `Shipment ${id} has been cancelled.`,
+      { shipmentId: id }
+    );
+
     return this.serialize(updated);
   }
 
@@ -839,6 +850,15 @@ export class ShipmentsService {
     });
 
     this.logger.log(`Shipment ${id} archived by buyer ${buyerAddress}`);
+    
+    await this.notifications.notifyWatchers(
+      id,
+      NotificationType.SYSTEM_ALERT,
+      'Shipment Archived',
+      `Shipment ${id} has been archived.`,
+      { shipmentId: id }
+    );
+
     return this.serialize(updated);
   }
 
@@ -887,6 +907,92 @@ export class ShipmentsService {
     if (stellarAddress === shipment.arbiterAddress) return { role: 'ARBITER' };
 
     return { role: null };
+  }
+
+  // ----------------------------------------------------------
+  // METADATA VALIDATION
+  // ----------------------------------------------------------
+
+  async validateMetadata(id: string, schemaKey: 'incoterms' | 'customs') {
+    const shipment = await this.prisma.shipment.findUnique({
+      where: { id },
+      select: { metadata: true },
+    });
+
+    if (!shipment) {
+      throw new NotFoundException(`Shipment ${id} not found`);
+    }
+
+    if (!shipment.metadata) {
+      throw new NotFoundException(`Shipment ${id} has no metadata set`);
+    }
+
+    const ajv = new Ajv({ allErrors: true });
+    const schema = metadataSchemas[schemaKey];
+    const validate = ajv.compile(schema);
+    const valid = validate(shipment.metadata);
+
+    if (valid) {
+      return { valid: true, errors: [] };
+    }
+
+    const errors = validate.errors?.map((err) => ({
+      path: err.instancePath,
+      message: err.message,
+    })) || [];
+
+    return { valid: false, errors };
+  }
+
+  // ----------------------------------------------------------
+  // WATCHERS
+  // ----------------------------------------------------------
+
+  async watchShipment(shipmentId: string, stellarAddress: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { stellarAddress },
+    });
+    if (!user) throw new NotFoundException('User not found');
+
+    const shipment = await this.prisma.shipment.findUnique({
+      where: { id: shipmentId },
+    });
+    if (!shipment) throw new NotFoundException(`Shipment ${shipmentId} not found`);
+
+    const existing = await this.prisma.shipmentWatcher.findFirst({
+      where: { shipmentId, userId: user.id },
+    });
+
+    if (!existing) {
+      await this.prisma.shipmentWatcher.create({
+        data: { shipmentId, userId: user.id },
+      });
+    }
+
+    return { watched: true, shipmentId, userId: user.id };
+  }
+
+  async unwatchShipment(shipmentId: string, stellarAddress: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { stellarAddress },
+    });
+    if (!user) return { unwatched: true }; // No user, so they aren't watching
+
+    await this.prisma.shipmentWatcher.deleteMany({
+      where: { shipmentId, userId: user.id },
+    });
+
+    return { unwatched: true };
+  }
+
+  async getWatchers(shipmentId: string) {
+    const watchers = await this.prisma.shipmentWatcher.findMany({
+      where: { shipmentId },
+      include: {
+        user: { select: { id: true, stellarAddress: true, name: true, role: true } },
+      },
+    });
+    return watchers.map(w => w.user);
   }
 
   // ----------------------------------------------------------

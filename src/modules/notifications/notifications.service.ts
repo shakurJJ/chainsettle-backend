@@ -92,6 +92,56 @@ export class NotificationsService {
     }
   }
 
+  /**
+   * Fans out an in-app notification to all users watching a shipment.
+   * Watchers do NOT receive email notifications for these events.
+   */
+  async notifyWatchers(
+    shipmentId: string,
+    type: NotificationType,
+    title: string,
+    message: string,
+    data?: Record<string, any>,
+  ) {
+    try {
+      const watchers = await this.prisma.shipmentWatcher.findMany({
+        where: { shipmentId },
+        include: { user: true },
+      });
+
+      if (!watchers || watchers.length === 0) return;
+
+      const notificationsData = watchers.map((w) => ({
+        userId: w.userId,
+        type,
+        title,
+        message,
+        data: data ?? {},
+      }));
+
+      await this.prisma.notification.createMany({
+        data: notificationsData,
+      });
+
+      // Optionally, push to the gateway for live updates
+      const newlyCreated = await this.prisma.notification.findMany({
+        where: {
+          type,
+          title,
+          userId: { in: watchers.map((w) => w.userId) },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: watchers.length,
+      });
+
+      for (const notif of newlyCreated) {
+        this.gateway?.pushToUser(notif.userId, notif);
+      }
+    } catch (error) {
+      this.logger.error(`Failed to notify watchers for shipment ${shipmentId}`, (error as Error).message);
+    }
+  }
+
   async getOrCreatePreferences(userId: string): Promise<PreferenceMap> {
     const record = await this.prisma.notificationPreference.upsert({
       where: { userId },
