@@ -207,6 +207,58 @@ export class MilestonesController {
   }
 
   /**
+   * POST /api/v1/shipments/:shipmentId/milestones/:index/reject
+   * Buyer rejects a submitted proof, reverting to PENDING for resubmission.
+   */
+  @Post(':index/reject')
+  @UseGuards(ShipmentParticipantGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Reject a submitted proof (buyer only)' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['reason'],
+      properties: {
+        reason: { type: 'string', description: 'Reason the proof was rejected' },
+      },
+    },
+  })
+  @ApiResponse({ status: 200, description: 'Proof rejected, milestone reverted to PENDING' })
+  @ApiResponse({ status: 403, description: 'Not the shipment buyer' })
+  @ApiResponse({ status: 404, description: 'Shipment or milestone not found' })
+  @ApiResponse({ status: 409, description: 'Milestone is not in PROOF_SUBMITTED status' })
+  rejectProof(
+    @Param('shipmentId') shipmentId: string,
+    @Param('index', ParseIntPipe) index: number,
+    @Body('reason') reason: string,
+    @CurrentUser() user: any,
+  ) {
+    if (!reason || !reason.trim()) {
+      throw new BadRequestException('A rejection reason is required');
+    }
+
+    const callerAddress: string = user?.stellarAddress ?? user?.sub;
+    return this.milestonesService.rejectProof(shipmentId, index, callerAddress, reason.trim());
+  }
+
+  /**
+   * GET /api/v1/shipments/:shipmentId/milestones/:index/proof-history
+   * Returns the full proof submission history for a milestone, ordered chronologically.
+   */
+  @Get(':index/proof-history')
+  @UseGuards(ShipmentParticipantGuard)
+  @ApiOperation({ summary: 'Get full proof submission history for a milestone' })
+  @ApiResponse({ status: 200, description: 'Proof submissions in chronological order' })
+  @ApiResponse({ status: 403, description: 'Not a shipment participant' })
+  @ApiResponse({ status: 404, description: 'Milestone not found' })
+  getProofHistory(
+    @Param('shipmentId') shipmentId: string,
+    @Param('index', ParseIntPipe) index: number,
+  ) {
+    return this.milestonesService.getProofHistory(shipmentId, index);
+  }
+
+  /**
    * GET /api/v1/shipments/:shipmentId/milestones/:index/evidence/:evidenceId
    * Fetch a single dispute evidence record by ID.
    * Includes the IPFS gateway URL when an ipfsCid is present.

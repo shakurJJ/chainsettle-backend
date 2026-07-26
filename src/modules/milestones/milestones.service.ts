@@ -114,6 +114,15 @@ export class MilestonesService {
     // Persist CID + status transition
     const updated = await this.markProofSubmitted(shipmentId, milestoneIndex, cid);
 
+    // Record proof submission in audit trail (immutable history)
+    await this.prisma.proofSubmission.create({
+      data: {
+        milestoneId: milestone.id,
+        ipfsCid: cid,
+        submittedBy: callerAddress,
+      },
+    });
+
     this.logger.log(
       `Proof submitted for ${shipmentId}[${milestoneIndex}] — CID: ${cid}`,
     );
@@ -536,6 +545,98 @@ export class MilestonesService {
       fileName: evidence.fileName || 'download',
       mimeType: evidence.mimeType || 'application/octet-stream',
     };
+  }
+
+  // ----------------------------------------------------------
+  // PROOF REJECTION — buyer sends proof back for resubmission
+  // ----------------------------------------------------------
+
+  /**
+   * Rejects a submitted proof, reverting the milestone to PENDING.
+   * Only the shipment buyer may call this. Milestone must be PROOF_SUBMITTED.
+   * The proofHash is cleared (the value lives on in ProofSubmission history).
+   * Notifies the supplier with the buyer's reason.
+   */
+  async rejectProof(
+    shipmentId: string,
+    milestoneIndex: number,
+    buyerAddress: string,
+    reason: string,
+  ) {
+    const shipment = await this.prisma.shipment.findUnique({
+      where: { id: shipmentId },
+    });
+
+    if (!shipment) {
+      throw new NotFoundException(`Shipment ${shipmentId} not found`);
+    }
+
+    if (shipment.buyerAddress !== buyerAddress) {
+      throw new ForbiddenException('Only the shipment buyer may reject a proof');
+    }
+
+    const milestone = await this.findOne(shipmentId, milestoneIndex);
+
+    if (milestone.status !== MilestoneStatus.PROOF_SUBMITTED) {
+      throw new ConflictException(
+        `Milestone ${milestoneIndex} must be in PROOF_SUBMITTED status to reject (currently ${milestone.status})`,
+      );
+    }
+
+    const updated = await this.prisma.milestone.update({
+      where: { shipmentId_milestoneIndex: { shipmentId, milestoneIndex } },
+      data: {
+        status: MilestoneStatus.PENDING,
+        proofHash: null,
+      },
+    });
+
+    this.logger.log(
+      `Proof rejected for ${shipmentId}[${milestoneIndex}] by buyer ${buyerAddress}`,
+    );
+
+    // Notify supplier with the rejection reason
+    await this.notifications.notifyUser(
+      shipment.supplierAddress,
+      NotificationType.PROOF_REJECTED,
+      'Proof rejected — resubmission requested',
+      `Your proof for milestone ${milestoneIndex} ("${milestone.name}") on shipment ${shipmentId} was rejected. Reason: ${reason}`,
+      { shipmentId, milestoneIndex, reason },
+    );
+
+    return updated;
+  }
+
+  // ----------------------------------------------------------
+  // PROOF HISTORY — immutable audit trail of all proof submissions
+  // ----------------------------------------------------------
+
+  /**
+   * Returns all ProofSubmission rows for a milestone in chronological order.
+   * Pre-migration milestones with no history rows will return an empty array.
+   * Access is gated by ShipmentParticipantGuard in the controller.
+   */
+  async getProofHistory(shipmentId: string, milestoneIndex: number) {
+    const milestone = await this.prisma.milestone.findUnique({
+      where: { shipmentId_milestoneIndex: { shipmentId, milestoneIndex } },
+    });
+
+    if (!milestone) {
+      throw new NotFoundException(
+        `Milestone ${milestoneIndex} not found on shipment ${shipmentId}`,
+      );
+    }
+
+    const submissions = await this.prisma.proofSubmission.findMany({
+      where: { milestoneId: milestone.id },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return submissions.map((s) => ({
+      ipfsCid: s.ipfsCid,
+      submittedBy: s.submittedBy,
+      createdAt: s.createdAt.toISOString(),
+    }));
   }
 
   // ----------------------------------------------------------
