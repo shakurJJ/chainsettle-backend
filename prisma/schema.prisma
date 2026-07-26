@@ -173,9 +173,25 @@ model Milestone {
   // Relations
   shipment        Shipment          @relation(fields: [shipmentId], references: [id])
   disputeEvidence DisputeEvidence[]
+  proofSubmissions ProofSubmission[]
 
   @@unique([shipmentId, milestoneIndex])
   @@map("milestones")
+}
+
+model ProofSubmission {
+  id          String   @id @default(uuid())
+  milestoneId String
+  ipfsCid     String   // IPFS CID of the uploaded proof
+  submittedBy String   // Stellar address of whoever uploaded
+  createdAt   DateTime @default(now())
+
+  // Relations
+  milestone Milestone @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
+
+  @@index([milestoneId])
+  @@index([submittedBy])
+  @@map("proof_submissions")
 }
 
 model DisputeEvidence {

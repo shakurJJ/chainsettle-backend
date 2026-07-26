@@ -1,5 +1,6 @@
 import { Controller, Post, Get, Delete, Body, Param, UseGuards, HttpCode, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiResponse } from '@nestjs/swagger';
+import { NotificationType } from '@prisma/client';
 import { WebhooksService } from './webhooks.service';
 import { CreateWebhookDto } from './dto/create-webhook.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -22,6 +23,19 @@ export class WebhooksController {
   @ApiOperation({ summary: "List the authenticated user's webhook endpoints" })
   findAll(@CurrentUser('id') userId: string) {
     return this.webhooksService.findForUser(userId);
+  }
+
+  @Get('event-types')
+  @ApiOperation({ summary: 'List subscribable webhook event types' })
+  getEventTypes(): string[] {
+    return Object.values(NotificationType);
+  }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'Get a single webhook endpoint with a recent delivery summary' })
+  @ApiResponse({ status: 404, description: 'Webhook endpoint not found' })
+  findOne(@Param('id') id: string, @CurrentUser('id') userId: string) {
+    return this.webhooksService.findOneWithSummary(userId, id);
   }
 
   @Delete(':id')
