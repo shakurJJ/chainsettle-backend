@@ -142,6 +142,26 @@ export class NotificationsService {
     }
   }
 
+  /**
+   * Sends a test notification to the caller, routed through the normal
+   * notification pipeline so it exercises preferences + email delivery for real.
+   */
+  async sendTestNotification(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+
+    if (!user) {
+      this.logger.warn(`No user found for id ${userId} — skipping test notification`);
+      return;
+    }
+
+    return this.notifyUser(
+      user.stellarAddress,
+      NotificationType.SYSTEM_ALERT,
+      'Test Notification',
+      'This is a test notification to verify your notification pipeline is working correctly.',
+    );
+  }
+
   async getOrCreatePreferences(userId: string): Promise<PreferenceMap> {
     const record = await this.prisma.notificationPreference.upsert({
       where: { userId },
@@ -176,6 +196,10 @@ export class NotificationsService {
     ]);
 
     return { data: notifications, meta: { total, page, limit } };
+  }
+
+  async findOne(userId: string, id: string) {
+    return this.prisma.notification.findFirst({ where: { id, userId } });
   }
 
   async markRead(notificationId: string, userId: string) {
