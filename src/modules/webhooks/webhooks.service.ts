@@ -36,6 +36,37 @@ export class WebhooksService {
     });
   }
 
+  async findOneWithSummary(userId: string, id: string) {
+    const endpoint = await this.prisma.webhookEndpoint.findFirst({
+      where: { id, userId },
+      select: { id: true, url: true, events: true, active: true, createdAt: true },
+    });
+
+    if (!endpoint) throw new NotFoundException('Webhook endpoint not found');
+
+    const recentDeliveries = await this.prisma.webhookDelivery.findMany({
+      where: { endpointId: id },
+      orderBy: { id: 'desc' },
+      take: 20,
+      select: { statusCode: true, deliveredAt: true },
+    });
+
+    const total = recentDeliveries.length;
+    const successCount = recentDeliveries.filter(
+      (d) => d.statusCode !== null && d.statusCode >= 200 && d.statusCode < 300,
+    ).length;
+    const failureCount = total - successCount;
+    const lastDeliveryAt = recentDeliveries.reduce<Date | null>((latest, d) => {
+      if (!d.deliveredAt) return latest;
+      return !latest || d.deliveredAt > latest ? d.deliveredAt : latest;
+    }, null);
+
+    return {
+      ...endpoint,
+      recentDeliveries: { total, successCount, failureCount, lastDeliveryAt },
+    };
+  }
+
   async remove(id: string, userId: string) {
     const ep = await this.prisma.webhookEndpoint.findFirst({ where: { id, userId } });
     if (!ep) throw new NotFoundException('Webhook endpoint not found');
