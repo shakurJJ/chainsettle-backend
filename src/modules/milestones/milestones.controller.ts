@@ -207,6 +207,23 @@ export class MilestonesController {
   }
 
   /**
+   * GET /api/v1/shipments/:shipmentId/milestones/:index/proof-history
+   * Returns the full proof submission history for a milestone, ordered chronologically.
+   */
+  @Get(':index/proof-history')
+  @UseGuards(ShipmentParticipantGuard)
+  @ApiOperation({ summary: 'Get full proof submission history for a milestone' })
+  @ApiResponse({ status: 200, description: 'Proof submissions in chronological order' })
+  @ApiResponse({ status: 403, description: 'Not a shipment participant' })
+  @ApiResponse({ status: 404, description: 'Milestone not found' })
+  getProofHistory(
+    @Param('shipmentId') shipmentId: string,
+    @Param('index', ParseIntPipe) index: number,
+  ) {
+    return this.milestonesService.getProofHistory(shipmentId, index);
+  }
+
+  /**
    * GET /api/v1/shipments/:shipmentId/milestones/:index/evidence/:evidenceId
    * Fetch a single dispute evidence record by ID.
    * Includes the IPFS gateway URL when an ipfsCid is present.
