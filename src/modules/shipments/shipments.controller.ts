@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Patch,
+  Put,
   Delete,
   Body,
   Param,
@@ -29,10 +30,12 @@ import { CreateShipmentDto, UpdateShipmentDto, CancelShipmentDto, CloneShipmentD
 import { CreateTrackingDto } from './dto/tracking.dto';
 import { FindAllShipmentsDto } from './dto/find-all-shipments.dto';
 import { AddTagDto } from './dto/tag.dto';
+import { NoteDto } from './dto/note.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ValidateMetadataDto } from './dto/metadata.dto';
 import { ShipmentParticipantGuard } from './guards/shipment-participant.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
 
 @ApiTags('shipments')
@@ -52,7 +55,7 @@ export class ShipmentsController {
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Register a newly created on-chain shipment' })
   @ApiResponse({ status: 201, description: 'Shipment registered successfully' })
-  create(@Body() dto: CreateShipmentDto, @CurrentUser() user: any) {
+  async create(@Body() dto: CreateShipmentDto, @CurrentUser() user: any) {
     if (user?.role !== UserRole.ADMIN && dto.buyerAddress !== user?.stellarAddress) {
       throw new ForbiddenException('buyerAddress must match the authenticated user');
     }
@@ -183,6 +186,25 @@ export class ShipmentsController {
    * GET /api/v1/shipments/:id/participants
    * Returns all four participant roles with Stellar address and name.
    */
+  @Post(':id/notes')
+  @Roles(UserRole.ADMIN)
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Create an admin note for a shipment' })
+  @ApiResponse({ status: 201, description: 'Note created' })
+  @ApiResponse({ status: 403, description: 'Only admins may create shipment notes' })
+  addNote(@Param('id') id: string, @Body() dto: NoteDto, @CurrentUser() user: any) {
+    return this.shipmentsService.addNote(id, user.id, dto.body);
+  }
+
+  @Get(':id/notes')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: 'List admin notes for a shipment' })
+  @ApiResponse({ status: 200, description: 'Notes returned' })
+  @ApiResponse({ status: 403, description: 'Only admins may list shipment notes' })
+  listNotes(@Param('id') id: string) {
+    return this.shipmentsService.listNotes(id);
+  }
+
   @Get(':id/participants')
   @UseGuards(ShipmentParticipantGuard)
   @ApiOperation({ summary: 'Get structured list of shipment participants with roles' })
