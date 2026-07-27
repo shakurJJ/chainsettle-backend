@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Param, Query, Body, UseGuards, NotFoundException } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Param, Query, Body, UseGuards, NotFoundException } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { NotificationsService } from './notifications.service';
@@ -39,10 +39,16 @@ export class NotificationsController {
     return this.notificationsService.markAllRead(userId);
   }
 
+  @Delete('read')
+  @ApiOperation({ summary: 'Delete all read notifications for the authenticated user' })
+  deleteAllRead(@CurrentUser('id') userId: string) {
+    return this.notificationsService.deleteAllRead(userId);
+  }
+
   @Get('preferences')
   @ApiOperation({ summary: 'Get notification preferences for the authenticated user' })
   getPreferences(@CurrentUser('id') userId: string) {
-    return this.notificationsService.getOrCreatePreferences(userId);
+    return this.notificationsService.getPreferencesResponse(userId);
   }
 
   @Patch('preferences')

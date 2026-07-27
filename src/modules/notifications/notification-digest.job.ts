@@ -13,9 +13,12 @@ export class NotificationDigestJob {
     private readonly notifications: NotificationsService,
   ) {}
 
+  // Runs daily; 'weekly' subscribers are only included when this lands on a
+  // Monday (JS Date#getDay() === 1) — a fixed day chosen for simplicity.
   @Cron('0 8 * * *')
   async sendDailyDigests() {
     this.logger.log('Running daily notification digest job');
+    const isWeeklyDigestDay = new Date().getDay() === 1;
 
     const usersWithUnread = await this.prisma.user.findMany({
       where: {
@@ -29,6 +32,10 @@ export class NotificationDigestJob {
     let sent = 0;
     for (const user of usersWithUnread) {
       try {
+        const digestFrequency = await this.notifications.getDigestFrequency(user.id);
+        if (digestFrequency === 'instant') continue;
+        if (digestFrequency === 'weekly' && !isWeeklyDigestDay) continue;
+
         const prefs = await this.notifications.getOrCreatePreferences(user.id);
 
         const allEmailDisabled = Object.values(NotificationType).every(

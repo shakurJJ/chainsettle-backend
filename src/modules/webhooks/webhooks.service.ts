@@ -7,6 +7,7 @@ import { NotificationType } from '@prisma/client';
 import { CreateWebhookDto } from './dto/create-webhook.dto';
 
 const MAX_ATTEMPTS = 3;
+const MAX_DELIVERY_RESPONSE_BODY_LENGTH = 10 * 1024; // 10KB, guards against pathological receivers
 
 @Injectable()
 export class WebhooksService {
@@ -105,6 +106,23 @@ export class WebhooksService {
       where: { active: true, events: { has: eventType } },
     });
     await Promise.allSettled(endpoints.map((ep) => this.attempt(ep, eventType, payload, 1)));
+  }
+
+  async getDelivery(userId: string, endpointId: string, deliveryId: string) {
+    const endpoint = await this.prisma.webhookEndpoint.findFirst({
+      where: { id: endpointId, userId },
+    });
+    if (!endpoint) throw new NotFoundException('Webhook endpoint not found');
+
+    const delivery = await this.prisma.webhookDelivery.findFirst({
+      where: { id: deliveryId, endpointId },
+    });
+    if (!delivery) throw new NotFoundException('Webhook delivery not found');
+
+    return {
+      ...delivery,
+      responseBody: delivery.responseBody?.slice(0, MAX_DELIVERY_RESPONSE_BODY_LENGTH) ?? delivery.responseBody,
+    };
   }
 
   async retryDelivery(endpointId: string, deliveryId: string, userId: string) {

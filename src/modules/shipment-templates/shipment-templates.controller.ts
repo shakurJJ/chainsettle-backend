@@ -61,6 +61,15 @@ export class ShipmentTemplatesController {
     return this.templatesService.findOne(id);
   }
 
+  @Get(':id/preview')
+  @ApiOperation({ summary: 'Preview shipment creation from a template' })
+  @ApiResponse({ status: 200, description: 'Resolved preview of the template' })
+  @ApiResponse({ status: 403, description: 'Private template — owner only' })
+  @ApiResponse({ status: 404, description: 'Template not found' })
+  preview(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.templatesService.preview(id, user.id);
+  }
+
   @Patch(':id')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Update a template (owner only)' })
