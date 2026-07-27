@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -11,6 +12,7 @@ import {
   ApiBearerAuth,
   ApiQuery,
 } from '@nestjs/swagger';
+import { Response } from 'express';
 import { UserRole } from '@prisma/client';
 import { AuditLogService } from './audit-log.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -70,6 +72,33 @@ export class AuditLogsController {
    * GET /api/v1/admin/audit-logs/resource/:resourceType/:resourceId
    * Get all audit logs for a specific resource (read-only for details).
    */
+  @Get('export')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: 'Export audit logs as CSV (admin only)' })
+  @ApiResponse({ status: 200, description: 'CSV export generated' })
+  @ApiResponse({ status: 403, description: 'Not authorized (admin only)' })
+  @ApiQuery({ name: 'startDate', required: false, type: String, description: 'ISO 8601 start date' })
+  @ApiQuery({ name: 'endDate', required: false, type: String, description: 'ISO 8601 end date' })
+  @ApiQuery({ name: 'userId', required: false, type: String, description: 'Filter by user ID' })
+  @ApiQuery({ name: 'entityType', required: false, type: String, description: 'Filter by entity type' })
+  @ApiQuery({ name: 'entityId', required: false, type: String, description: 'Filter by entity ID' })
+  async exportCsv(
+    @Query('startDate') startDateStr?: string,
+    @Query('endDate') endDateStr?: string,
+    @Query('userId') userId?: string,
+    @Query('entityType') entityType?: string,
+    @Query('entityId') entityId?: string,
+    @Res() res?: Response,
+  ) {
+    const startDate = startDateStr ? new Date(startDateStr) : undefined;
+    const endDate = endDateStr ? new Date(endDateStr) : undefined;
+
+    const csv = await this.auditLogService.exportCsv({ startDate, endDate, userId, entityType, entityId });
+    res?.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res?.setHeader('Content-Disposition', 'attachment; filename="audit-logs.csv"');
+    res?.send(csv);
+  }
+
   @Get('resource/:resourceType/:resourceId')
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: 'Get audit logs for a specific resource (admin only)' })

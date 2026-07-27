@@ -395,6 +395,53 @@ export class ShipmentsService {
     return { results };
   }
 
+  async addNote(shipmentId: string, authorId: string, body: string) {
+    const shipment = await this.prisma.shipment.findUnique({ where: { id: shipmentId } });
+    if (!shipment) {
+      throw new NotFoundException(`Shipment ${shipmentId} not found`);
+    }
+
+    const note = await this.prisma.shipmentNote.create({
+      data: {
+        shipmentId,
+        authorId,
+        body,
+      },
+    });
+
+    await this.auditLog.record({
+      actorId: authorId,
+      actorAddress: '',
+      action: 'shipment.note_added',
+      resourceType: 'Shipment',
+      resourceId: shipmentId,
+      metadata: { noteId: note.id },
+    });
+
+    return note;
+  }
+
+  async listNotes(shipmentId: string) {
+    const shipment = await this.prisma.shipment.findUnique({ where: { id: shipmentId } });
+    if (!shipment) {
+      throw new NotFoundException(`Shipment ${shipmentId} not found`);
+    }
+
+    return this.prisma.shipmentNote.findMany({
+      where: { shipmentId },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        author: {
+          select: {
+            id: true,
+            name: true,
+            stellarAddress: true,
+          },
+        },
+      },
+    });
+  }
+
   async getRoleSummary(stellarAddress: string): Promise<{
     asBuyer: number;
     asSupplier: number;
