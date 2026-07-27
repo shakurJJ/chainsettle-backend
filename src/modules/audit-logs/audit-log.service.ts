@@ -88,10 +88,10 @@ export class AuditLogService {
 
     const where: any = {};
 
-    if (actorAddress) where.actorAddress = actorAddress;
+    if (actorAddress) where.userId = actorAddress;
     if (action) where.action = { contains: action, mode: 'insensitive' };
-    if (resourceType) where.resourceType = resourceType;
-    if (resourceId) where.resourceId = resourceId;
+    if (resourceType) where.entityType = resourceType;
+    if (resourceId) where.entityId = resourceId;
 
     if (startDate || endDate) {
       where.createdAt = {};
@@ -218,7 +218,7 @@ export class AuditLogService {
    */
   async findByActor(actorAddress: string, limit = 100) {
     return this.prisma.auditLog.findMany({
-      where: { actorAddress },
+      where: { userId: actorAddress },
       orderBy: { createdAt: 'desc' },
       take: limit,
     });
