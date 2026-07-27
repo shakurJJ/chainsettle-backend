@@ -29,6 +29,10 @@ export class ApiKeyStrategy extends PassportStrategy(Strategy, 'api-key') {
       throw new UnauthorizedException('Invalid or revoked API key');
     }
 
+    if (apiKey.user?.deactivatedAt) {
+      throw new UnauthorizedException('Account has been deactivated');
+    }
+
     // Fire-and-forget — don't block the request on this update
     this.prisma.apiKey
       .update({

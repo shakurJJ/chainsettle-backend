@@ -84,6 +84,7 @@ model User {
   pendingEmail     String?
   name             String?
   role             UserRole  @default(BUYER)
+  deactivatedAt    DateTime? // set when the user deactivates their account (soft-delete)
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
