@@ -76,6 +76,17 @@ export class MilestonesController {
     return this.milestonesService.findByShipment(shipmentId, status, isOverdueFilter);
   }
 
+  @Get(':index/dispute')
+  @ApiOperation({ summary: 'Get dispute detail for a milestone' })
+  @ApiResponse({ status: 200, description: 'Dispute detail returned' })
+  @ApiResponse({ status: 404, description: 'Milestone not found' })
+  getDisputeDetail(
+    @Param('shipmentId') shipmentId: string,
+    @Param('index', ParseIntPipe) index: number,
+  ) {
+    return this.milestonesService.getDisputeDetail(shipmentId, index);
+  }
+
   @Get(':index')
   @ApiOperation({ summary: 'Get a single milestone by index' })
   findOne(

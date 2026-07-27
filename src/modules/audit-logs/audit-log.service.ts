@@ -1,5 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { buildCsvFromRows } from '../../common/utils/csv.util';
 
 export interface RecordAuditLogDto {
   actorId?: string;
@@ -39,9 +40,13 @@ export class AuditLogService {
       await this.prisma.auditLog.create({
         data: {
           userId: dto.actorId ?? '',
+          actorId: dto.actorId ?? null,
+          actorAddress: dto.actorAddress,
           action: dto.action,
           entityType: dto.resourceType,
           entityId: dto.resourceId,
+          resourceType: dto.resourceType,
+          resourceId: dto.resourceId,
           metadata: dto.metadata ?? {},
           ipAddress: dto.ipAddress,
         } as any,
@@ -125,12 +130,75 @@ export class AuditLogService {
     };
   }
 
+  async exportCsv(filters: {
+    startDate?: Date;
+    endDate?: Date;
+    userId?: string;
+    entityType?: string;
+    entityId?: string;
+  }) {
+    const { startDate, endDate, userId, entityType, entityId } = filters;
+
+    if (startDate && endDate && startDate > endDate) {
+      throw new BadRequestException('startDate must be on or before endDate');
+    }
+
+    const maxRangeDays = 90;
+    if (startDate && endDate) {
+      const diffDays = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+      if (diffDays > maxRangeDays) {
+        throw new BadRequestException(`Date range cannot exceed ${maxRangeDays} days`);
+      }
+    }
+
+    const where: any = {};
+    if (startDate || endDate) {
+      where.createdAt = {};
+      if (startDate) where.createdAt.gte = startDate;
+      if (endDate) where.createdAt.lte = endDate;
+    }
+    if (userId) where.userId = userId;
+    if (entityType) where.entityType = entityType;
+    if (entityId) where.entityId = entityId;
+
+    const rows = await this.prisma.auditLog.findMany({
+      where,
+      orderBy: { createdAt: 'asc' },
+      select: {
+        id: true,
+        userId: true,
+        action: true,
+        entityType: true,
+        entityId: true,
+        metadata: true,
+        ipAddress: true,
+        createdAt: true,
+      },
+    });
+
+    return buildCsvFromRows(
+      rows.map((row: any) => ({
+        id: row.id,
+        userId: row.userId,
+        action: row.action,
+        entityType: row.entityType,
+        entityId: row.entityId,
+        metadata: row.metadata ? JSON.stringify(row.metadata) : '',
+        ipAddress: row.ipAddress ?? '',
+        createdAt: row.createdAt?.toISOString?.() ?? '',
+      })),
+    );
+  }
+
   /**
    * Get audit logs for a specific resource (e.g. all actions on a shipment).
    */
   async findByResource(resourceType: string, resourceId: string) {
     return this.prisma.auditLog.findMany({
-      where: { entityType: resourceType, entityId: resourceId },
+      where: {
+        resourceType,
+        resourceId,
+      },
       include: {
         user: {
           select: {

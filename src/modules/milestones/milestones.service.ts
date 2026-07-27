@@ -277,6 +277,45 @@ export class MilestonesService {
     });
   }
 
+  async getDisputeDetail(shipmentId: string, milestoneIndex: number) {
+    const milestone = await this.prisma.milestone.findUnique({
+      where: { shipmentId_milestoneIndex: { shipmentId, milestoneIndex } },
+    });
+
+    if (!milestone) {
+      throw new NotFoundException(`Milestone ${milestoneIndex} not found on shipment ${shipmentId}`);
+    }
+
+    if (milestone.status !== MilestoneStatus.DISPUTED) {
+      throw new ConflictException(`Milestone ${milestoneIndex} is not currently disputed`);
+    }
+
+    const evidence = await this.prisma.disputeEvidence.findMany({
+      where: { milestoneId: milestone.id },
+      orderBy: { createdAt: 'asc' },
+      include: {
+        user: {
+          select: {
+            stellarAddress: true,
+            name: true,
+          },
+        },
+      },
+    });
+
+    return {
+      shipmentId,
+      milestoneIndex,
+      status: milestone.status,
+      disputeEscalatedAt: milestone.disputeEscalatedAt,
+      resolvedAt: String(milestone.status) === String(MilestoneStatus.RESOLVED) ? milestone.updatedAt : undefined,
+      evidence: evidence.map((item) => ({
+        ...item,
+        ipfsUrl: item.ipfsCid ? this.ipfs.getGatewayUrl(item.ipfsCid) : null,
+      })),
+    };
+  }
+
   /**
    * Submit dispute evidence for a milestone
    * Only buyer or supplier can submit when milestone is DISPUTED

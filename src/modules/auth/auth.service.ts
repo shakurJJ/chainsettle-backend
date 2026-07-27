@@ -2,7 +2,7 @@ import { Injectable, UnauthorizedException, ConflictException, Logger, BadReques
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Keypair } from '@stellar/stellar-sdk';
-import { UserRole } from '@prisma/client';
+import { UserRole, ShipmentStatus } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisService } from '../../common/redis/redis.service';
 import { LoginDto } from './dto/login.dto';
@@ -99,6 +99,10 @@ export class AuthService {
       update: { updatedAt: new Date() },
     });
 
+    if (user.deactivatedAt) {
+      throw new UnauthorizedException('Account has been deactivated');
+    }
+
     // Sign JWT
     const accessToken = this.jwt.sign({
       sub: user.id,
@@ -119,6 +123,7 @@ export class AuthService {
         name: true,
         email: true,
         role: true,
+        deactivatedAt: true,
         createdAt: true,
       },
     });
@@ -127,7 +132,78 @@ export class AuthService {
       throw new UnauthorizedException('User not found');
     }
 
-    return user;
+    if (user.deactivatedAt) {
+      throw new UnauthorizedException('Account has been deactivated');
+    }
+
+    const { deactivatedAt: _deactivatedAt, ...profile } = user;
+    return profile;
+  }
+
+  /**
+   * Soft-deactivate the authenticated user's account.
+   * Preserves the User row and all historical relations (shipments, comments, audit logs).
+   * Rejects with 409 if the user is still party to any ACTIVE shipment.
+   */
+  async deactivateUser(userId: string): Promise<{ message: string; deactivatedAt: Date }> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        stellarAddress: true,
+        deactivatedAt: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (user.deactivatedAt) {
+      throw new ConflictException('Account is already deactivated');
+    }
+
+    const activeShipmentCount = await this.prisma.shipment.count({
+      where: {
+        status: ShipmentStatus.ACTIVE,
+        OR: [
+          { buyerAddress: user.stellarAddress },
+          { supplierAddress: user.stellarAddress },
+          { logisticsAddress: user.stellarAddress },
+          { arbiterAddress: user.stellarAddress },
+        ],
+      },
+    });
+
+    if (activeShipmentCount > 0) {
+      throw new ConflictException(
+        `Cannot deactivate account while you have ${activeShipmentCount} active shipment(s). ` +
+          'Resolve or transfer all ACTIVE shipments where you are buyer, supplier, logistics, or arbiter first.',
+      );
+    }
+
+    const deactivatedAt = new Date();
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { deactivatedAt },
+    });
+
+    await this.auditLog.record({
+      actorId: user.id,
+      actorAddress: user.stellarAddress,
+      action: 'USER_DEACTIVATED',
+      resourceType: 'User',
+      resourceId: user.id,
+      metadata: { deactivatedAt: deactivatedAt.toISOString() },
+    });
+
+    this.logger.log(`User deactivated: ${user.stellarAddress} (${user.id})`);
+
+    return {
+      message: 'Account deactivated successfully',
+      deactivatedAt,
+    };
   }
 
   async getPublicProfile(stellarAddress: string) {
@@ -247,7 +323,6 @@ export class AuthService {
   }
 
   async verifyEmail(token: string) {
-    let payload: { sub: string; email: string };
     let payload: { sub: string; email: string };
     try {
       payload = this.jwt.verify<{ sub: string; email: string }>(token);

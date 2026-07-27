@@ -2,12 +2,15 @@ import {
   Controller,
   Get,
   Patch,
+  Delete,
   Param,
   Body,
   Query,
   UseGuards,
   ForbiddenException,
   BadRequestException,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
@@ -40,6 +43,23 @@ export class UsersController {
   @ApiResponse({ status: 409, description: 'Email already in use' })
   updateProfile(@CurrentUser() user: any, @Body() dto: UpdateProfileDto) {
     return this.authService.updateProfile(user.id, dto);
+  }
+
+  @Delete('me')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Deactivate the authenticated user account',
+    description:
+      'Soft-deactivates the account (sets deactivatedAt). The user row and historical data remain for referential integrity. Rejected if the user has any ACTIVE shipments as buyer, supplier, logistics, or arbiter.',
+  })
+  @ApiResponse({ status: 200, description: 'Account deactivated successfully' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({
+    status: 409,
+    description: 'User has active shipments that must be resolved or transferred first',
+  })
+  deactivateAccount(@CurrentUser() user: any) {
+    return this.authService.deactivateUser(user.id);
   }
 
   /**

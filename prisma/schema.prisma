@@ -85,6 +85,7 @@ model User {
   pendingEmail     String?
   name             String?
   role             UserRole  @default(BUYER)
+  deactivatedAt    DateTime? // set when the user deactivates their account (soft-delete)
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -340,9 +341,13 @@ model TrackingUpdate {
 model AuditLog {
   id             String   @id @default(uuid())
   userId         String
+  actorId        String?
+  actorAddress   String?
   action         String
   entityType     String
   entityId       String?
+  resourceType   String?
+  resourceId     String?
   metadata       Json?
   ipAddress      String?
   createdAt      DateTime @default(now())
