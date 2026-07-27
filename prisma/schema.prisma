@@ -97,6 +97,7 @@ model User {
   auditLogs          AuditLog[]     @relation("AuditLogs")
   disputeEvidence    DisputeEvidence[]
   comments           ShipmentComment[]
+  shipmentNotes      ShipmentNote[]
   trackingUpdates    TrackingUpdate[]
   shipmentTemplates  ShipmentTemplate[] @relation("ShipmentTemplates")
   webhookEndpoints      WebhookEndpoint[]
@@ -147,6 +148,7 @@ model Shipment {
   milestones Milestone[]
   events    ChainEvent[]
   comments  ShipmentComment[]
+  shipmentNotes ShipmentNote[]
   trackingUpdates TrackingUpdate[]
   watchers  ShipmentWatcher[]
 
@@ -297,6 +299,21 @@ model ShipmentComment {
   @@index([shipmentId])
   @@index([authorId])
   @@map("shipment_comments")
+}
+
+model ShipmentNote {
+  id         String   @id @default(uuid())
+  shipmentId String
+  authorId   String
+  body       String   @db.VarChar(2000)
+  createdAt  DateTime @default(now())
+
+  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  author   User     @relation(fields: [authorId], references: [id])
+
+  @@index([shipmentId])
+  @@index([authorId])
+  @@map("shipment_notes")
 }
 
 model TrackingUpdate {

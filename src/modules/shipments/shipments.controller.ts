@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Patch,
+  Put,
   Delete,
   Body,
   Param,
@@ -54,7 +55,7 @@ export class ShipmentsController {
   @ApiResponse({ status: 201, description: 'Shipment registered successfully' })
   create(@Body() dto: CreateShipmentDto, @CurrentUser() user: any) {
     if (user?.role !== UserRole.ADMIN && dto.buyerAddress !== user?.stellarAddress) {
-      throw new ForbiddenException('buyerAddress must match the authenticated user');
+      return Promise.reject(new ForbiddenException('buyerAddress must match the authenticated user'));
     }
 
     return this.shipmentsService.create(dto);

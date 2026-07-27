@@ -38,14 +38,13 @@ export class AuditLogService {
     try {
       await this.prisma.auditLog.create({
         data: {
-          actorId: dto.actorId,
-          actorAddress: dto.actorAddress,
+          userId: dto.actorId ?? '',
           action: dto.action,
-          resourceType: dto.resourceType,
-          resourceId: dto.resourceId,
+          entityType: dto.resourceType,
+          entityId: dto.resourceId,
           metadata: dto.metadata ?? {},
           ipAddress: dto.ipAddress,
-        },
+        } as any,
       });
 
       this.logger.debug(
@@ -84,10 +83,10 @@ export class AuditLogService {
 
     const where: any = {};
 
-    if (actorAddress) where.actorAddress = actorAddress;
+    if (actorAddress) where.userId = actorAddress;
     if (action) where.action = { contains: action, mode: 'insensitive' };
-    if (resourceType) where.resourceType = resourceType;
-    if (resourceId) where.resourceId = resourceId;
+    if (resourceType) where.entityType = resourceType;
+    if (resourceId) where.entityId = resourceId;
 
     if (startDate || endDate) {
       where.createdAt = {};
@@ -99,7 +98,7 @@ export class AuditLogService {
       this.prisma.auditLog.findMany({
         where,
         include: {
-          actor: {
+          user: {
             select: {
               id: true,
               stellarAddress: true,
@@ -131,9 +130,9 @@ export class AuditLogService {
    */
   async findByResource(resourceType: string, resourceId: string) {
     return this.prisma.auditLog.findMany({
-      where: { resourceType, resourceId },
+      where: { entityType: resourceType, entityId: resourceId },
       include: {
-        actor: {
+        user: {
           select: {
             id: true,
             stellarAddress: true,
@@ -151,7 +150,7 @@ export class AuditLogService {
    */
   async findByActor(actorAddress: string, limit = 100) {
     return this.prisma.auditLog.findMany({
-      where: { actorAddress },
+      where: { userId: actorAddress },
       orderBy: { createdAt: 'desc' },
       take: limit,
     });
