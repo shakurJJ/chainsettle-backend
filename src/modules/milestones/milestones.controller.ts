@@ -30,6 +30,7 @@ import {
 import { memoryStorage } from 'multer';
 import { Response } from 'express';
 import { MilestonesService } from './milestones.service';
+import { AppendMilestoneDto } from './dto/append-milestone.dto';
 import { ConfirmMilestoneDto } from './dto/confirm-milestone.dto';
 import { RebalanceMilestonesDto } from './dto/rebalance-milestones.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -74,6 +75,34 @@ export class MilestonesController {
   ) {
     const isOverdueFilter = overdue === 'true';
     return this.milestonesService.findByShipment(shipmentId, status, isOverdueFilter);
+  }
+
+  /**
+   * POST /api/v1/shipments/:shipmentId/milestones
+   *
+   * Append a new milestone to a shipment before any work has started.
+   * Only allowed when ALL existing milestones are still PENDING (no proof
+   * submitted on any milestone yet).
+   *
+   * Restricted to the shipment buyer. This is DB-only bookkeeping; the
+   * frontend must also submit the corresponding on-chain transaction.
+   */
+  @Post()
+  @HttpCode(HttpStatus.CREATED)
+  @UseGuards(ShipmentParticipantGuard)
+  @ApiOperation({ summary: 'Append a milestone before any work starts (buyer only)' })
+  @ApiResponse({ status: 201, description: 'Milestone appended' })
+  @ApiResponse({ status: 400, description: 'Payment percent sum would exceed 100' })
+  @ApiResponse({ status: 403, description: 'Not the shipment buyer' })
+  @ApiResponse({ status: 404, description: 'Shipment not found' })
+  @ApiResponse({ status: 409, description: 'Work has already started (milestone not PENDING)' })
+  appendMilestone(
+    @Param('shipmentId') shipmentId: string,
+    @Body() dto: AppendMilestoneDto,
+    @CurrentUser() user: any,
+  ) {
+    const callerAddress: string = user?.stellarAddress ?? user?.sub;
+    return this.milestonesService.appendMilestone(shipmentId, callerAddress, dto);
   }
 
   @Get(':index/dispute')
