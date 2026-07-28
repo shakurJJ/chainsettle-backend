@@ -10,6 +10,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { IpfsService } from '../../common/ipfs/ipfs.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ShipmentsService } from '../shipments/shipments.service';
+import { AppendMilestoneDto } from './dto/append-milestone.dto';
 import { MilestoneStatus, NotificationType, DisputeRole, ArbiterStatus } from '@prisma/client';
 
 @Injectable()
@@ -676,6 +677,94 @@ export class MilestonesService {
       submittedBy: s.submittedBy,
       createdAt: s.createdAt.toISOString(),
     }));
+  }
+
+  // ----------------------------------------------------------
+  // APPEND MILESTONE — add a milestone before any work starts
+  // ----------------------------------------------------------
+
+  /**
+   * Appends a new milestone to a shipment. Only allowed when ALL existing
+   * milestones are still PENDING (no proof submitted, no work started).
+   * Restricted to the shipment buyer.
+   *
+   * This is DB-only bookkeeping. The response documents that the frontend must
+   * also submit the corresponding on-chain transaction to add the milestone
+   * to the contract, matching the DB-first, chain-confirms-via-poller pattern.
+   */
+  async appendMilestone(
+    shipmentId: string,
+    callerAddress: string,
+    dto: AppendMilestoneDto,
+  ) {
+    const shipment = await this.prisma.shipment.findUnique({
+      where: { id: shipmentId },
+    });
+
+    if (!shipment) {
+      throw new NotFoundException(`Shipment ${shipmentId} not found`);
+    }
+
+    if (shipment.buyerAddress !== callerAddress) {
+      throw new ForbiddenException('Only the shipment buyer may append milestones');
+    }
+
+    const existingMilestones = await this.prisma.milestone.findMany({
+      where: { shipmentId },
+      orderBy: { milestoneIndex: 'asc' },
+    });
+
+    // Reject if any milestone has left PENDING status
+    const nonPendingMilestone = existingMilestones.find(
+      (m) => m.status !== MilestoneStatus.PENDING,
+    );
+    if (nonPendingMilestone) {
+      throw new ConflictException(
+        `Cannot append milestone: milestone ${nonPendingMilestone.milestoneIndex} ("${nonPendingMilestone.name}") ` +
+        `is in status ${nonPendingMilestone.status}, expected PENDING. ` +
+        `Work has already started on this shipment.`,
+      );
+    }
+
+    // Calculate running sum of existing payment percentages
+    const existingSum = existingMilestones.reduce(
+      (sum, m) => sum + m.paymentPercent,
+      0,
+    );
+
+    if (existingSum + dto.paymentPercent > 100) {
+      throw new BadRequestException(
+        `Appending a milestone with ${dto.paymentPercent}% would push the total sum ` +
+        `to ${existingSum + dto.paymentPercent}%, exceeding the maximum of 100%.`,
+      );
+    }
+
+    // Assign the next sequential index
+    const nextIndex =
+      existingMilestones.length > 0
+        ? existingMilestones[existingMilestones.length - 1].milestoneIndex + 1
+        : 0;
+
+    const milestone = await this.prisma.milestone.create({
+      data: {
+        shipmentId,
+        milestoneIndex: nextIndex,
+        name: dto.name,
+        paymentPercent: dto.paymentPercent,
+        ...(dto.dueAt ? { dueAt: new Date(dto.dueAt) } : {}),
+      },
+    });
+
+    this.logger.log(
+      `Milestone appended to ${shipmentId}: index ${nextIndex} ("${dto.name}", ${dto.paymentPercent}%). ` +
+      `Frontend must submit corresponding on-chain transaction.`,
+    );
+
+    return {
+      milestone,
+      note: 'This milestone is registered in the database. The frontend must also submit the corresponding ' +
+        'on-chain transaction to add the milestone to the contract. The on-chain change will be picked up by the event poller.',
+    };
   }
 
   // ----------------------------------------------------------
