@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   Logger,
   InternalServerErrorException,
@@ -10,6 +11,27 @@ import { createHash } from 'crypto';
 import axios from 'axios';
 import * as FormData from 'form-data';
 import { RedisService } from '../redis/redis.service';
+import { PrismaService } from '../prisma/prisma.service';
+
+export interface IpfsUploadLimits {
+  maxSizeBytes: number;
+  allowedMimeTypes: string[];
+}
+
+const APP_CONFIG_KEY = 'ipfs_upload_limits';
+const UPLOAD_LIMITS_CACHE_TTL_MS = 60_000;
+
+const DEFAULT_MAX_SIZE_BYTES = 50 * 1024 * 1024;
+
+const DEFAULT_ALLOWED_MIME_TYPES = [
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+  'video/mp4',
+  'video/quicktime',
+];
 
 /**
  * IpfsService
@@ -21,6 +43,10 @@ import { RedisService } from '../redis/redis.service';
  *   IPFS_GATEWAY_URL               — Public read gateway, e.g. https://gateway.pinata.cloud/ipfs
  *   IPFS_API_KEY                   — Pinata API key (JWT or v2 key)
  *   IPFS_HEALTH_CHECK_INTERVAL_MS  — How often to re-check IPFS connectivity (default 60000ms)
+ *   IPFS_MAX_UPLOAD_SIZE_BYTES     — Default max upload size in bytes, used when no admin
+ *                                    override is configured in AppConfig (default 50MB)
+ *   IPFS_ALLOWED_MIME_TYPES        — Comma-separated default allowed MIME types, used when
+ *                                    no admin override is configured in AppConfig
  */
 @Injectable()
 export class IpfsService implements OnModuleInit {
@@ -30,12 +56,17 @@ export class IpfsService implements OnModuleInit {
   private readonly gateway: string;
   private readonly apiKey: string;
   private readonly healthCheckInterval: number;
+  private readonly defaultUploadLimits: IpfsUploadLimits;
+
+  private cachedUploadLimits: IpfsUploadLimits | null = null;
+  private cachedUploadLimitsAt = 0;
 
   isHealthy = false;
 
   constructor(
     private readonly config: ConfigService,
     private readonly redis: RedisService,
+    private readonly prisma: PrismaService,
   ) {
     this.gateway = this.config.get<string>(
       'IPFS_GATEWAY_URL',
@@ -43,6 +74,14 @@ export class IpfsService implements OnModuleInit {
     );
     this.apiKey = this.config.get<string>('IPFS_API_KEY', '');
     this.healthCheckInterval = this.config.get<number>('IPFS_HEALTH_CHECK_INTERVAL_MS', 60_000);
+
+    const mimeTypesEnv = this.config.get<string>('IPFS_ALLOWED_MIME_TYPES');
+    this.defaultUploadLimits = {
+      maxSizeBytes: this.config.get<number>('IPFS_MAX_UPLOAD_SIZE_BYTES', DEFAULT_MAX_SIZE_BYTES),
+      allowedMimeTypes: mimeTypesEnv
+        ? mimeTypesEnv.split(',').map((t) => t.trim()).filter(Boolean)
+        : DEFAULT_ALLOWED_MIME_TYPES,
+    };
   }
 
   async onModuleInit() {
@@ -88,6 +127,20 @@ export class IpfsService implements OnModuleInit {
     originalName: string,
     mimeType: string,
   ): Promise<string> {
+    const limits = await this.getUploadLimits();
+
+    if (fileBuffer.length > limits.maxSizeBytes) {
+      throw new BadRequestException(
+        `File size ${fileBuffer.length} bytes exceeds the maximum allowed size of ${limits.maxSizeBytes} bytes`,
+      );
+    }
+
+    if (!limits.allowedMimeTypes.includes(mimeType)) {
+      throw new BadRequestException(
+        `Unsupported file type: ${mimeType}. Allowed types: ${limits.allowedMimeTypes.join(', ')}`,
+      );
+    }
+
     const hash = createHash('sha256').update(fileBuffer).digest('hex');
     const dedupKey = `ipfs:dedup:${hash}`;
     const cached = await this.redis.get(dedupKey);
@@ -151,6 +204,76 @@ export class IpfsService implements OnModuleInit {
    */
   getGatewayUrl(cid: string): string {
     return `${this.gateway}/${cid}`;
+  }
+
+  // ----------------------------------------------------------
+  // UPLOAD LIMITS — admin-configurable via AppConfig, with an
+  // in-memory cache to avoid a DB hit on every upload.
+  // ----------------------------------------------------------
+
+  /**
+   * Returns the currently effective upload limits (max size + allowed MIME
+   * types). Reads from AppConfig, cached in memory for
+   * UPLOAD_LIMITS_CACHE_TTL_MS. Falls back to env-var-derived defaults when
+   * no AppConfig row exists (or the DB read fails).
+   */
+  async getUploadLimits(): Promise<IpfsUploadLimits> {
+    const now = Date.now();
+    if (this.cachedUploadLimits && now - this.cachedUploadLimitsAt < UPLOAD_LIMITS_CACHE_TTL_MS) {
+      return this.cachedUploadLimits;
+    }
+
+    let limits = this.defaultUploadLimits;
+    try {
+      const row = await this.prisma.appConfig.findUnique({ where: { key: APP_CONFIG_KEY } });
+      if (row?.value) {
+        const value = row.value as Partial<IpfsUploadLimits>;
+        limits = {
+          maxSizeBytes:
+            typeof value.maxSizeBytes === 'number'
+              ? value.maxSizeBytes
+              : this.defaultUploadLimits.maxSizeBytes,
+          allowedMimeTypes:
+            Array.isArray(value.allowedMimeTypes) && value.allowedMimeTypes.length > 0
+              ? value.allowedMimeTypes
+              : this.defaultUploadLimits.allowedMimeTypes,
+        };
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Failed to load IPFS upload limits from AppConfig, using defaults: ${error.message}`,
+      );
+    }
+
+    this.cachedUploadLimits = limits;
+    this.cachedUploadLimitsAt = now;
+    return limits;
+  }
+
+  /**
+   * Persists an admin override for the upload limits. Unspecified fields
+   * keep their current effective value. Updates the in-memory cache
+   * immediately so the new limits apply to the very next upload.
+   */
+  async updateUploadLimits(update: {
+    maxSizeBytes?: number;
+    allowedMimeTypes?: string[];
+  }): Promise<IpfsUploadLimits> {
+    const current = await this.getUploadLimits();
+    const next: IpfsUploadLimits = {
+      maxSizeBytes: update.maxSizeBytes ?? current.maxSizeBytes,
+      allowedMimeTypes: update.allowedMimeTypes ?? current.allowedMimeTypes,
+    };
+
+    await this.prisma.appConfig.upsert({
+      where: { key: APP_CONFIG_KEY },
+      create: { key: APP_CONFIG_KEY, value: next as any },
+      update: { value: next as any },
+    });
+
+    this.cachedUploadLimits = next;
+    this.cachedUploadLimitsAt = Date.now();
+    return next;
   }
 
   /**

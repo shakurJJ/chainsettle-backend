@@ -1251,6 +1251,101 @@ export class ShipmentsService {
   }
 
   // ----------------------------------------------------------
+  // ADMIN — force resync bypassing participant guard
+  // ----------------------------------------------------------
+
+  /**
+   * Admin-only resync of a shipment from chain, bypassing the participant
+   * ownership check. Reuses the same chain-read logic as the
+   * participant-facing sync endpoint, then writes an audit log entry
+   * since this bypasses the normal ownership guard.
+   */
+  async adminForceSync(shipmentId: string, adminUserId: string, adminAddress: string) {
+    await this.syncStatusFromChain(shipmentId);
+
+    await this.auditLog.record({
+      actorId: adminUserId,
+      actorAddress: adminAddress,
+      action: 'ADMIN_FORCE_SYNC',
+      resourceType: 'Shipment',
+      resourceId: shipmentId,
+      metadata: { adminUserId, shipmentId },
+    });
+
+    this.logger.log(`Shipment ${shipmentId} force-synced by admin ${adminUserId}`);
+    return this.findOne(shipmentId);
+  }
+
+  // ----------------------------------------------------------
+  // ADMIN — find shipments with no recent milestone activity
+  // ----------------------------------------------------------
+
+  /**
+   * Finds ACTIVE shipments where the most recent milestone update (or the
+   * shipment's own updatedAt, when it has no milestones) is older than
+   * `minDays` days. Used by admins to surface shipments that look
+   * abandoned so they can follow up.
+   */
+  async findStuckShipments(minDays: number, page = 1, limit = 20) {
+    const offset = (page - 1) * limit;
+
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        id: string;
+        buyerAddress: string;
+        supplierAddress: string;
+        lastActivityAt: Date;
+      }>
+    >`
+      SELECT
+        s.id,
+        s."buyerAddress"    AS "buyerAddress",
+        s."supplierAddress" AS "supplierAddress",
+        COALESCE(MAX(m."updatedAt"), s."updatedAt") AS "lastActivityAt"
+      FROM shipments s
+      LEFT JOIN milestones m ON m."shipmentId" = s.id
+      WHERE s.status = 'ACTIVE'
+      GROUP BY s.id
+      HAVING COALESCE(MAX(m."updatedAt"), s."updatedAt") < now() - make_interval(days => ${minDays})
+      ORDER BY "lastActivityAt" ASC
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+
+    const countResult = await this.prisma.$queryRaw<Array<{ count: bigint }>>`
+      SELECT COUNT(*)::bigint AS count
+      FROM (
+        SELECT s.id
+        FROM shipments s
+        LEFT JOIN milestones m ON m."shipmentId" = s.id
+        WHERE s.status = 'ACTIVE'
+        GROUP BY s.id
+        HAVING COALESCE(MAX(m."updatedAt"), s."updatedAt") < now() - make_interval(days => ${minDays})
+      ) sub
+    `;
+
+    const total = Number(countResult[0]?.count ?? 0);
+    const now = Date.now();
+
+    const data = rows.map((r) => ({
+      id: r.id,
+      buyerAddress: r.buyerAddress,
+      supplierAddress: r.supplierAddress,
+      lastActivityAt: r.lastActivityAt.toISOString(),
+      daysSinceActivity: Math.floor((now - r.lastActivityAt.getTime()) / 86_400_000),
+    }));
+
+    return {
+      data,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  // ----------------------------------------------------------
   // SYNC FROM CHAIN — called by EventsService after polling
   // ----------------------------------------------------------
 

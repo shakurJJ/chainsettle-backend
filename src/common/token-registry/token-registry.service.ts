@@ -79,4 +79,17 @@ export class TokenRegistryService {
       .map(([address, { symbol, decimals }]) => ({ address, symbol, decimals }))
       .sort((a, b) => a.symbol.localeCompare(b.symbol));
   }
+
+  /**
+   * Returns the registry entry for a single contract address, or undefined
+   * if the address is not registered. Addresses are upper-cased to match
+   * the canonical casing Stellar contract/account addresses use elsewhere
+   * in the app (see StellarService/Keypair, which always produce upper-case
+   * StrKey-encoded addresses).
+   */
+  findByAddress(address: string): { address: string; symbol: string; decimals: number } | undefined {
+    const normalized = address?.toUpperCase();
+    const token = this.registry.get(normalized);
+    return token ? { address: normalized, symbol: token.symbol, decimals: token.decimals } : undefined;
+  }
 }
