@@ -153,6 +153,8 @@ model Shipment {
   trackingUpdates TrackingUpdate[]
   watchers  ShipmentWatcher[]
 
+  isDraft          Boolean         @default(false) // true when created via CSV bulk import; no on-chain backing yet
+
   @@map("shipments")
 }
 
