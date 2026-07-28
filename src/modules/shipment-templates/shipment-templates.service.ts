@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreateShipmentTemplateDto, UpdateShipmentTemplateDto } from './dto/create-shipment-template.dto';
+import { CreateTemplateFromShipmentDto } from './dto/create-template-from-shipment.dto';
 
 @Injectable()
 export class ShipmentTemplatesService {
@@ -67,6 +68,56 @@ export class ShipmentTemplatesService {
         pages: Math.ceil(total / limit),
       },
     };
+  }
+
+  /**
+   * Derives a new template from an existing shipment's structure.
+   * Restricted to the shipment's buyer (ShipmentParticipantGuard only
+   * confirms participancy, so the buyer check happens here).
+   */
+  async createFromShipment(
+    ownerId: string,
+    callerAddress: string,
+    shipmentId: string,
+    dto: CreateTemplateFromShipmentDto,
+  ) {
+    const shipment = await this.prisma.shipment.findUnique({
+      where: { id: shipmentId },
+      include: { milestones: { orderBy: { milestoneIndex: 'asc' } } },
+    });
+
+    if (!shipment) {
+      throw new NotFoundException(`Shipment ${shipmentId} not found`);
+    }
+
+    if (shipment.buyerAddress !== callerAddress) {
+      throw new ForbiddenException('Only the shipment buyer can create a template from it');
+    }
+
+    const msPerDay = 24 * 60 * 60 * 1000;
+    const milestoneTemplates = shipment.milestones.map((m) => ({
+      name: m.name,
+      paymentPercent: m.paymentPercent,
+      ...(m.dueAt
+        ? { dueDays: Math.round((m.dueAt.getTime() - shipment.createdAt.getTime()) / msPerDay) }
+        : {}),
+    }));
+
+    this.validateMilestonePercentages(milestoneTemplates);
+
+    return this.prisma.shipmentTemplate.create({
+      data: {
+        ownerId,
+        name: dto.name,
+        description: dto.description,
+        supplierAddress: shipment.supplierAddress,
+        logisticsAddress: shipment.logisticsAddress,
+        arbiterAddress: shipment.arbiterAddress,
+        tokenAddress: shipment.tokenAddress,
+        milestoneTemplates: milestoneTemplates as any,
+        isPublic: dto.isPublic ?? false,
+      },
+    });
   }
 
   async findOne(id: string) {

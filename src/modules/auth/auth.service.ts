@@ -206,6 +206,113 @@ export class AuthService {
     };
   }
 
+  /**
+   * Admin-only suspension/reversal of a user account. Reuses the
+   * deactivatedAt column introduced for self-service deactivation, but
+   * skips the active-shipment check (admins may need to suspend accounts
+   * mid-shipment for fraud response). Idempotent: setting a user to the
+   * state they're already in is a no-op, not an error.
+   */
+  async adminSetActive(id: string, active: boolean, adminId: string, adminAddress: string) {
+    if (!active && id === adminId) {
+      throw new BadRequestException(
+        'Admins cannot deactivate their own account via this route. Use DELETE /users/me instead.',
+      );
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id },
+      select: { id: true, stellarAddress: true, deactivatedAt: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const isCurrentlyActive = !user.deactivatedAt;
+    if (isCurrentlyActive === active) {
+      return {
+        message: `Account is already ${active ? 'active' : 'deactivated'}`,
+        deactivatedAt: user.deactivatedAt,
+      };
+    }
+
+    const deactivatedAt = active ? null : new Date();
+
+    await this.prisma.user.update({
+      where: { id },
+      data: { deactivatedAt },
+    });
+
+    await this.auditLog.record({
+      actorId: adminId,
+      actorAddress: adminAddress,
+      action: active ? 'ADMIN_USER_REACTIVATED' : 'ADMIN_USER_DEACTIVATED',
+      resourceType: 'User',
+      resourceId: id,
+      metadata: { targetUserId: id, targetStellarAddress: user.stellarAddress },
+    });
+
+    this.logger.log(
+      `User ${user.stellarAddress} (${id}) ${active ? 'reactivated' : 'deactivated'} by admin ${adminId}`,
+    );
+
+    return {
+      message: `Account ${active ? 'reactivated' : 'deactivated'} successfully`,
+      deactivatedAt,
+    };
+  }
+
+  /**
+   * Full admin detail view of a single user: the raw User record plus
+   * operational counts, computed via parallel aggregate queries (no N+1).
+   */
+  async getAdminUserDetail(id: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        stellarAddress: true,
+        email: true,
+        emailVerified: true,
+        pendingEmail: true,
+        name: true,
+        role: true,
+        deactivatedAt: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const [shipmentCount, activeApiKeyCount, webhookCount, unreadNotificationCount] = await Promise.all([
+      this.prisma.shipment.count({
+        where: {
+          OR: [
+            { buyerAddress: user.stellarAddress },
+            { supplierAddress: user.stellarAddress },
+            { logisticsAddress: user.stellarAddress },
+            { arbiterAddress: user.stellarAddress },
+          ],
+        },
+      }),
+      this.prisma.apiKey.count({ where: { userId: id, revokedAt: null } }),
+      this.prisma.webhookEndpoint.count({ where: { userId: id } }),
+      this.prisma.notification.count({ where: { userId: id, read: false } }),
+    ]);
+
+    return {
+      ...user,
+      shipmentCount,
+      activeApiKeyCount,
+      webhookCount,
+      unreadNotificationCount,
+    };
+  }
+
   async getPublicProfile(stellarAddress: string) {
     const user = await this.prisma.user.findUnique({
       where: { stellarAddress },

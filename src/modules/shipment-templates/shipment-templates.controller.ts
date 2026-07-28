@@ -20,8 +20,10 @@ import {
 } from '@nestjs/swagger';
 import { ShipmentTemplatesService } from './shipment-templates.service';
 import { CreateShipmentTemplateDto, UpdateShipmentTemplateDto } from './dto/create-shipment-template.dto';
+import { CreateTemplateFromShipmentDto } from './dto/create-template-from-shipment.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { ShipmentParticipantGuard } from '../shipments/guards/shipment-participant.guard';
 
 @ApiTags('shipment-templates')
 @ApiBearerAuth()
@@ -39,6 +41,21 @@ export class ShipmentTemplatesController {
     @CurrentUser() user: any,
   ) {
     return this.templatesService.create(dto, user.id);
+  }
+
+  @Post('from-shipment/:id')
+  @UseGuards(ShipmentParticipantGuard)
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Create a shipment template from an existing shipment (buyer only)' })
+  @ApiResponse({ status: 201, description: 'Template created from shipment' })
+  @ApiResponse({ status: 403, description: 'Not a shipment participant, or not the buyer' })
+  @ApiResponse({ status: 404, description: 'Shipment not found' })
+  createFromShipment(
+    @Param('id') shipmentId: string,
+    @Body() dto: CreateTemplateFromShipmentDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.templatesService.createFromShipment(user.id, user.stellarAddress, shipmentId, dto);
   }
 
   @Get()

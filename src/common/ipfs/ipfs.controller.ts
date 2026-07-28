@@ -21,6 +21,20 @@ const CID_REGEX = /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[a-z2-7]{58,})$/;
 export class IpfsController {
   constructor(private readonly ipfs: IpfsService) {}
 
+  @Get(':cid/status')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Check IPFS pin status for a CID without downloading its content' })
+  @ApiResponse({ status: 200, description: '{ cid, pinned, sizeBytes? }' })
+  @ApiResponse({ status: 400, description: 'Invalid CID format' })
+  @ApiResponse({ status: 429, description: 'Rate limit exceeded (20 req/min per user)' })
+  async getPinStatus(@Param('cid') cid: string) {
+    if (!CID_REGEX.test(cid)) {
+      throw new BadRequestException(`Invalid CID format: ${cid}`);
+    }
+
+    return this.ipfs.checkPinStatus(cid);
+  }
+
   @Get(':cid')
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @ApiOperation({ summary: 'Proxy-fetch a file from IPFS by CID (JWT-guarded)' })
