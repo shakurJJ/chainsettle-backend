@@ -22,6 +22,7 @@ export class MilestonesService {
     private readonly ipfs: IpfsService,
     private readonly notifications: NotificationsService,
     private readonly shipments: ShipmentsService,
+    private readonly auditLog: AuditLogService,
   ) {}
 
   async findByShipment(shipmentId: string, status?: string, overdueOnly = false) {
@@ -756,15 +757,10 @@ export class MilestonesService {
     });
 
     this.logger.log(
-      `Milestone appended to ${shipmentId}: index ${nextIndex} ("${dto.name}", ${dto.paymentPercent}%). ` +
-      `Frontend must submit corresponding on-chain transaction.`,
+      `Milestone ${milestoneIndex} ("${milestone.name}") removed from ${shipmentId} by buyer ${callerAddress}`,
     );
 
-    return {
-      milestone,
-      note: 'This milestone is registered in the database. The frontend must also submit the corresponding ' +
-        'on-chain transaction to add the milestone to the contract. The on-chain change will be picked up by the event poller.',
-    };
+    return { removed: true, milestone: milestoneData };
   }
 
   // ----------------------------------------------------------

@@ -247,6 +247,32 @@ export class MilestonesController {
   }
 
   /**
+   * DELETE /api/v1/shipments/:shipmentId/milestones/:index
+   * Remove a still-pending milestone from a shipment.
+   * Only allowed when ALL milestones on the shipment (including the target)
+   * are still PENDING. The removed milestone's data is captured in the audit log.
+   * Restricted to the shipment buyer.
+   */
+  @Delete(':index')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(ShipmentParticipantGuard)
+  @ApiOperation({ summary: 'Remove a still-pending milestone (buyer only)' })
+  @ApiResponse({ status: 200, description: 'Milestone removed' })
+  @ApiResponse({ status: 400, description: 'Cannot remove the only milestone' })
+  @ApiResponse({ status: 403, description: 'Not the shipment buyer' })
+  @ApiResponse({ status: 404, description: 'Milestone not found' })
+  @ApiResponse({ status: 409, description: 'Milestone not PENDING or work has started' })
+  removeMilestone(
+    @Param('shipmentId') shipmentId: string,
+    @Param('index', ParseIntPipe) index: number,
+    @CurrentUser() user: any,
+  ) {
+    const callerAddress: string = user?.stellarAddress ?? user?.sub;
+    const callerId: string | undefined = user?.id;
+    return this.milestonesService.removeMilestone(shipmentId, index, callerAddress, callerId);
+  }
+
+  /**
    * GET /api/v1/shipments/:shipmentId/milestones/:index/proof-history
    * Returns the full proof submission history for a milestone, ordered chronologically.
    */
