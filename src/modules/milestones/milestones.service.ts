@@ -10,6 +10,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { IpfsService } from '../../common/ipfs/ipfs.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ShipmentsService } from '../shipments/shipments.service';
+import { AuditLogService } from '../audit-logs/audit-log.service';
 import { MilestoneStatus, NotificationType, DisputeRole, ArbiterStatus } from '@prisma/client';
 
 @Injectable()
@@ -21,6 +22,7 @@ export class MilestonesService {
     private readonly ipfs: IpfsService,
     private readonly notifications: NotificationsService,
     private readonly shipments: ShipmentsService,
+    private readonly auditLog: AuditLogService,
   ) {}
 
   async findByShipment(shipmentId: string, status?: string, overdueOnly = false) {
@@ -676,6 +678,109 @@ export class MilestonesService {
       submittedBy: s.submittedBy,
       createdAt: s.createdAt.toISOString(),
     }));
+  }
+
+  // ----------------------------------------------------------
+  // REMOVE MILESTONE — delete a still-pending milestone
+  // ----------------------------------------------------------
+
+  /**
+   * Removes a pending milestone from a shipment. Only allowed when ALL
+   * milestones on the shipment (including the target) are still PENDING.
+   * Restricted to the shipment buyer.
+   *
+   * The removed milestone's data is preserved in an audit log entry.
+   */
+  async removeMilestone(
+    shipmentId: string,
+    milestoneIndex: number,
+    callerAddress: string,
+    callerId?: string,
+  ) {
+    const shipment = await this.prisma.shipment.findUnique({
+      where: { id: shipmentId },
+    });
+
+    if (!shipment) {
+      throw new NotFoundException(`Shipment ${shipmentId} not found`);
+    }
+
+    if (shipment.buyerAddress !== callerAddress) {
+      throw new ForbiddenException('Only the shipment buyer may remove milestones');
+    }
+
+    const milestone = await this.prisma.milestone.findUnique({
+      where: { shipmentId_milestoneIndex: { shipmentId, milestoneIndex } },
+    });
+
+    if (!milestone) {
+      throw new NotFoundException(
+        `Milestone ${milestoneIndex} not found on shipment ${shipmentId}`,
+      );
+    }
+
+    // Reject if the target milestone has left PENDING
+    if (milestone.status !== MilestoneStatus.PENDING) {
+      throw new ConflictException(
+        `Cannot remove milestone ${milestoneIndex} ("${milestone.name}"): ` +
+        `status is ${milestone.status}, expected PENDING.`,
+      );
+    }
+
+    const allMilestones = await this.prisma.milestone.findMany({
+      where: { shipmentId },
+    });
+
+    // Reject if any OTHER milestone has left PENDING
+    const otherNonPending = allMilestones.find(
+      (m) => m.milestoneIndex !== milestoneIndex && m.status !== MilestoneStatus.PENDING,
+    );
+    if (otherNonPending) {
+      throw new ConflictException(
+        `Cannot remove milestone: milestone ${otherNonPending.milestoneIndex} ("${otherNonPending.name}") ` +
+        `is in status ${otherNonPending.status}, expected PENDING. ` +
+        `Work has already started on this shipment.`,
+      );
+    }
+
+    // Reject if this is the only remaining milestone
+    if (allMilestones.length <= 1) {
+      throw new BadRequestException(
+        'Cannot remove the only milestone on a shipment. A shipment must have at least one milestone.',
+      );
+    }
+
+    // Capture milestone data for audit before deletion
+    const milestoneData = {
+      id: milestone.id,
+      milestoneIndex: milestone.milestoneIndex,
+      name: milestone.name,
+      paymentPercent: milestone.paymentPercent,
+      status: milestone.status,
+      dueAt: milestone.dueAt?.toISOString() ?? null,
+    };
+
+    await this.prisma.milestone.delete({
+      where: { id: milestone.id },
+    });
+
+    await this.auditLog.record({
+      actorId: callerId,
+      actorAddress: callerAddress,
+      action: 'milestone.removed',
+      resourceType: 'Milestone',
+      resourceId: milestone.id,
+      metadata: {
+        shipmentId,
+        removedMilestone: milestoneData,
+      },
+    });
+
+    this.logger.log(
+      `Milestone ${milestoneIndex} ("${milestone.name}") removed from ${shipmentId} by buyer ${callerAddress}`,
+    );
+
+    return { removed: true, milestone: milestoneData };
   }
 
   // ----------------------------------------------------------
