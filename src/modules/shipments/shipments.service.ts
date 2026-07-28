@@ -21,6 +21,7 @@ import { CreateTrackingDto } from './dto/tracking.dto';
 import { ShipmentStatus, NotificationType, ArbiterStatus } from '@prisma/client';
 import { nativeToScVal } from '@stellar/stellar-sdk';
 import { randomUUID } from 'crypto';
+import { parse } from 'csv-parse/sync';
 import Ajv from 'ajv';
 import { metadataSchemas } from './schemas/metadata.schemas';
 
@@ -188,6 +189,7 @@ export class ShipmentsService {
     isAdmin?: boolean;
     includeArchived?: boolean;
     search?: string;
+    isDraft?: boolean;
   }) {
     const {
       buyerAddress,
@@ -206,6 +208,7 @@ export class ShipmentsService {
       isAdmin = false,
       includeArchived = false,
       search,
+      isDraft,
     } = filters;
 
     if (cursor && page && page !== 1) {
@@ -239,6 +242,10 @@ export class ShipmentsService {
 
     if (!includeArchived) {
       where.archivedAt = null;
+    }
+
+    if (isDraft !== undefined) {
+      where.isDraft = isDraft;
     }
 
     // Scope to shipments where the caller is a participant (buyer/supplier/logistics/arbiter)
@@ -1251,6 +1258,101 @@ export class ShipmentsService {
   }
 
   // ----------------------------------------------------------
+  // ADMIN — force resync bypassing participant guard
+  // ----------------------------------------------------------
+
+  /**
+   * Admin-only resync of a shipment from chain, bypassing the participant
+   * ownership check. Reuses the same chain-read logic as the
+   * participant-facing sync endpoint, then writes an audit log entry
+   * since this bypasses the normal ownership guard.
+   */
+  async adminForceSync(shipmentId: string, adminUserId: string, adminAddress: string) {
+    await this.syncStatusFromChain(shipmentId);
+
+    await this.auditLog.record({
+      actorId: adminUserId,
+      actorAddress: adminAddress,
+      action: 'ADMIN_FORCE_SYNC',
+      resourceType: 'Shipment',
+      resourceId: shipmentId,
+      metadata: { adminUserId, shipmentId },
+    });
+
+    this.logger.log(`Shipment ${shipmentId} force-synced by admin ${adminUserId}`);
+    return this.findOne(shipmentId);
+  }
+
+  // ----------------------------------------------------------
+  // ADMIN — find shipments with no recent milestone activity
+  // ----------------------------------------------------------
+
+  /**
+   * Finds ACTIVE shipments where the most recent milestone update (or the
+   * shipment's own updatedAt, when it has no milestones) is older than
+   * `minDays` days. Used by admins to surface shipments that look
+   * abandoned so they can follow up.
+   */
+  async findStuckShipments(minDays: number, page = 1, limit = 20) {
+    const offset = (page - 1) * limit;
+
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        id: string;
+        buyerAddress: string;
+        supplierAddress: string;
+        lastActivityAt: Date;
+      }>
+    >`
+      SELECT
+        s.id,
+        s."buyerAddress"    AS "buyerAddress",
+        s."supplierAddress" AS "supplierAddress",
+        COALESCE(MAX(m."updatedAt"), s."updatedAt") AS "lastActivityAt"
+      FROM shipments s
+      LEFT JOIN milestones m ON m."shipmentId" = s.id
+      WHERE s.status = 'ACTIVE'
+      GROUP BY s.id
+      HAVING COALESCE(MAX(m."updatedAt"), s."updatedAt") < now() - make_interval(days => ${minDays})
+      ORDER BY "lastActivityAt" ASC
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+
+    const countResult = await this.prisma.$queryRaw<Array<{ count: bigint }>>`
+      SELECT COUNT(*)::bigint AS count
+      FROM (
+        SELECT s.id
+        FROM shipments s
+        LEFT JOIN milestones m ON m."shipmentId" = s.id
+        WHERE s.status = 'ACTIVE'
+        GROUP BY s.id
+        HAVING COALESCE(MAX(m."updatedAt"), s."updatedAt") < now() - make_interval(days => ${minDays})
+      ) sub
+    `;
+
+    const total = Number(countResult[0]?.count ?? 0);
+    const now = Date.now();
+
+    const data = rows.map((r) => ({
+      id: r.id,
+      buyerAddress: r.buyerAddress,
+      supplierAddress: r.supplierAddress,
+      lastActivityAt: r.lastActivityAt.toISOString(),
+      daysSinceActivity: Math.floor((now - r.lastActivityAt.getTime()) / 86_400_000),
+    }));
+
+    return {
+      data,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  // ----------------------------------------------------------
   // SYNC FROM CHAIN — called by EventsService after polling
   // ----------------------------------------------------------
 
@@ -1588,6 +1690,154 @@ export class ShipmentsService {
         ),
       },
     };
+  }
+
+  // ----------------------------------------------------------
+  // CSV BULK IMPORT — create draft shipments from CSV
+  // ----------------------------------------------------------
+
+  /**
+   * Parses a CSV buffer and creates draft shipment records.
+   * Each row is processed independently — a malformed row does not affect
+   * valid rows. The caller (buyer) is set as the buyerAddress for all rows.
+   *
+   * CSV columns (case-insensitive header):
+   *   supplierAddress, logisticsAddress, arbiterAddress, tokenAddress,
+   *   totalAmount, description, referenceNumber
+   *
+   * @returns Per-row result array with { row, status, shipmentId?, error? }
+   */
+  async importDrafts(
+    userId: string,
+    buyerAddress: string,
+    csvBuffer: Buffer,
+  ): Promise<{ results: Array<{ row: number; status: 'created' | 'error'; shipmentId?: string; error?: string }> }> {
+    const raw: string = csvBuffer.toString('utf-8').replace(/^\uFEFF/, ''); // strip BOM
+
+    const records: any[] = parse(raw, {
+      columns: true,
+      skip_empty_lines: true,
+      trim: true,
+      relax_column_count: true,
+      relax_quotes: true,
+    });
+
+    if (records.length > 100) {
+      throw new BadRequestException(
+        `CSV file has ${records.length} rows; maximum allowed is 100 rows per import.`,
+      );
+    }
+
+    const results: Array<{ row: number; status: 'created' | 'error'; shipmentId?: string; error?: string }> = [];
+    const tokenRegistry = this.tokenRegistry;
+
+    for (let i = 0; i < records.length; i++) {
+      const rowNum = i + 2; // 1-indexed + header row
+      const r = records[i];
+
+      try {
+        // Normalise header names (case-insensitive)
+        const supplierAddress = (r.supplierAddress ?? r.supplieraddress ?? '').trim();
+        const logisticsAddress = (r.logisticsAddress ?? r.logisticsaddress ?? '').trim();
+        const arbiterAddress = (r.arbiterAddress ?? r.arbiteraddress ?? '').trim();
+        const tokenAddress = (r.tokenAddress ?? r.tokenaddress ?? '').trim();
+        const totalAmount = (r.totalAmount ?? r.totalamount ?? '').trim();
+        const description = (r.description ?? '').trim();
+        const referenceNumber = (r.referenceNumber ?? r.referencenumber ?? '').trim();
+
+        // Validate required fields
+        if (!supplierAddress) throw new Error('supplierAddress is required');
+        if (!logisticsAddress) throw new Error('logisticsAddress is required');
+        if (!arbiterAddress) throw new Error('arbiterAddress is required');
+        if (!tokenAddress) throw new Error('tokenAddress is required');
+        if (!totalAmount) throw new Error('totalAmount is required');
+
+        // Validate totalAmount is a positive integer string
+        const amountMatch = totalAmount.match(/^\d+$/);
+        if (!amountMatch) {
+          throw new Error(`totalAmount must be a positive integer (got "${totalAmount}")`);
+        }
+        const amountBigInt = BigInt(totalAmount);
+        if (amountBigInt <= 0n) {
+          throw new Error(`totalAmount must be greater than 0 (got ${totalAmount})`);
+        }
+
+        // Validate description length
+        if (description && description.length > 1000) {
+          throw new Error('description must be at most 1000 characters');
+        }
+
+        // Check for duplicate referenceNumber
+        if (referenceNumber) {
+          const existing = await this.prisma.shipment.findUnique({
+            where: { referenceNumber },
+          });
+          if (existing) {
+            throw new Error(`referenceNumber "${referenceNumber}" is already in use by shipment ${existing.id}`);
+          }
+        }
+
+        // Resolve token metadata
+        let token: { decimals: number; symbol: string };
+        try {
+          token = tokenRegistry.getToken(tokenAddress);
+        } catch {
+          throw new Error(`Unknown tokenAddress "${tokenAddress}"`);
+        }
+
+        const shipmentId = randomUUID();
+
+        const shipment = await this.prisma.shipment.create({
+          data: {
+            id: shipmentId,
+            buyerAddress,
+            supplierAddress,
+            logisticsAddress,
+            arbiterAddress,
+            tokenAddress,
+            tokenDecimals: token.decimals,
+            tokenSymbol: token.symbol,
+            totalAmount: amountBigInt,
+            description: description || null,
+            referenceNumber: referenceNumber || null,
+            isDraft: true,
+            // Draft shipments have no txHash, createdLedger, milestones, or on-chain backing
+          },
+        });
+
+        results.push({
+          row: rowNum,
+          status: 'created',
+          shipmentId: shipment.id,
+        });
+      } catch (err: any) {
+        results.push({
+          row: rowNum,
+          status: 'error',
+          error: err.message || 'Unknown error',
+        });
+      }
+    }
+
+    await this.auditLog.record({
+      actorId: userId,
+      actorAddress: buyerAddress,
+      action: 'shipment.csv_import',
+      resourceType: 'Shipment',
+      metadata: {
+        totalRows: records.length,
+        created: results.filter((r) => r.status === 'created').length,
+        errors: results.filter((r) => r.status === 'error').length,
+      },
+    });
+
+    this.logger.log(
+      `CSV import completed by buyer ${buyerAddress}: ` +
+        `${results.filter((r) => r.status === 'created').length} created, ` +
+        `${results.filter((r) => r.status === 'error').length} errors`,
+    );
+
+    return { results };
   }
 
   // ----------------------------------------------------------

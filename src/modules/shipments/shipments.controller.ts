@@ -10,6 +10,8 @@ import {
   Query,
   Res,
   UseGuards,
+  UseInterceptors,
+  UploadedFile,
   HttpCode,
   HttpStatus,
   ForbiddenException,
@@ -23,8 +25,12 @@ import {
   ApiResponse,
   ApiQuery,
   ApiBearerAuth,
+  ApiConsumes,
+  ApiBody,
 } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 import { ShipmentsService } from './shipments.service';
 import { CreateShipmentDto, UpdateShipmentDto, CancelShipmentDto, CloneShipmentDto, BulkStatusDto } from './dto/create-shipment.dto';
 import { CreateTrackingDto } from './dto/tracking.dto';
@@ -103,6 +109,7 @@ export class ShipmentsController {
       isAdmin,
       includeArchived: query.includeArchived,
       search: query.search,
+      isDraft: query.isDraft,
     });
   }
 
@@ -154,6 +161,56 @@ export class ShipmentsController {
   bulkStatus(@Body() dto: BulkStatusDto, @CurrentUser() user: any) {
     const isAdmin = user?.role === UserRole.ADMIN;
     return this.shipmentsService.bulkStatus(dto.ids, user.stellarAddress, isAdmin);
+  }
+
+  /**
+   * POST /api/v1/shipments/import
+   * Bulk-import draft shipments from a CSV file.
+   * Accepts multipart/form-data with a "file" field containing the CSV.
+   * Each row creates a single draft shipment (isDraft=true, no on-chain backing).
+   * Maximum 100 rows per request; rows beyond that are rejected with 400.
+   * Malformed rows are reported individually — valid rows still succeed.
+   */
+  @Post('import')
+  @HttpCode(HttpStatus.CREATED)
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB max
+    }),
+  )
+  @ApiOperation({ summary: 'Bulk-import draft shipments from CSV (max 100 rows)' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file'],
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+          description:
+            'CSV file with columns: supplierAddress, logisticsAddress, arbiterAddress, ' +
+            'tokenAddress, totalAmount, description, referenceNumber',
+        },
+      },
+    },
+  })
+  @ApiResponse({ status: 201, description: 'Import results with per-row status' })
+  @ApiResponse({ status: 400, description: 'File too large, no file, or too many rows' })
+  async importCsv(
+    @UploadedFile() file: Express.Multer.File,
+    @CurrentUser() user: any,
+  ) {
+    if (!file) {
+      throw new BadRequestException('A CSV file must be provided in the "file" field');
+    }
+
+    return this.shipmentsService.importDrafts(
+      user?.id,
+      user?.stellarAddress ?? user?.sub,
+      file.buffer,
+    );
   }
 
   /**

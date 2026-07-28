@@ -19,7 +19,8 @@ export class ShipmentParticipantGuard implements CanActivate {
     async canActivate(context: ExecutionContext): Promise<boolean> {
         const req = context.switchToHttp().getRequest();
         const user = req.user as { stellarAddress?: string; role?: UserRole };
-        const shipmentId = context.switchToHttp().getRequest()?.params?.id as string;
+        const params = context.switchToHttp().getRequest()?.params ?? {};
+        const shipmentId = (params.id ?? params.shipmentId) as string;
 
         if (!user?.stellarAddress) {
             throw new ForbiddenException('Missing authenticated user stellarAddress');

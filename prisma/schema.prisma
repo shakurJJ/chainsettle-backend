@@ -153,6 +153,8 @@ model Shipment {
   trackingUpdates TrackingUpdate[]
   watchers  ShipmentWatcher[]
 
+  isDraft          Boolean         @default(false) // true when created via CSV bulk import; no on-chain backing yet
+
   @@map("shipments")
 }
 
@@ -452,6 +454,14 @@ model ApiKey {
   @@index([keyHash])
   @@index([userId])
   @@map("api_keys")
+}
+
+model AppConfig {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+
+  @@map("app_config")
 }
 
 model ShipmentWatcher {

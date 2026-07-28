@@ -10,7 +10,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { IpfsService } from '../../common/ipfs/ipfs.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ShipmentsService } from '../shipments/shipments.service';
-import { AuditLogService } from '../audit-logs/audit-log.service';
+import { AppendMilestoneDto } from './dto/append-milestone.dto';
 import { MilestoneStatus, NotificationType, DisputeRole, ArbiterStatus } from '@prisma/client';
 
 @Injectable()
@@ -681,21 +681,22 @@ export class MilestonesService {
   }
 
   // ----------------------------------------------------------
-  // REMOVE MILESTONE — delete a still-pending milestone
+  // APPEND MILESTONE — add a milestone before any work starts
   // ----------------------------------------------------------
 
   /**
-   * Removes a pending milestone from a shipment. Only allowed when ALL
-   * milestones on the shipment (including the target) are still PENDING.
+   * Appends a new milestone to a shipment. Only allowed when ALL existing
+   * milestones are still PENDING (no proof submitted, no work started).
    * Restricted to the shipment buyer.
    *
-   * The removed milestone's data is preserved in an audit log entry.
+   * This is DB-only bookkeeping. The response documents that the frontend must
+   * also submit the corresponding on-chain transaction to add the milestone
+   * to the contract, matching the DB-first, chain-confirms-via-poller pattern.
    */
-  async removeMilestone(
+  async appendMilestone(
     shipmentId: string,
-    milestoneIndex: number,
     callerAddress: string,
-    callerId?: string,
+    dto: AppendMilestoneDto,
   ) {
     const shipment = await this.prisma.shipment.findUnique({
       where: { id: shipmentId },
@@ -706,73 +707,52 @@ export class MilestonesService {
     }
 
     if (shipment.buyerAddress !== callerAddress) {
-      throw new ForbiddenException('Only the shipment buyer may remove milestones');
+      throw new ForbiddenException('Only the shipment buyer may append milestones');
     }
 
-    const milestone = await this.prisma.milestone.findUnique({
-      where: { shipmentId_milestoneIndex: { shipmentId, milestoneIndex } },
-    });
-
-    if (!milestone) {
-      throw new NotFoundException(
-        `Milestone ${milestoneIndex} not found on shipment ${shipmentId}`,
-      );
-    }
-
-    // Reject if the target milestone has left PENDING
-    if (milestone.status !== MilestoneStatus.PENDING) {
-      throw new ConflictException(
-        `Cannot remove milestone ${milestoneIndex} ("${milestone.name}"): ` +
-        `status is ${milestone.status}, expected PENDING.`,
-      );
-    }
-
-    const allMilestones = await this.prisma.milestone.findMany({
+    const existingMilestones = await this.prisma.milestone.findMany({
       where: { shipmentId },
+      orderBy: { milestoneIndex: 'asc' },
     });
 
-    // Reject if any OTHER milestone has left PENDING
-    const otherNonPending = allMilestones.find(
-      (m) => m.milestoneIndex !== milestoneIndex && m.status !== MilestoneStatus.PENDING,
+    // Reject if any milestone has left PENDING status
+    const nonPendingMilestone = existingMilestones.find(
+      (m) => m.status !== MilestoneStatus.PENDING,
     );
-    if (otherNonPending) {
+    if (nonPendingMilestone) {
       throw new ConflictException(
-        `Cannot remove milestone: milestone ${otherNonPending.milestoneIndex} ("${otherNonPending.name}") ` +
-        `is in status ${otherNonPending.status}, expected PENDING. ` +
+        `Cannot append milestone: milestone ${nonPendingMilestone.milestoneIndex} ("${nonPendingMilestone.name}") ` +
+        `is in status ${nonPendingMilestone.status}, expected PENDING. ` +
         `Work has already started on this shipment.`,
       );
     }
 
-    // Reject if this is the only remaining milestone
-    if (allMilestones.length <= 1) {
+    // Calculate running sum of existing payment percentages
+    const existingSum = existingMilestones.reduce(
+      (sum, m) => sum + m.paymentPercent,
+      0,
+    );
+
+    if (existingSum + dto.paymentPercent > 100) {
       throw new BadRequestException(
-        'Cannot remove the only milestone on a shipment. A shipment must have at least one milestone.',
+        `Appending a milestone with ${dto.paymentPercent}% would push the total sum ` +
+        `to ${existingSum + dto.paymentPercent}%, exceeding the maximum of 100%.`,
       );
     }
 
-    // Capture milestone data for audit before deletion
-    const milestoneData = {
-      id: milestone.id,
-      milestoneIndex: milestone.milestoneIndex,
-      name: milestone.name,
-      paymentPercent: milestone.paymentPercent,
-      status: milestone.status,
-      dueAt: milestone.dueAt?.toISOString() ?? null,
-    };
+    // Assign the next sequential index
+    const nextIndex =
+      existingMilestones.length > 0
+        ? existingMilestones[existingMilestones.length - 1].milestoneIndex + 1
+        : 0;
 
-    await this.prisma.milestone.delete({
-      where: { id: milestone.id },
-    });
-
-    await this.auditLog.record({
-      actorId: callerId,
-      actorAddress: callerAddress,
-      action: 'milestone.removed',
-      resourceType: 'Milestone',
-      resourceId: milestone.id,
-      metadata: {
+    const milestone = await this.prisma.milestone.create({
+      data: {
         shipmentId,
-        removedMilestone: milestoneData,
+        milestoneIndex: nextIndex,
+        name: dto.name,
+        paymentPercent: dto.paymentPercent,
+        ...(dto.dueAt ? { dueAt: new Date(dto.dueAt) } : {}),
       },
     });
 

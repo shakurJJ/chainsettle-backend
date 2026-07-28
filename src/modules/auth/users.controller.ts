@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Post,
   Patch,
   Delete,
   Param,
@@ -95,6 +96,51 @@ export class UsersController {
       limit: limit ? parseInt(limit, 10) : undefined,
       orderBy,
     });
+  }
+
+  /**
+   * POST /api/v1/users/admin/:id/deactivate
+   * Admin-only suspension, bypassing the self-service active-shipment check.
+   */
+  @Post('admin/:id/deactivate')
+  @Roles(UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '[Admin] Deactivate a user account, bypassing the active-shipment check' })
+  @ApiResponse({ status: 200, description: 'Account deactivated (or already deactivated)' })
+  @ApiResponse({ status: 400, description: 'Admins cannot deactivate their own account via this route' })
+  @ApiResponse({ status: 403, description: 'Admin access required' })
+  @ApiResponse({ status: 404, description: 'User not found' })
+  deactivateUserAsAdmin(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.authService.adminSetActive(id, false, user.id, user.stellarAddress);
+  }
+
+  /**
+   * POST /api/v1/users/admin/:id/reactivate
+   */
+  @Post('admin/:id/reactivate')
+  @Roles(UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '[Admin] Reactivate a previously deactivated user account' })
+  @ApiResponse({ status: 200, description: 'Account reactivated (or already active)' })
+  @ApiResponse({ status: 403, description: 'Admin access required' })
+  @ApiResponse({ status: 404, description: 'User not found' })
+  reactivateUserAsAdmin(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.authService.adminSetActive(id, true, user.id, user.stellarAddress);
+  }
+
+  /**
+   * GET /api/v1/users/admin/:id
+   * Registered after admin/users (list) so the literal segment isn't
+   * shadowed by this param route, and before :stellarAddress below.
+   */
+  @Get('admin/:id')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: '[Admin] Get full detail view of a single user' })
+  @ApiResponse({ status: 200, description: 'Full user record plus computed operational counts' })
+  @ApiResponse({ status: 403, description: 'Admin access required' })
+  @ApiResponse({ status: 404, description: 'User not found' })
+  getAdminUserDetail(@Param('id') id: string) {
+    return this.authService.getAdminUserDetail(id);
   }
 
   @Get(':stellarAddress')

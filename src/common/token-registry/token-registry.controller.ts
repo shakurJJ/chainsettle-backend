@@ -1,5 +1,5 @@
-import { Controller, Get, UseGuards } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
+import { Controller, Get, Param, NotFoundException, UseGuards } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
 import { TokenRegistryService } from './token-registry.service';
 import { RedisService } from '../redis/redis.service';
@@ -28,5 +28,19 @@ export class TokenRegistryController {
     const tokens = this.tokenRegistry.listTokens();
     await this.redis.set(CACHE_KEY, JSON.stringify(tokens), CACHE_TTL);
     return tokens;
+  }
+
+  @Get(':address')
+  @ApiOperation({ summary: 'Get a single token registry entry by contract address' })
+  @ApiParam({ name: 'address', description: 'Token contract address' })
+  @ApiResponse({ status: 200, description: 'Token registry entry' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 404, description: 'Address not found in the token registry' })
+  getToken(@Param('address') address: string) {
+    const token = this.tokenRegistry.findByAddress(address);
+    if (!token) {
+      throw new NotFoundException(`Token address ${address} not found in registry`);
+    }
+    return token;
   }
 }
