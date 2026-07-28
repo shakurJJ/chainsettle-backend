@@ -89,4 +89,10 @@ export class FindAllShipmentsDto {
   @IsBoolean()
   @Transform(({ value }) => value === 'true' || value === true)
   includeArchived?: boolean;
+
+  @ApiPropertyOptional({ description: 'Filter by draft status (true = drafts only, false = on-chain only, omit = both)' })
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === 'true' || value === true)
+  isDraft?: boolean;
 }
