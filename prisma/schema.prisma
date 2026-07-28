@@ -46,6 +46,7 @@ enum NotificationType {
   PAYMENT_RELEASED
   MILESTONE_OVERDUE
   COMMENT_ADDED
+  COMMENT_MENTION
   SYSTEM_ALERT
   ARBITER_INVITED
   ARBITER_ACCEPTED
@@ -292,6 +293,7 @@ model ShipmentComment {
   body          String            @db.VarChar(2000)
   visibility    CommentVisibility @default(ALL)
   attachmentCid String?
+  pinnedAt      DateTime?         // set when pinned; null when unpinned (max 3 per shipment)
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
   deletedAt     DateTime?

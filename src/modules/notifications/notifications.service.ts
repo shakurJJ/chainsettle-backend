@@ -97,6 +97,57 @@ export class NotificationsService {
   }
 
   /**
+   * Like notifyUser() but always sends an email regardless of the user's digest
+   * preference. Used for high-signal events such as direct @mentions (#190).
+   */
+  async notifyUserWithForcedEmail(
+    stellarAddress: string,
+    type: NotificationType,
+    title: string,
+    message: string,
+    data?: Record<string, any>,
+  ) {
+    try {
+      const user = await this.prisma.user.findUnique({
+        where: { stellarAddress },
+      });
+
+      if (!user) {
+        this.logger.warn(`No user found for address ${stellarAddress} — skipping mention notification`);
+        return;
+      }
+
+      const prefs = await this.getOrCreatePreferences(user.id);
+      const { inApp } = prefs[type] ?? prefs[NotificationType.COMMENT_ADDED];
+
+      if (!inApp) return;
+
+      const notification = await this.prisma.notification.create({
+        data: { userId: user.id, type, title, message, data: data ?? {} },
+      });
+
+      // Force email delivery regardless of digest preference when the user has an email
+      if (user.email) {
+        await this.sendEmail(user.email, title, message, undefined, type, data);
+        await this.prisma.notification.update({
+          where: { id: notification.id },
+          data: { emailSent: true },
+        });
+      }
+
+      this.gateway?.pushToUser(user.id, notification);
+
+      this.webhooks
+        ?.dispatch(type, { notificationId: notification.id, ...(data ?? {}) })
+        .catch((err) => this.logger.error('Webhook dispatch error', err.message));
+
+      return notification;
+    } catch (error) {
+      this.logger.error(`Failed to send mention notification to ${stellarAddress}`, error.message);
+    }
+  }
+
+  /**
    * Fans out an in-app notification to all users watching a shipment.
    * Watchers do NOT receive email notifications for these events.
    */
