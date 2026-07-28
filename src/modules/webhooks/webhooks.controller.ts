@@ -44,6 +44,17 @@ export class WebhooksController {
     return this.webhooksService.remove(id, userId);
   }
 
+  @Get(':id/deliveries/:deliveryId')
+  @ApiOperation({ summary: 'Get full detail for a single webhook delivery' })
+  @ApiResponse({ status: 404, description: 'Webhook delivery not found' })
+  getDelivery(
+    @Param('id') id: string,
+    @Param('deliveryId') deliveryId: string,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.webhooksService.getDelivery(userId, id, deliveryId);
+  }
+
   @Post(':id/deliveries/:deliveryId/retry')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Manually retry a failed webhook delivery' })

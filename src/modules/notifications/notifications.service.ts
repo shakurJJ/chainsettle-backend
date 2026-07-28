@@ -11,6 +11,10 @@ import { WebhooksService } from '../webhooks/webhooks.service';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 
 type PreferenceMap = Record<NotificationType, { inApp: boolean; email: boolean }>;
+export type DigestFrequency = 'instant' | 'daily' | 'weekly';
+type StoredPreferences = PreferenceMap & { _meta?: { digestFrequency?: DigestFrequency } };
+
+const DEFAULT_DIGEST_FREQUENCY: DigestFrequency = 'daily';
 
 function buildDefaultPreferences(): PreferenceMap {
   return Object.values(NotificationType).reduce((acc, type) => {
@@ -172,13 +176,31 @@ export class NotificationsService {
   }
 
   async updatePreferences(userId: string, dto: UpdatePreferencesDto): Promise<PreferenceMap> {
-    const current = await this.getOrCreatePreferences(userId);
-    const merged = { ...current, ...dto.preferences };
+    const current = (await this.getOrCreatePreferences(userId)) as StoredPreferences;
+    const merged: StoredPreferences = { ...current, ...(dto.preferences ?? {}) };
+    if (dto.digestFrequency) {
+      merged._meta = { ...current._meta, digestFrequency: dto.digestFrequency };
+    }
     const record = await this.prisma.notificationPreference.update({
       where: { userId },
       data: { preferences: merged },
     });
     return record.preferences as PreferenceMap;
+  }
+
+  /**
+   * Resolves the caller's configured digest cadence, defaulting existing
+   * users without a stored value to 'daily' (no migration required).
+   */
+  async getDigestFrequency(userId: string): Promise<DigestFrequency> {
+    const prefs = (await this.getOrCreatePreferences(userId)) as StoredPreferences;
+    return prefs._meta?.digestFrequency ?? DEFAULT_DIGEST_FREQUENCY;
+  }
+
+  async getPreferencesResponse(userId: string) {
+    const prefs = (await this.getOrCreatePreferences(userId)) as StoredPreferences;
+    const { _meta, ...typePreferences } = prefs;
+    return { ...typePreferences, digestFrequency: _meta?.digestFrequency ?? DEFAULT_DIGEST_FREQUENCY };
   }
 
   async findForUser(userId: string, unreadOnly = false, page = 1, limit = 20) {
@@ -214,6 +236,13 @@ export class NotificationsService {
       where: { userId, read: false },
       data: { read: true },
     });
+  }
+
+  async deleteAllRead(userId: string) {
+    const result = await this.prisma.notification.deleteMany({
+      where: { userId, read: true },
+    });
+    return { deletedCount: result.count };
   }
 
   async buildDigest(userId: string): Promise<{ subject: string; html: string } | null> {

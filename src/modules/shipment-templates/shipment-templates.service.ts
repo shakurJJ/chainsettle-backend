@@ -81,6 +81,36 @@ export class ShipmentTemplatesService {
     return template;
   }
 
+  async preview(id: string, userId: string) {
+    const template = await this.findOne(id);
+
+    if (!template.isPublic && template.ownerId !== userId) {
+      throw new ForbiddenException('Only the template owner can preview a private template');
+    }
+
+    const milestoneTemplates = (template.milestoneTemplates as any[]) ?? [];
+    const milestones = milestoneTemplates.map((m) => ({
+      name: m.name,
+      paymentPercent: m.paymentPercent,
+      dueDays: m.dueDays ?? null,
+      dueDescription:
+        m.dueDays != null ? `${m.dueDays} day${m.dueDays === 1 ? '' : 's'} after creation` : 'No due date set',
+    }));
+
+    const percentSum = milestones.reduce((sum, m) => sum + m.paymentPercent, 0);
+
+    const missingFields = (['supplierAddress', 'logisticsAddress', 'arbiterAddress', 'tokenAddress'] as const).filter(
+      (field) => !template[field],
+    );
+
+    return {
+      milestones,
+      percentSum,
+      isValid: percentSum === 100,
+      missingFields,
+    };
+  }
+
   async update(
     id: string,
     ownerId: string,
