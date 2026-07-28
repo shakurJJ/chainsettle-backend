@@ -154,6 +154,46 @@ export class IpfsService implements OnModuleInit {
   }
 
   /**
+   * Checks whether a CID is pinned/available without downloading its content.
+   * Issues a HEAD request against the same gateway used by getFile(), so a
+   * true result here means getFile() would succeed too.
+   *
+   * @param cid - IPFS CID to check
+   * @returns { cid, pinned, sizeBytes? } — sizeBytes omitted if the gateway
+   *          doesn't report a Content-Length header
+   * @throws InternalServerErrorException on unexpected (non-404) failures
+   */
+  async checkPinStatus(cid: string): Promise<{ cid: string; pinned: boolean; sizeBytes?: number }> {
+    if (!this.apiKey) {
+      this.logger.warn(
+        'IPFS_API_KEY not configured — cannot check pin status in development',
+      );
+      return { cid, pinned: false };
+    }
+
+    try {
+      const response = await axios.head(`${this.gateway}/${cid}`, { timeout: 10_000 });
+      const lengthHeader = response.headers['content-length'];
+      const sizeBytes = lengthHeader !== undefined ? Number(lengthHeader) : undefined;
+
+      return {
+        cid,
+        pinned: true,
+        ...(sizeBytes !== undefined && !Number.isNaN(sizeBytes) ? { sizeBytes } : {}),
+      };
+    } catch (error) {
+      const status = error.response?.status;
+      if (status && status >= 400 && status < 500) {
+        return { cid, pinned: false };
+      }
+
+      const detail = error.response?.data?.error?.details ?? error.message;
+      this.logger.error(`Failed to check IPFS pin status for ${cid}`, detail);
+      throw new InternalServerErrorException(`IPFS pin status check failed: ${detail}`);
+    }
+  }
+
+  /**
    * Fetches a file from IPFS by CID and returns its buffer and MIME type.
    *
    * @param cid - IPFS CID of the file
