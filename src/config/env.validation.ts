@@ -44,6 +44,8 @@ export const envValidationSchema = Joi.object({
   IPFS_GATEWAY_URL: Joi.string().uri().default('https://gateway.pinata.cloud/ipfs'),
   IPFS_API_KEY: Joi.string().allow('').default(''),
   IPFS_HEALTH_CHECK_INTERVAL_MS: Joi.number().integer().min(1000).default(60000),
+  IPFS_MAX_UPLOAD_SIZE_BYTES: Joi.number().integer().min(1024).default(50 * 1024 * 1024),
+  IPFS_ALLOWED_MIME_TYPES: Joi.string().allow('').optional(),
 
   // Event Polling
   EVENT_POLLING_INTERVAL_MS: Joi.number().integer().min(1000).default(5000),
