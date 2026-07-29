@@ -9,6 +9,7 @@ import {
   Param,
   Query,
   Res,
+  Headers,
   UseGuards,
   UseInterceptors,
   UploadedFile,
@@ -27,6 +28,7 @@ import {
   ApiBearerAuth,
   ApiConsumes,
   ApiBody,
+  ApiHeader,
 } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -43,27 +45,64 @@ import { ValidateMetadataDto } from './dto/metadata.dto';
 import { ShipmentParticipantGuard } from './guards/shipment-participant.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
+import { RedisService } from '../../common/redis/redis.service';
 
 @ApiTags('shipments')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
 @Controller('shipments')
 export class ShipmentsController {
-  constructor(private readonly shipmentsService: ShipmentsService) { }
+  constructor(
+    private readonly shipmentsService: ShipmentsService,
+    private readonly redis: RedisService,
+  ) { }
 
   /**
    * POST /api/v1/shipments
    * Called by the frontend after the buyer has signed and broadcast
    * the create_shipment transaction via Freighter. The backend stores
    * the off-chain metadata and links it to the on-chain shipment.
+   *
+   * Supports an optional `Idempotency-Key` header (#191).
+   * When provided, a second request with the same key returns the cached
+   * first response without re-executing — scoped per authenticated user.
    */
   @Post()
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Register a newly created on-chain shipment' })
   @ApiResponse({ status: 201, description: 'Shipment registered successfully' })
-  async create(@Body() dto: CreateShipmentDto, @CurrentUser() user: any) {
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    description:
+      'Optional client-generated key (UUID or any opaque string). ' +
+      'A second POST with the same key returns the cached first response ' +
+      'without re-executing. Scoped per user. TTL: 24 hours.',
+    required: false,
+  })
+  async create(
+    @Body() dto: CreateShipmentDto,
+    @CurrentUser() user: any,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
     if (user?.role !== UserRole.ADMIN && dto.buyerAddress !== user?.stellarAddress) {
       return Promise.reject(new ForbiddenException('buyerAddress must match the authenticated user'));
+    }
+
+    // Idempotency-Key handling — opt-in, additive (#191)
+    if (idempotencyKey) {
+      const cacheKey = `idempotency:${user.sub}:${idempotencyKey}`;
+      const cached = await this.redis.getJson<{ statusCode: number; body: any }>(cacheKey);
+      if (cached) {
+        // Return the original cached response body directly
+        return cached.body;
+      }
+
+      const result = await this.shipmentsService.create(dto);
+
+      // Cache the result with a 24-hour TTL
+      await this.redis.setJson(cacheKey, { statusCode: HttpStatus.CREATED, body: result }, 86400);
+
+      return result;
     }
 
     return this.shipmentsService.create(dto);

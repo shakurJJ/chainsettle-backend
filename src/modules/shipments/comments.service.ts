@@ -1,4 +1,6 @@
 import {
+  BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -8,6 +10,15 @@ import { CommentVisibility, NotificationType } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CreateCommentDto } from './dto/create-comment.dto';
+
+/** Maximum number of pinned comments allowed per shipment */
+const MAX_PINNED_COMMENTS = 3;
+
+/**
+ * Stellar address regex — G followed by exactly 55 uppercase alphanumeric chars.
+ * Used to extract @mentions from comment bodies.
+ */
+const STELLAR_ADDRESS_RE = /G[A-Z0-9]{55}/g;
 
 @Injectable()
 export class CommentsService {
@@ -53,7 +64,15 @@ export class CommentsService {
     // Notify all participants who can see this comment
     await this.notifyParticipants(shipment, comment, authorAddress);
 
-    return comment;
+    // Parse @mentions and send COMMENT_MENTION notifications (#190)
+    const mentionedAddresses = await this.handleMentions(
+      dto.body,
+      shipment,
+      comment,
+      authorAddress,
+    );
+
+    return { ...comment, mentionedAddresses };
   }
 
   // ----------------------------------------------------------
@@ -88,11 +107,16 @@ export class CommentsService {
       visibility: { in: visibilityFilter },
     };
 
+    // Pinned comments sort first (by pinnedAt ASC), then the rest chronologically (#189)
     const [comments, total] = await this.prisma.$transaction([
       this.prisma.shipmentComment.findMany({
         where,
         include: { author: { select: { id: true, stellarAddress: true, name: true } } },
-        orderBy: { createdAt: 'asc' },
+        orderBy: [
+          // nulls last: pinned comments (pinnedAt != null) come first
+          { pinnedAt: { sort: 'asc', nulls: 'last' } },
+          { createdAt: 'asc' },
+        ],
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -100,6 +124,53 @@ export class CommentsService {
     ]);
 
     return { data: comments, meta: { total, page, limit, totalPages: Math.ceil(total / limit) } };
+  }
+
+  // ----------------------------------------------------------
+  // PATCH /shipments/:id/comments/:commentId/pin  (#189)
+  // ----------------------------------------------------------
+
+  async setPinned(
+    shipmentId: string,
+    commentId: string,
+    pinned: boolean,
+    requesterId: string,
+    requesterAddress: string,
+  ) {
+    const comment = await this.prisma.shipmentComment.findFirst({
+      where: { id: commentId, shipmentId, deletedAt: null },
+    });
+    if (!comment) throw new NotFoundException(`Comment ${commentId} not found`);
+
+    // A soft-deleted comment cannot be pinned
+    if (pinned && comment.deletedAt !== null) {
+      throw new BadRequestException('Cannot pin a deleted comment');
+    }
+
+    if (pinned) {
+      // Enforce max 3 pinned per shipment
+      const pinnedCount = await this.prisma.shipmentComment.count({
+        where: { shipmentId, pinnedAt: { not: null }, deletedAt: null },
+      });
+
+      if (pinnedCount >= MAX_PINNED_COMMENTS) {
+        throw new ConflictException(
+          `Cannot pin more than ${MAX_PINNED_COMMENTS} comments per shipment. Unpin one first.`,
+        );
+      }
+    }
+
+    const updated = await this.prisma.shipmentComment.update({
+      where: { id: commentId },
+      data: { pinnedAt: pinned ? new Date() : null },
+      include: { author: { select: { id: true, stellarAddress: true, name: true } } },
+    });
+
+    this.logger.log(
+      `Comment ${commentId} ${pinned ? 'pinned' : 'unpinned'} by ${requesterAddress}`,
+    );
+
+    return updated;
   }
 
   // ----------------------------------------------------------
@@ -161,17 +232,6 @@ export class CommentsService {
   }
 
   private async notifyParticipants(shipment: any, comment: any, authorAddress: string) {
-    const visibleTo = this.buildVisibilityFilter('', shipment, true)
-      .filter((v) => {
-        // Determine which addresses can see this visibility level
-        if (comment.visibility === CommentVisibility.ALL) return true;
-        if (comment.visibility === CommentVisibility.BUYER_SUPPLIER) {
-          return v === CommentVisibility.ALL || v === CommentVisibility.BUYER_SUPPLIER;
-        }
-        // INTERNAL
-        return v === CommentVisibility.ALL || v === CommentVisibility.INTERNAL;
-      });
-
     const eligibleAddresses = new Set<string>();
 
     if (
@@ -201,5 +261,56 @@ export class CommentsService {
         { shipmentId: shipment.id, commentId: comment.id },
       );
     }
+  }
+
+  /**
+   * Parses @<StellarAddress> mentions from the comment body (#190).
+   * For each address that is a participant on the shipment, sends a
+   * COMMENT_MENTION notification that always triggers an email regardless
+   * of the user's digest preference.
+   *
+   * Non-participant addresses are silently ignored.
+   * Returns the list of addresses that received mention notifications.
+   */
+  private async handleMentions(
+    body: string,
+    shipment: any,
+    comment: any,
+    authorAddress: string,
+  ): Promise<string[]> {
+    const rawMatches = body.match(STELLAR_ADDRESS_RE) ?? [];
+    if (rawMatches.length === 0) return [];
+
+    // Deduplicate
+    const unique = [...new Set(rawMatches)];
+
+    const participants = new Set<string>([
+      shipment.buyerAddress,
+      shipment.supplierAddress,
+      shipment.logisticsAddress,
+      shipment.arbiterAddress,
+    ]);
+
+    const mentionedAddresses: string[] = [];
+
+    for (const address of unique) {
+      // Silently ignore non-participants
+      if (!participants.has(address)) continue;
+      // Don't send a mention notification to the author (they're writing the comment)
+      if (address === authorAddress) continue;
+
+      mentionedAddresses.push(address);
+
+      // Send COMMENT_MENTION — always email regardless of digest preference
+      await this.notifications.notifyUserWithForcedEmail(
+        address,
+        NotificationType.COMMENT_MENTION,
+        'You were mentioned in a comment',
+        `You were mentioned in a comment on shipment ${shipment.id}.`,
+        { shipmentId: shipment.id, commentId: comment.id, mentionedBy: authorAddress },
+      );
+    }
+
+    return mentionedAddresses;
   }
 }
