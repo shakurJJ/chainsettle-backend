@@ -1,10 +1,8 @@
-import { Injectable, Logger, ConflictException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
-import { StellarService } from '../stellar/stellar.service';
-import { RedisService } from '../redis/redis.service';
-import { RegisterTokenDto } from './dto/register-token.dto';
+
 export interface TokenInfo {
   symbol: string;
   decimals: number;
@@ -22,11 +20,7 @@ export class TokenRegistryService {
   private readonly logger = new Logger(TokenRegistryService.name);
   private readonly registry = new Map<string, TokenInfo>();
 
-  constructor(
-    private readonly config: ConfigService,
-    private readonly stellar: StellarService,
-    private readonly redis: RedisService,
-  ) {
+  constructor(private readonly config: ConfigService) {
     this.initRegistry();
   }
 
@@ -97,41 +91,5 @@ export class TokenRegistryService {
     const normalized = address?.toUpperCase();
     const token = this.registry.get(normalized);
     return token ? { address: normalized, symbol: token.symbol, decimals: token.decimals } : undefined;
-  }
-
-  /**
-   * Registers a new supported payment token. Verifies the contract is
-   * actually deployed on-chain before accepting it, and rejects addresses
-   * that are already registered.
-   *
-   * Note: the registry backing this is in-memory (see BUILT_IN_TOKENS /
-   * TOKEN_REGISTRY_JSON / TOKEN_REGISTRY_PATH above) — there's no Token
-   * table in the schema, so a token registered here won't survive a
-   * restart unless it's also added to TOKEN_REGISTRY_JSON/PATH.
-   */
-  async registerToken(dto: RegisterTokenDto): Promise<{ address: string; symbol: string; decimals: number }> {
-    const normalized = dto.address.toUpperCase();
-
-    if (this.registry.has(normalized)) {
-      throw new ConflictException(`Token address ${normalized} is already registered`);
-    }
-
-    let exists: boolean;
-    try {
-      exists = await this.stellar.contractExists(normalized);
-    } catch (error) {
-      throw new BadRequestException(`Could not verify contract ${normalized} on-chain: ${error.message}`);
-    }
-
-    if (!exists) {
-      throw new BadRequestException(`No contract found at address ${normalized}`);
-    }
-
-    this.registry.set(normalized, { symbol: dto.symbol, decimals: dto.decimals });
-    await this.redis.del('token_registry:list');
-
-    this.logger.log(`Registered new token ${dto.symbol} at ${normalized}`);
-
-    return { address: normalized, symbol: dto.symbol, decimals: dto.decimals };
   }
 }

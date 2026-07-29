@@ -7,13 +7,10 @@ import {
   NotFoundException,
   UseGuards,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth, ApiParam } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { StellarService } from '../../common/stellar/stellar.service';
 import { RedisService } from '../../common/redis/redis.service';
-import { Throttle } from '@nestjs/throttler';
-import { AddressParamDto } from './dto/address-param.dto';
-import { Public } from '../../common/decorators/public.decorator';
 
 @ApiTags('chain')
 @ApiBearerAuth()
@@ -39,24 +36,5 @@ export class ChainController {
 
     await this.redis.set(cacheKey, JSON.stringify(ledger), 86400); // 24h TTL
     return ledger;
-  }
-
-  @Get('account/:address')
-  @Throttle({ default: { limit: 20, ttl: 60_000 } })
-  @ApiOperation({ summary: "Look up a Stellar account's XLM balance and trustlines" })
-  @ApiParam({ name: 'address', description: 'Stellar Ed25519 public key' })
-  async getAccount(@Param() params: AddressParamDto) {
-    const info = await this.stellar.getAccountInfo(params.address);
-    if (!info) {
-      throw new NotFoundException(`Account ${params.address} not found on-chain`);
-    }
-    return info;
-  }
-
-  @Get('status')
-  @Public()
-  @ApiOperation({ summary: 'Current Stellar network / RPC health snapshot' })
-  async getStatus() {
-    return this.stellar.getNetworkStatus();
   }
 }
