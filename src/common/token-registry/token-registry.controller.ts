@@ -3,6 +3,10 @@ import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam } from '@ne
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
 import { TokenRegistryService } from './token-registry.service';
 import { RedisService } from '../redis/redis.service';
+import { Post, Body, ConflictException } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
+import { Roles } from '../decorators/roles.decorator';
+import { RegisterTokenDto } from './dto/register-token.dto';
 
 const CACHE_KEY = 'token_registry:list';
 const CACHE_TTL = 300; // 5 minutes
@@ -42,5 +46,25 @@ export class TokenRegistryController {
       throw new NotFoundException(`Token address ${address} not found in registry`);
     }
     return token;
+  }
+
+
+}
+    @ApiTags('admin')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard)
+@Controller('admin/tokens')
+export class AdminTokenRegistryController {
+  constructor(private readonly tokenRegistry: TokenRegistryService) {}
+
+  @Post()
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: '[Admin] Register a new supported payment token' })
+  @ApiResponse({ status: 201, description: 'Token registered' })
+  @ApiResponse({ status: 400, description: 'Contract not found on-chain, or invalid input' })
+  @ApiResponse({ status: 403, description: 'Admin access required' })
+  @ApiResponse({ status: 409, description: 'Address already registered' })
+  async registerToken(@Body() dto: RegisterTokenDto) {
+    return this.tokenRegistry.registerToken(dto);
   }
 }
