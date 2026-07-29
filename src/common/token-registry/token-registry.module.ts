@@ -1,10 +1,10 @@
 import { Global, Module } from '@nestjs/common';
 import { TokenRegistryService } from './token-registry.service';
-import { TokenRegistryController } from './token-registry.controller';
+import { AdminTokenRegistryController, TokenRegistryController } from './token-registry.controller';
 
 @Global()
 @Module({
-  controllers: [TokenRegistryController],
+  controllers: [TokenRegistryController,  AdminTokenRegistryController],
   providers: [TokenRegistryService],
   exports: [TokenRegistryService],
 })
