@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import {
   Networks,
   SorobanRpc,
+  Horizon,
   Contract,
   TransactionBuilder,
   BASE_FEE,
@@ -31,23 +32,27 @@ export class StellarService implements OnModuleInit {
   private readonly logger = new Logger(StellarService.name);
 
   private rpcClient: SorobanRpc.Server;
+   private horizonClient: Horizon.Server;
   private network: string;
   private networkPassphrase: string;
   private contractId: string;
 
   constructor(private readonly config: ConfigService) {}
 
-  onModuleInit() {
+onModuleInit() {
     const rpcUrl = this.config.get<string>('STELLAR_RPC_URL');
+    const horizonUrl = this.config.get<string>('STELLAR_HORIZON_URL');
     const networkName = this.config.get<string>('STELLAR_NETWORK', 'testnet');
 
     this.rpcClient = new SorobanRpc.Server(rpcUrl, { allowHttp: true });
+    this.horizonClient = new Horizon.Server(horizonUrl, { allowHttp: true });
     this.contractId = this.config.get<string>('CHAINSETTTLE_CONTRACT_ID');
 
     this.networkPassphrase =
       networkName === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET;
 
     this.logger.log(`Stellar connected to ${networkName} (${rpcUrl})`);
+    this.logger.log(`Horizon connected at ${horizonUrl}`);
     this.logger.log(`Contract ID: ${this.contractId}`);
   }
 
@@ -223,6 +228,117 @@ export class StellarService implements OnModuleInit {
     } catch (error) {
       this.logger.error(`getLedger(${sequence}) failed`, error.message);
       return null;
+    }
+  }
+
+  // ----------------------------------------------------------
+  // ACCOUNT LOOKUP (balance + trustlines)
+  // ----------------------------------------------------------
+
+  /**
+   * Fetches an account's XLM balance and trustlines via Horizon.
+   * Returns null if the account doesn't exist on-chain (unfunded address) —
+   * the caller is expected to translate that into a 404.
+   */
+  async getAccountInfo(address: string): Promise<{
+    address: string;
+    xlmBalance: string;
+    trustlines: { asset: string; balance: string; limit: string }[];
+  } | null> {
+    try {
+      const account = await this.horizonClient.loadAccount(address);
+
+      const native = account.balances.find(
+        (b) => b.asset_type === 'native',
+      );
+
+      const trustlines = account.balances
+        .filter((b) => b.asset_type !== 'native')
+        .map((b) => ({
+          asset:
+            'asset_code' in b && 'asset_issuer' in b
+              ? `${b.asset_code}:${b.asset_issuer}`
+              : b.asset_type,
+          balance: b.balance,
+          limit: 'limit' in b ? b.limit : '0',
+        }));
+
+      return {
+        address,
+        xlmBalance: native?.balance ?? '0',
+        trustlines,
+      };
+    } catch (error) {
+      if (error?.response?.status === 404) {
+        return null;
+      }
+      this.logger.error(`getAccountInfo(${address}) failed`, error.message);
+      throw error;
+    }
+  }
+  // ----------------------------------------------------------
+  // NETWORK STATUS SNAPSHOT
+  // ----------------------------------------------------------
+
+  /**
+   * Lightweight current-state snapshot for a status indicator / ops dashboard.
+   * Distinct from /health (DB + Redis focused) — this is purely RPC-facing
+   * and must never throw; a downstream RPC outage degrades to
+   * `rpcHealthy: false` rather than surfacing a 500.
+   */
+  async getNetworkStatus(): Promise<{
+    latestLedger: number | null;
+    networkPassphrase: string;
+    rpcHealthy: boolean;
+    rpcLatencyMs: number;
+  }> {
+    const startedAt = Date.now();
+
+    try {
+      await this.rpcClient.getHealth();
+      const latest = await this.rpcClient.getLatestLedger();
+
+      return {
+        latestLedger: latest.sequence,
+        networkPassphrase: this.networkPassphrase,
+        rpcHealthy: true,
+        rpcLatencyMs: Date.now() - startedAt,
+      };
+    } catch (error) {
+      this.logger.warn(`getNetworkStatus RPC check failed: ${error.message}`);
+      return {
+        latestLedger: null,
+        networkPassphrase: this.networkPassphrase,
+        rpcHealthy: false,
+        rpcLatencyMs: Date.now() - startedAt,
+      };
+    }
+  }
+
+  // ----------------------------------------------------------
+  // CONTRACT EXISTENCE CHECK
+  // ----------------------------------------------------------
+
+  /**
+   * Checks whether a Soroban contract is actually deployed at the given
+   * address, by reading its ledger-key-instance entry via getContractData.
+   * getContractData rejects when the entry isn't found, which is how we
+   * distinguish "no contract here" from a real RPC failure.
+   */
+  async contractExists(contractAddress: string): Promise<boolean> {
+    try {
+      await this.rpcClient.getContractData(
+        contractAddress,
+        xdr.ScVal.scvLedgerKeyContractInstance(),
+        SorobanRpc.Durability.Persistent,
+      );
+      return true;
+    } catch (error) {
+      if (error?.message?.toLowerCase().includes('not found')) {
+        return false;
+      }
+      this.logger.error(`contractExists(${contractAddress}) failed`, error.message);
+      throw error;
     }
   }
 
