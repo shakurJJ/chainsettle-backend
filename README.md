@@ -351,3 +351,7 @@ Errors follow a standardised format from `HttpExceptionFilter`:
 ## License
 
 MIT
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for vulnerability reporting.
