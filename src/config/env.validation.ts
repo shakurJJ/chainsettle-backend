@@ -4,19 +4,30 @@ export const envValidationSchema = Joi.object({
   // Server
   NODE_ENV: Joi.string().valid('development', 'production', 'test').default('development'),
   PORT: Joi.number().integer().min(1).max(65535).default(3000),
-  API_PREFIX: Joi.string().default('api/v1'),
+  // Route prefix without version segment (versioning adds /v1, /v2). Legacy "api/v1" is accepted.
+  API_PREFIX: Joi.string().default('api'),
 
   // JWT
   JWT_SECRET: Joi.string().required(),
   JWT_EXPIRES_IN: Joi.string().default('7d'),
+  /** Short-lived TTL for admin impersonation tokens (default 15m). */
+  IMPERSONATION_JWT_EXPIRES_IN: Joi.string().default('15m'),
 
   // Database
   DATABASE_URL: Joi.string()
     .pattern(/^postgres(ql)?:\/\//)
     .required()
     .messages({ 'string.pattern.base': 'DATABASE_URL must start with postgresql:// or postgres://' }),
+  // Optional read replica. When unset, all queries use DATABASE_URL (primary).
+  DATABASE_REPLICA_URL: Joi.string()
+    .pattern(/^postgres(ql)?:\/\//)
+    .optional()
+    .messages({ 'string.pattern.base': 'DATABASE_REPLICA_URL must start with postgresql:// or postgres://' }),
   DATABASE_CONNECTION_LIMIT: Joi.number().integer().min(1).max(1000).default(10),
   DATABASE_POOL_TIMEOUT: Joi.number().integer().min(1).max(300).default(10),
+
+  // Cold-storage archival of completed/cancelled shipments (days; default 90)
+  SHIPMENT_ARCHIVAL_DAYS: Joi.number().integer().min(1).max(3650).default(90),
 
   // Stellar
   STELLAR_NETWORK: Joi.string().valid('testnet', 'mainnet', 'futurenet').default('testnet'),

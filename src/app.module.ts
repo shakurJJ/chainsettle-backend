@@ -1,11 +1,12 @@
 import { Module, MiddlewareConsumer } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TerminusModule } from '@nestjs/terminus';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { envValidationSchema } from './config/env.validation';
 import { RolesGuard } from './common/guards/roles.guard';
+import { RateLimitThrottlerGuard } from './common/guards/rate-limit-throttler.guard';
 
 import { PrismaModule } from './common/prisma/prisma.module';
 import { StellarModule } from './common/stellar/stellar.module';
@@ -88,17 +89,27 @@ import { ArbitersModule } from './modules/arbiters/arbiters.module';
     ArbitersModule,
   ],
   providers: [
-    // Apply global throttler guard (can be overridden per route)
+    // Apply global throttler guard (sets X-RateLimit-* on success and 429)
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: RateLimitThrottlerGuard,
     },
     // Apply global roles guard — enforces @Roles() decorator across all routes
     {
       provide: APP_GUARD,
       useClass: RolesGuard,
     },
-    // Apply global audit logging interceptor (logs all mutations)
+    // Block sensitive routes when using an impersonation token
+    {
+      provide: APP_GUARD,
+      useClass: ImpersonationGuard,
+    },
+    // Emit Deprecation / Sunset headers for @DeprecatedRoute handlers
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: DeprecationInterceptor,
+    },
+    // Apply global audit logging interceptor (logs all mutations + impersonated requests)
     {
       provide: APP_INTERCEPTOR,
       useClass: AuditLogInterceptor,

@@ -41,10 +41,31 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('Account has been deactivated');
     }
 
+    const isImpersonation = payload.isImpersonation === true;
+
+    // If this is an impersonation token, ensure the admin still exists and is active
+    if (isImpersonation) {
+      if (!payload.impersonatorAdminId) {
+        throw new UnauthorizedException('Invalid impersonation token');
+      }
+
+      const admin = await this.prisma.user.findUnique({
+        where: { id: payload.impersonatorAdminId },
+        select: { id: true, stellarAddress: true, role: true, deactivatedAt: true },
+      });
+
+      if (!admin || admin.deactivatedAt || admin.role !== 'ADMIN') {
+        throw new UnauthorizedException('Impersonation token is no longer valid');
+      }
+    }
+
     return {
       id: user.id,
       stellarAddress: user.stellarAddress,
       role: user.role,
+      isImpersonation,
+      impersonatorAdminId: isImpersonation ? payload.impersonatorAdminId : undefined,
+      impersonatorAddress: isImpersonation ? payload.impersonatorAddress : undefined,
     };
   }
 }

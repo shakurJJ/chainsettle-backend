@@ -1,0 +1,9 @@
+{
+  "name": "@chainsettle/sdk",
+  "version": "0.1.0",
+  "description": "Typed TypeScript client for the ChainSettle API (generated from OpenAPI)",
+  "main": "index.ts",
+  "types": "index.ts",
+  "license": "MIT",
+  "private": true
+}

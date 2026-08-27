@@ -1,0 +1,172 @@
+name: Deploy blue-green
+
+# Zero-downtime deploy with Redis-coordinated event-poller leadership.
+# Configure repository secrets listed in docs/deployment.md before enabling.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      image_tag:
+        description: Container / release tag to deploy (defaults to short SHA)
+        required: false
+        type: string
+
+concurrency:
+  group: deploy-${{ github.event.inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Blue-green deploy (${{ github.event.inputs.environment }})
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install & build
+        run: |
+          npm ci
+          npx prisma generate
+          npm run build
+
+      - name: Resolve release tag
+        id: meta
+        run: |
+          TAG="${{ github.event.inputs.image_tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="sha-$(git rev-parse --short HEAD)"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Deploying tag=$TAG"
+
+      - name: Deploy green slot over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.DEPLOY_PATH }}"
+
+            # Expect a compose/process layout with blue + green services, e.g.:
+            #   app-blue / app-green  +  shared redis/postgres
+            # ACTIVE_SLOT file tracks which colour currently receives traffic.
+            ACTIVE=$(cat ACTIVE_SLOT 2>/dev/null || echo blue)
+            if [ "$ACTIVE" = "blue" ]; then
+              TARGET=green
+              PREVIOUS=blue
+            else
+              TARGET=blue
+              PREVIOUS=green
+            fi
+            echo "Active=$ACTIVE → bringing up $TARGET"
+
+            export RELEASE_TAG="${{ steps.meta.outputs.tag }}"
+            # Pull/build and start the inactive colour without touching the live one
+            docker compose pull "app-${TARGET}" || true
+            docker compose up -d --no-deps --build "app-${TARGET}"
+
+            echo "TARGET=${TARGET}" > /tmp/chainsettle-deploy.env
+            echo "PREVIOUS=${PREVIOUS}" >> /tmp/chainsettle-deploy.env
+
+      - name: Health-check green slot
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            # shellcheck disable=SC1091
+            source /tmp/chainsettle-deploy.env
+            # Per-slot URL secret, e.g. http://127.0.0.1:3001/api/v1/health/ready
+            HEALTH_URL="${{ secrets.PREVIEW_SLOT_URL }}"
+            if [ -z "$HEALTH_URL" ]; then
+              HEALTH_URL="${{ secrets.HEALTHCHECK_URL }}"
+            fi
+
+            echo "Waiting for $TARGET to become ready at $HEALTH_URL"
+            for i in $(seq 1 60); do
+              CODE=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" || true)
+              if [ "$CODE" = "200" ]; then
+                echo "Health check passed on attempt $i"
+                exit 0
+              fi
+              echo "Attempt $i: HTTP $CODE — retrying in 5s"
+              sleep 5
+            done
+            echo "Green slot failed health checks — aborting cutover (blue stays live)"
+            exit 1
+
+      - name: Cut traffic to green
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            # shellcheck disable=SC1091
+            source /tmp/chainsettle-deploy.env
+            cd "${{ secrets.DEPLOY_PATH }}"
+
+            # Swap upstream (nginx/caddy/haproxy). Provide a local script that
+            # flips the LB to the target colour with zero request downtime.
+            if [ -x ./scripts/cutover.sh ]; then
+              ./scripts/cutover.sh "$TARGET"
+            else
+              # Fallback: rewrite ACTIVE_SLOT marker for operators / compose labels
+              echo "$TARGET" > ACTIVE_SLOT
+              echo "Wrote ACTIVE_SLOT=$TARGET (provide scripts/cutover.sh for LB flip)"
+            fi
+
+      - name: Drain previous (blue) slot
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            # shellcheck disable=SC1091
+            source /tmp/chainsettle-deploy.env
+            cd "${{ secrets.DEPLOY_PATH }}"
+
+            # Graceful stop releases the Redis event-poller lock so green
+            # (or the remaining instance) becomes the sole leader.
+            sleep 5
+            docker compose stop "app-${PREVIOUS}" || true
+
+            echo "Cutover complete: live=$TARGET stopped=$PREVIOUS"
+
+      - name: Verify public health after cutover
+        run: |
+          set -euo pipefail
+          URL="${{ secrets.HEALTHCHECK_URL }}"
+          for i in $(seq 1 20); do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" "$URL" || true)
+            if [ "$CODE" = "200" ]; then
+              echo "Public health OK"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "Public health check failed after cutover"
+          exit 1

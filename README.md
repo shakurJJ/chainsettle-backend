@@ -70,7 +70,11 @@ The backend is the **bridge between the Stellar blockchain and the frontend**. I
 
 ## API Endpoints
 
-All endpoints are prefixed with `/api/v1`. Protected routes require `Authorization: Bearer <JWT>`.
+All endpoints are prefixed with `/api/v1` (URI versioning; see [API Versioning](#api-versioning) below). Protected routes require `Authorization: Bearer <JWT>`.
+
+> Database schema reference (ERD + tables): [docs/database.md](./docs/database.md)
+>
+> Typed TypeScript SDK: [sdk/](./sdk/) — regenerate with `npm run generate:sdk`
 
 ### Auth
 | Method | Path | Description |
@@ -82,8 +86,10 @@ All endpoints are prefixed with `/api/v1`. Protected routes require `Authorizati
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `POST` | `/shipments` | ✓ | Register on-chain shipment in DB |
-| `GET` | `/shipments` | ✓ | List shipments (filter by buyer, supplier, status) |
-| `GET` | `/shipments/:id` | ✓ | Full shipment detail + milestones + events |
+| `GET` | `/shipments` | ✓ | List shipments (filters: buyer, supplier, status, `favorite=true`) |
+| `GET` | `/shipments/:id` | ✓ | Full shipment detail + milestones + events (`isFavorited`) |
+| `POST` | `/shipments/:id/favorite` | ✓ | Favorite (star) a shipment (participant only; private) |
+| `DELETE` | `/shipments/:id/favorite` | ✓ | Remove shipment from caller's favorites |
 | `POST` | `/shipments/:id/sync` | ✓ | Force sync shipment from Stellar chain |
 
 ### Milestones
@@ -237,6 +243,69 @@ Swagger docs at: `http://localhost:3000/docs`
 
 ---
 
+## API Versioning
+
+The API uses NestJS **URI versioning**. The global prefix is `api`; the version segment is `v1`, `v2`, etc.
+
+| Version | Base path | Status |
+|---------|-----------|--------|
+| v1 | `/api/v1/*` | Current (default) |
+| v2 | `/api/v2/*` | Introduce when you need a breaking change |
+
+### Adding a `/api/v2` controller without touching v1
+
+Create a parallel controller (new file) and set the version explicitly:
+
+```ts
+import { Controller, Get, Version } from '@nestjs/common';
+
+// Option A — version on the controller
+@Controller({ path: 'shipments', version: '2' })
+export class ShipmentsV2Controller {
+  @Get()
+  listV2() { /* new response shape */ }
+}
+
+// Option B — version on a single handler inside a shared controller
+@Controller('shipments')
+export class ShipmentsController {
+  @Get()
+  @Version('1')
+  listV1() { /* existing */ }
+
+  @Get()
+  @Version('2')
+  listV2() { /* breaking change */ }
+}
+```
+
+Register the new controller in the same module. Existing `@Controller('shipments')` handlers keep serving **v1** via `defaultVersion: '1'` in `main.ts`.
+
+### Deprecation policy
+
+When a v1 route is scheduled for removal:
+
+1. Annotate it with `@DeprecatedRoute({ sunset: 'Wed, 01 Jul 2027 00:00:00 GMT', link: 'https://docs.example.com/migration' })`.
+2. Clients receive `Deprecation` and `Sunset` response headers (and optional `Link`).
+3. Keep the route until the Sunset date; then remove it once consumers have moved to v2.
+
+`Deprecation` / `Sunset` / `Link` are exposed in CORS `exposedHeaders` so browsers can read them.
+
+---
+
+## TypeScript SDK
+
+A typed client is generated from the Swagger/OpenAPI document into [`sdk/`](./sdk/):
+
+```bash
+npm run generate:sdk   # refresh openapi.json + schema.ts
+npm run check:sdk      # CI: fail if sdk/ is stale
+```
+
+See [sdk/README.md](./sdk/README.md).
+
+---
+
 ## Running Tests
 
 ```bash
@@ -272,6 +341,37 @@ ChainSettle uses a **Sign-In With Stellar** pattern — no passwords:
 ```
 
 The backend verifies the signature against the public key, then issues a JWT. Wire up the `Keypair.verify()` call in `auth.service.ts` before production.
+
+---
+
+## Rate Limiting
+
+All API routes are rate-limited via Redis-backed `@nestjs/throttler`. Defaults are controlled by `THROTTLE_TTL` (window seconds, default `60`) and `THROTTLE_LIMIT` (max requests per key, default `100`). Auth and upload routes use tighter per-route limits; some auth routes key by Stellar address instead of IP.
+
+Every throttled response includes:
+
+| Header | Meaning |
+|--------|---------|
+| `X-RateLimit-Limit` | Max requests allowed in the current window |
+| `X-RateLimit-Remaining` | Requests left in the window (`0` when limited) |
+| `X-RateLimit-Reset` | Seconds until the window resets |
+| `Retry-After` | Present on `429` responses — same value as `X-RateLimit-Reset` |
+
+These headers are CORS-exposed so browser clients can read them. Use `./test-rate-limit.sh` against a running local API to verify success and `429` header behavior.
+
+---
+
+## Local mock Stellar chain (frontend dev)
+
+To iterate on the API/UI without a live testnet RPC:
+
+```bash
+npm run dev:mock-chain
+# set STELLAR_RPC_URL=http://127.0.0.1:8787 and STELLAR_HORIZON_URL=http://127.0.0.1:8788
+npm run start:dev
+```
+
+See [`test/mocks/README.md`](test/mocks/README.md) for tradeoffs. **Dev-only** — not for integration testing of real chain behavior.
 
 ---
 
@@ -324,10 +424,12 @@ Errors follow a standardised format from `HttpExceptionFilter`:
 - [ ] Persist `lastProcessedLedger` in DB (not memory) for crash recovery
 - [ ] Enable HTTPS (reverse proxy — nginx or Caddy)
 - [ ] Set up Prisma connection pooling (PgBouncer)
+- [ ] Optionally set `DATABASE_REPLICA_URL` for read-heavy GET offload (see `docs/deployment.md`)
 - [ ] Wire up real Stellar `Keypair.verify()` in `auth.service.ts`
 - [ ] Set `CORS_ORIGIN` to your production frontend URL
 - [ ] Add rate limiting tuning for production traffic
-- [ ] Deploy via Docker (Dockerfile not included — straightforward to add)
+- [ ] Deploy via blue/green workflow (`.github/workflows/deploy-blue-green.yml` — see `docs/deployment.md`)
+- [ ] Run `npm run loadtest` against staging before scale-up (see `docs/load-testing.md`)
 
 ---
 
@@ -337,9 +439,13 @@ Errors follow a standardised format from `HttpExceptionFilter`:
 |----------|----------|-------------|
 | `NODE_ENV` | Yes | `development` or `production` |
 | `PORT` | No | API port (default: 3000) |
+| `API_PREFIX` | No | Route prefix without version (default: `api`) |
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
+| `DATABASE_REPLICA_URL` | No | Optional read-replica URL for GET-heavy paths |
+| `SHIPMENT_ARCHIVAL_DAYS` | No | Days before terminal shipments move to cold storage (default: 90) |
 | `JWT_SECRET` | Yes | Secret for signing JWTs |
 | `JWT_EXPIRES_IN` | No | Token expiry (default: `7d`) |
+| `IMPERSONATION_JWT_EXPIRES_IN` | No | Admin impersonation token TTL (default: `15m`) |
 | `STELLAR_NETWORK` | Yes | `testnet` or `mainnet` |
 | `STELLAR_RPC_URL` | Yes | Soroban RPC endpoint |
 | `CHAINSETTTLE_CONTRACT_ID` | Yes | Deployed contract address |
