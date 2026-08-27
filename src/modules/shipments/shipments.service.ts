@@ -16,6 +16,8 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { RedisService } from '../../common/redis/redis.service';
 import { MetricsService } from '../../common/metrics/metrics.service';
 import { AuditLogService } from '../audit-logs/audit-log.service';
+import { KycService } from '../kyc/kyc.service';
+import { FxRateService } from '../../common/fx/fx-rate.service';
 import { CreateShipmentDto, CloneShipmentDto } from './dto/create-shipment.dto';
 import { CreateTrackingDto } from './dto/tracking.dto';
 import { ShipmentStatus, NotificationType, ArbiterStatus } from '@prisma/client';
@@ -39,6 +41,8 @@ export class ShipmentsService {
     private readonly config: ConfigService,
     private readonly metrics: MetricsService,
     private readonly auditLog: AuditLogService,
+    private readonly kyc: KycService,
+    private readonly fxRate: FxRateService,
   ) {
     this.cacheTtl = this.config.get<number>('SHIPMENTS_CACHE_TTL_SECONDS', 30);
   }
@@ -121,6 +125,21 @@ export class ShipmentsService {
     }
     // ==========================================================
 
+    // KYC/AML gate — shipments at or above the configured value threshold
+    // require both buyer and supplier to be KYC-verified (#233).
+    const totalAmountBigInt = BigInt(dto.totalAmount);
+    if (this.kyc.meetsThreshold(totalAmountBigInt)) {
+      const [buyerVerified, supplierVerified] = await Promise.all([
+        this.kyc.isVerified(dto.buyerAddress),
+        this.kyc.isVerified(supplierAddress),
+      ]);
+      if (!buyerVerified || !supplierVerified) {
+        throw new ForbiddenException(
+          'This shipment value requires KYC verification. Both the buyer and supplier must complete KYC verification before a shipment of this size can be created.',
+        );
+      }
+    }
+
     const token = this.tokenRegistry.getToken(tokenAddress);
 
     const shipment = await this.prisma.shipment.create({
@@ -133,7 +152,7 @@ export class ShipmentsService {
         tokenAddress,
         tokenDecimals: token.decimals,
         tokenSymbol: token.symbol,
-        totalAmount: BigInt(dto.totalAmount),
+        totalAmount: totalAmountBigInt,
         txHash: dto.txHash,
         description: dto.description,
         referenceNumber: dto.referenceNumber,
@@ -165,7 +184,7 @@ export class ShipmentsService {
     this.metrics.incrementShipmentsCreated();
     this.metrics.incrementActiveShipments();
     await this.invalidateUserCache(dto.buyerAddress);
-    return this.serialize(shipment);
+    return await this.serialize(shipment);
   }
 
   // ----------------------------------------------------------
@@ -348,7 +367,7 @@ export class ShipmentsService {
     }
 
     return {
-      data: shipments.map((s) => this.serialize(s)),
+      data: await Promise.all(shipments.map((s) => this.serialize(s))),
       meta: cursor
         ? { nextCursor, limit }
         : {
@@ -371,7 +390,7 @@ export class ShipmentsService {
       },
     });
     if (!shipment) throw new NotFoundException(`Shipment ${id} not found`);
-    return this.serialize(shipment);
+    return await this.serialize(shipment);
   }
 
   async bulkStatus(
@@ -533,7 +552,7 @@ export class ShipmentsService {
 
     this.logger.log(`Shipment updated: ${id}`);
     await this.invalidateUserCache(buyerAddress);
-    return this.serialize(updated);
+    return await this.serialize(updated);
   }
 
   async replaceTags(
@@ -600,7 +619,7 @@ export class ShipmentsService {
     });
 
     this.logger.log(`Shipment tags replaced: ${id}`);
-    return this.serialize(updated);
+    return await this.serialize(updated);
   }
 
   // ----------------------------------------------------------
@@ -651,7 +670,7 @@ export class ShipmentsService {
 
     this.logger.log(`Tag "${tag}" added to shipment ${id} by buyer ${buyerAddress}`);
     await this.invalidateUserCache(buyerAddress);
-    return this.serialize(updated);
+    return await this.serialize(updated);
   }
 
   /**
@@ -700,7 +719,7 @@ export class ShipmentsService {
 
     this.logger.log(`Tag "${tag}" removed from shipment ${id} by buyer ${buyerAddress}`);
     await this.invalidateUserCache(buyerAddress);
-    return this.serialize(updated);
+    return await this.serialize(updated);
   }
 
   // ----------------------------------------------------------
@@ -744,7 +763,7 @@ export class ShipmentsService {
     );
 
     this.logger.log(`Arbiter ${callerAddress} accepted assignment for shipment ${id}`);
-    return this.serialize(updated);
+    return await this.serialize(updated);
   }
 
   /**
@@ -784,7 +803,7 @@ export class ShipmentsService {
     );
 
     this.logger.log(`Arbiter ${callerAddress} declined assignment for shipment ${id}`);
-    return this.serialize(updated);
+    return await this.serialize(updated);
   }
 
   // ----------------------------------------------------------
@@ -824,7 +843,7 @@ export class ShipmentsService {
       { shipmentId: id }
     );
 
-    return this.serialize(updated);
+    return await this.serialize(updated);
   }
 
   // ----------------------------------------------------------
@@ -947,7 +966,7 @@ export class ShipmentsService {
     );
 
     this.logger.log(`Shipment ${id} cloned to ${cloned.id} by buyer ${buyerAddress}`);
-    return this.serialize(cloned);
+    return await this.serialize(cloned);
   }
 
   // ----------------------------------------------------------
@@ -983,7 +1002,7 @@ export class ShipmentsService {
       { shipmentId: id }
     );
 
-    return this.serialize(updated);
+    return await this.serialize(updated);
   }
 
   async unarchive(id: string, buyerAddress: string) {
@@ -1003,7 +1022,7 @@ export class ShipmentsService {
     });
 
     this.logger.log(`Shipment ${id} unarchived by buyer ${buyerAddress}`);
-    return this.serialize(updated);
+    return await this.serialize(updated);
   }
 
   // ----------------------------------------------------------
@@ -1856,10 +1875,27 @@ export class ShipmentsService {
     await this.redis.delByPrefix(`shipments:${callerStellarAddress}:`);
   }
 
-  private serialize(shipment: any) {
+  private async serialize(shipment: any) {
     const now = new Date();
     const decimals: number = shipment.tokenDecimals ?? 7;
     const symbol: string = shipment.tokenSymbol ?? 'USDC';
+
+    // Estimated USD value (#231) — omitted entirely when no rate is cached,
+    // never causes the response to fail.
+    const fxRate = await this.fxRate.getUsdRate(symbol);
+    const estimatedUsdValue = fxRate
+      ? {
+          totalAmountUsd: (
+            Number(this.stellar.toHumanAmount(shipment.totalAmount ?? 0n, decimals)) * fxRate.rate
+          ).toFixed(2),
+          releasedAmountUsd: (
+            Number(this.stellar.toHumanAmount(shipment.releasedAmount ?? 0n, decimals)) * fxRate.rate
+          ).toFixed(2),
+          rate: fxRate.rate,
+          asOf: fxRate.asOf,
+          estimate: true,
+        }
+      : undefined;
 
     const trackingUpdates = shipment.trackingUpdates?.map((t: any) => ({
       id: t.id,
@@ -1884,6 +1920,7 @@ export class ShipmentsService {
       releasedAmount: shipment.releasedAmount?.toString(),
       totalAmountFormatted: this.stellar.toHumanAmount(shipment.totalAmount ?? 0n, decimals),
       releasedAmountFormatted: this.stellar.toHumanAmount(shipment.releasedAmount ?? 0n, decimals),
+      ...(estimatedUsdValue ? { estimatedUsdValue } : {}),
       milestones: shipment.milestones?.map((m: any) => {
         const isOverdue =
           m.dueAt &&

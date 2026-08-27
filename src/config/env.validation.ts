@@ -59,4 +59,14 @@ export const envValidationSchema = Joi.object({
 
   // Development
   SLOW_QUERY_THRESHOLD_MS: Joi.number().integer().min(0).default(100),
+
+  // KYC/AML (#233)
+  // Shipments with totalAmount (in stroops) at or above this threshold require
+  // both buyer and supplier to have a VERIFIED kycStatus.
+  KYC_VALUE_THRESHOLD_STROOPS: Joi.string().default('1000000000000'), // 100,000 USDC at 7 decimals
+  KYC_WEBHOOK_SECRET: Joi.string().allow('').default(''),
+
+  // FX rate service (#231)
+  FX_RATE_API_URL: Joi.string().uri().allow('').optional(),
+  FX_RATE_CACHE_TTL_SECONDS: Joi.number().integer().min(1).default(300),
 }).options({ allowUnknown: true });

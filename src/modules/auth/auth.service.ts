@@ -313,6 +313,87 @@ export class AuthService {
     };
   }
 
+  /**
+   * GDPR/CCPA data-portability export: aggregates everything owned by this
+   * user across the system. Only the caller's own records are returned —
+   * shipment rows include counterparties' Stellar addresses (already
+   * public) but never their name/email, since those are never joined in.
+   */
+  async exportUserData(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        stellarAddress: true,
+        email: true,
+        emailVerified: true,
+        name: true,
+        role: true,
+        kycStatus: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const [shipments, comments, notifications, auditLogs] = await Promise.all([
+      this.prisma.shipment.findMany({
+        where: {
+          OR: [
+            { buyerAddress: user.stellarAddress },
+            { supplierAddress: user.stellarAddress },
+            { logisticsAddress: user.stellarAddress },
+            { arbiterAddress: user.stellarAddress },
+          ],
+        },
+        select: {
+          id: true,
+          buyerAddress: true,
+          supplierAddress: true,
+          logisticsAddress: true,
+          arbiterAddress: true,
+          tokenAddress: true,
+          tokenSymbol: true,
+          totalAmount: true,
+          releasedAmount: true,
+          status: true,
+          description: true,
+          referenceNumber: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+      this.prisma.shipmentComment.findMany({
+        where: { authorId: userId },
+        select: { id: true, shipmentId: true, body: true, visibility: true, createdAt: true },
+      }),
+      this.prisma.notification.findMany({
+        where: { userId },
+        select: { id: true, type: true, title: true, message: true, data: true, read: true, createdAt: true },
+      }),
+      this.prisma.auditLog.findMany({
+        where: { userId },
+        select: { id: true, action: true, entityType: true, entityId: true, metadata: true, createdAt: true },
+      }),
+    ]);
+
+    return {
+      exportedAt: new Date().toISOString(),
+      profile: user,
+      shipments: shipments.map((s) => ({
+        ...s,
+        totalAmount: s.totalAmount?.toString(),
+        releasedAmount: s.releasedAmount?.toString(),
+      })),
+      comments,
+      notifications,
+      auditLogs,
+    };
+  }
+
   async getPublicProfile(stellarAddress: string) {
     const user = await this.prisma.user.findUnique({
       where: { stellarAddress },
