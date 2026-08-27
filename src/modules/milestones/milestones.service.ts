@@ -10,6 +10,8 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { IpfsService } from '../../common/ipfs/ipfs.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ShipmentsService } from '../shipments/shipments.service';
+import { StellarService } from '../../common/stellar/stellar.service';
+import { FxRateService } from '../../common/fx/fx-rate.service';
 import { AppendMilestoneDto } from './dto/append-milestone.dto';
 import { MilestoneStatus, NotificationType, DisputeRole, ArbiterStatus } from '@prisma/client';
 
@@ -23,6 +25,8 @@ export class MilestonesService {
     private readonly notifications: NotificationsService,
     private readonly shipments: ShipmentsService,
     private readonly auditLog: AuditLogService,
+    private readonly stellar: StellarService,
+    private readonly fxRate: FxRateService,
   ) {}
 
   async findByShipment(shipmentId: string, status?: string, overdueOnly = false) {
@@ -37,15 +41,40 @@ export class MilestonesService {
       where.status = { notIn: [MilestoneStatus.CONFIRMED, MilestoneStatus.RESOLVED] };
     }
 
-    const milestones = await this.prisma.milestone.findMany({
-      where,
-      orderBy: { milestoneIndex: 'asc' },
-    });
+    const [shipment, milestones] = await Promise.all([
+      this.prisma.shipment.findUnique({
+        where: { id: shipmentId },
+        select: { totalAmount: true, tokenDecimals: true, tokenSymbol: true },
+      }),
+      this.prisma.milestone.findMany({
+        where,
+        orderBy: { milestoneIndex: 'asc' },
+      }),
+    ]);
 
-    return milestones.map((m) => ({
-      ...m,
-      isOverdue: m.dueAt ? m.dueAt < new Date() && m.status !== MilestoneStatus.CONFIRMED && m.status !== MilestoneStatus.RESOLVED : false,
-    }));
+    // Estimated USD value (#231) — omitted per-milestone when no rate is
+    // cached for the shipment's token, never causes the endpoint to fail.
+    const decimals = shipment?.tokenDecimals ?? 7;
+    const totalAmount = shipment?.totalAmount ?? 0n;
+    const fxRate = shipment ? await this.fxRate.getUsdRate(shipment.tokenSymbol ?? 'USDC') : null;
+
+    return milestones.map((m) => {
+      const amountRaw = m.paymentReleased ?? (totalAmount * BigInt(m.paymentPercent)) / 100n;
+      const estimatedUsdValue = fxRate
+        ? {
+            amountUsd: (Number(this.stellar.toHumanAmount(amountRaw, decimals)) * fxRate.rate).toFixed(2),
+            rate: fxRate.rate,
+            asOf: fxRate.asOf,
+            estimate: true,
+          }
+        : undefined;
+
+      return {
+        ...m,
+        isOverdue: m.dueAt ? m.dueAt < new Date() && m.status !== MilestoneStatus.CONFIRMED && m.status !== MilestoneStatus.RESOLVED : false,
+        ...(estimatedUsdValue ? { estimatedUsdValue } : {}),
+      };
+    });
   }
 
   async findOne(shipmentId: string, milestoneIndex: number) {

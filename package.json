@@ -17,7 +17,7 @@
     "test:cov": "jest --coverage",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "format": "prettier --write \"src/**/*.ts\"",
-    "sbom": "npx --yes @cyclonedx/cyclonedx-npm@1.19.3 --output-file sbom.cdx.json --output-format JSON --spec-version 1.5"
+    "loadtest": "bash load-tests/run-all.sh"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",
@@ -87,7 +87,8 @@
     "ts-loader": "^9.4.3",
     "ts-node": "^10.9.1",
     "tsconfig-paths": "^4.2.0",
-    "typescript": "^5.1.3"
+    "typescript": "^5.1.3",
+    "openapi-typescript": "^7.4.0"
   },
   "jest": {
     "moduleFileExtensions": [

@@ -13,12 +13,14 @@ export class RedisService implements OnModuleDestroy {
 
   constructor(private readonly configService: ConfigService) {
     const redisUrl = this.configService.get<string>('REDIS_URL', 'redis://localhost:6379');
+    const skipConnect = process.env.SDK_GENERATE === '1';
 
     this.client = new Redis(redisUrl, {
       maxRetriesPerRequest: 3,
-      enableReadyCheck: true,
-      lazyConnect: false,
+      enableReadyCheck: !skipConnect,
+      lazyConnect: skipConnect,
       retryStrategy: (times) => {
+        if (skipConnect) return null;
         const delay = Math.min(times * 50, 2000);
         return delay;
       },
@@ -29,6 +31,7 @@ export class RedisService implements OnModuleDestroy {
     });
 
     this.client.on('error', (err) => {
+      if (skipConnect) return;
       this.logger.error('Redis connection error:', err);
     });
 
@@ -119,5 +122,43 @@ export class RedisService implements OnModuleDestroy {
         await this.client.del(...keys);
       }
     } while (cursor !== '0');
+  }
+
+  /**
+   * Acquire a distributed lock (SET NX PX). Returns true if this caller owns the lock.
+   */
+  async acquireLock(key: string, token: string, ttlMs: number): Promise<boolean> {
+    const result = await this.client.set(key, token, 'PX', ttlMs, 'NX');
+    return result === 'OK';
+  }
+
+  /**
+   * Renew a lock only if still owned by `token` (compare-and-expire via Lua).
+   */
+  async renewLock(key: string, token: string, ttlMs: number): Promise<boolean> {
+    const script = `
+      if redis.call("get", KEYS[1]) == ARGV[1] then
+        return redis.call("pexpire", KEYS[1], ARGV[2])
+      else
+        return 0
+      end
+    `;
+    const result = await this.client.eval(script, 1, key, token, ttlMs);
+    return result === 1;
+  }
+
+  /**
+   * Release a lock only if still owned by `token` (compare-and-del via Lua).
+   */
+  async releaseLock(key: string, token: string): Promise<boolean> {
+    const script = `
+      if redis.call("get", KEYS[1]) == ARGV[1] then
+        return redis.call("del", KEYS[1])
+      else
+        return 0
+      end
+    `;
+    const result = await this.client.eval(script, 1, key, token);
+    return result === 1;
   }
 }

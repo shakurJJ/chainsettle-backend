@@ -35,6 +35,41 @@ describe('JwtStrategy', () => {
       id: 'user-1',
       stellarAddress: 'GTEST',
       role: 'BUYER',
+      isImpersonation: false,
+      impersonatorAdminId: undefined,
+      impersonatorAddress: undefined,
+    });
+  });
+
+  it('returns impersonation context when token is tagged', async () => {
+    mockPrisma.user.findUnique
+      .mockResolvedValueOnce({
+        id: 'user-1',
+        stellarAddress: 'GTEST',
+        role: 'BUYER',
+        deactivatedAt: null,
+      })
+      .mockResolvedValueOnce({
+        id: 'admin-1',
+        stellarAddress: 'GADMIN',
+        role: 'ADMIN',
+        deactivatedAt: null,
+      });
+
+    const result = await strategy.validate({
+      sub: 'user-1',
+      isImpersonation: true,
+      impersonatorAdminId: 'admin-1',
+      impersonatorAddress: 'GADMIN',
+    });
+
+    expect(result).toEqual({
+      id: 'user-1',
+      stellarAddress: 'GTEST',
+      role: 'BUYER',
+      isImpersonation: true,
+      impersonatorAdminId: 'admin-1',
+      impersonatorAddress: 'GADMIN',
     });
   });
 

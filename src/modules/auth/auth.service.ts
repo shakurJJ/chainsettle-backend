@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, ConflictException, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, ConflictException, Logger, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Keypair } from '@stellar/stellar-sdk';
@@ -313,6 +313,87 @@ export class AuthService {
     };
   }
 
+  /**
+   * GDPR/CCPA data-portability export: aggregates everything owned by this
+   * user across the system. Only the caller's own records are returned —
+   * shipment rows include counterparties' Stellar addresses (already
+   * public) but never their name/email, since those are never joined in.
+   */
+  async exportUserData(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        stellarAddress: true,
+        email: true,
+        emailVerified: true,
+        name: true,
+        role: true,
+        kycStatus: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const [shipments, comments, notifications, auditLogs] = await Promise.all([
+      this.prisma.shipment.findMany({
+        where: {
+          OR: [
+            { buyerAddress: user.stellarAddress },
+            { supplierAddress: user.stellarAddress },
+            { logisticsAddress: user.stellarAddress },
+            { arbiterAddress: user.stellarAddress },
+          ],
+        },
+        select: {
+          id: true,
+          buyerAddress: true,
+          supplierAddress: true,
+          logisticsAddress: true,
+          arbiterAddress: true,
+          tokenAddress: true,
+          tokenSymbol: true,
+          totalAmount: true,
+          releasedAmount: true,
+          status: true,
+          description: true,
+          referenceNumber: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+      this.prisma.shipmentComment.findMany({
+        where: { authorId: userId },
+        select: { id: true, shipmentId: true, body: true, visibility: true, createdAt: true },
+      }),
+      this.prisma.notification.findMany({
+        where: { userId },
+        select: { id: true, type: true, title: true, message: true, data: true, read: true, createdAt: true },
+      }),
+      this.prisma.auditLog.findMany({
+        where: { userId },
+        select: { id: true, action: true, entityType: true, entityId: true, metadata: true, createdAt: true },
+      }),
+    ]);
+
+    return {
+      exportedAt: new Date().toISOString(),
+      profile: user,
+      shipments: shipments.map((s) => ({
+        ...s,
+        totalAmount: s.totalAmount?.toString(),
+        releasedAmount: s.releasedAmount?.toString(),
+      })),
+      comments,
+      notifications,
+      auditLogs,
+    };
+  }
+
   async getPublicProfile(stellarAddress: string) {
     const user = await this.prisma.user.findUnique({
       where: { stellarAddress },
@@ -320,6 +401,92 @@ export class AuthService {
     });
     if (!user) throw new NotFoundException('User not found');
     return user;
+  }
+
+  /**
+   * Issue a short-lived impersonation JWT so an admin can call the API as a target user.
+   * The token embeds impersonatorAdminId / isImpersonation for audit and guard enforcement.
+   */
+  async impersonateUser(
+    targetUserId: string,
+    adminId: string,
+    adminAddress: string,
+    ipAddress?: string,
+  ): Promise<{
+    accessToken: string;
+    expiresIn: string;
+    targetUser: { id: string; stellarAddress: string; role: UserRole; name: string | null };
+  }> {
+    if (targetUserId === adminId) {
+      throw new BadRequestException('Cannot impersonate your own account');
+    }
+
+    const target = await this.prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: {
+        id: true,
+        stellarAddress: true,
+        role: true,
+        name: true,
+        deactivatedAt: true,
+      },
+    });
+
+    if (!target) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (target.deactivatedAt) {
+      throw new ForbiddenException('Cannot impersonate a deactivated user');
+    }
+
+    if (target.role === UserRole.ADMIN) {
+      throw new ForbiddenException('Cannot impersonate another admin');
+    }
+
+    const expiresIn = this.config.get<string>('IMPERSONATION_JWT_EXPIRES_IN', '15m');
+
+    const accessToken = this.jwt.sign(
+      {
+        sub: target.id,
+        stellarAddress: target.stellarAddress,
+        role: target.role,
+        isImpersonation: true,
+        impersonatorAdminId: adminId,
+        impersonatorAddress: adminAddress,
+      },
+      { expiresIn },
+    );
+
+    await this.auditLog.record({
+      actorId: adminId,
+      actorAddress: adminAddress,
+      action: 'admin.impersonate',
+      resourceType: 'User',
+      resourceId: target.id,
+      metadata: {
+        targetUserId: target.id,
+        targetStellarAddress: target.stellarAddress,
+        targetRole: target.role,
+        expiresIn,
+      },
+      ipAddress,
+    });
+
+    this.logger.warn(
+      `Admin ${adminId} (${adminAddress}) started impersonating user ${target.id} (${target.stellarAddress})`,
+    );
+
+    return {
+      accessToken,
+      expiresIn,
+      targetUser: {
+        id: target.id,
+        stellarAddress: target.stellarAddress,
+        role: target.role,
+        name: target.name,
+      },
+    };
   }
 
   async updateProfile(userId: string, dto: UpdateProfileDto) {

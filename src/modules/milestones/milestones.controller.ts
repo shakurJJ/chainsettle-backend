@@ -248,59 +248,17 @@ export class MilestonesController {
   }
 
   /**
-   * POST /api/v1/shipments/:shipmentId/milestones/bulk-confirm
-   *
-   * Confirms multiple PROOF_SUBMITTED milestones in one request.
-   * Valid items are updated in a single Prisma transaction; invalid indexes
-   * are reported per-item without rolling back successful confirms.
-   */
-  @Post('bulk-confirm')
-  @HttpCode(HttpStatus.OK)
-  @UseGuards(ShipmentParticipantGuard)
-  @ApiOperation({
-    summary: 'Batch-confirm multiple milestones (buyer only)',
-    description:
-      'Accepts a list of milestone indexes with on-chain tx hashes and payment amounts. ' +
-      'Returns per-index success/failure so partial failures are visible.',
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Per-index confirmation results',
-    schema: {
-      example: {
-        shipmentId: 'ship-001',
-        results: [
-          { milestoneIndex: 0, success: true, milestone: { status: 'CONFIRMED' } },
-          { milestoneIndex: 1, success: false, error: 'Milestone 1 must be in PROOF_SUBMITTED status to confirm (currently PENDING)' },
-        ],
-        summary: { total: 2, succeeded: 1, failed: 1 },
-      },
-    },
-  })
-  @ApiResponse({ status: 403, description: 'Only the shipment buyer may confirm milestones' })
-  @ApiResponse({ status: 404, description: 'Shipment not found' })
-  bulkConfirm(
-    @Param('shipmentId') shipmentId: string,
-    @Body() dto: BulkConfirmMilestonesDto,
-    @CurrentUser() user: any,
-  ) {
-    const callerAddress: string = user?.stellarAddress ?? user?.sub;
-    return this.milestonesService.bulkConfirmFromApi(shipmentId, callerAddress, dto.milestones);
-  }
-
-  /**
    * POST /api/v1/shipments/:shipmentId/milestones/:index/confirm
-   *
-   * Buyer registers a milestone confirmation after signing on-chain.
+   * Buyer registers an on-chain milestone confirmation so the DB reflects it immediately.
    */
   @Post(':index/confirm')
   @HttpCode(HttpStatus.OK)
   @UseGuards(ShipmentParticipantGuard)
-  @ApiOperation({ summary: 'Confirm a single milestone (buyer only)' })
+  @ApiOperation({ summary: 'Confirm a milestone (buyer only)' })
   @ApiResponse({ status: 200, description: 'Milestone confirmed' })
-  @ApiResponse({ status: 403, description: 'Only the shipment buyer may confirm milestones' })
+  @ApiResponse({ status: 403, description: 'Only the buyer may confirm' })
   @ApiResponse({ status: 404, description: 'Shipment or milestone not found' })
-  @ApiResponse({ status: 409, description: 'Milestone is not in PROOF_SUBMITTED status' })
+  @ApiResponse({ status: 409, description: 'Milestone not in PROOF_SUBMITTED status' })
   confirm(
     @Param('shipmentId') shipmentId: string,
     @Param('index', ParseIntPipe) index: number,

@@ -95,4 +95,12 @@ export class FindAllShipmentsDto {
   @IsBoolean()
   @Transform(({ value }) => value === 'true' || value === true)
   isDraft?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'When true, return only shipments favorited by the authenticated user',
+  })
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === 'true' || value === true)
+  favorite?: boolean;
 }
