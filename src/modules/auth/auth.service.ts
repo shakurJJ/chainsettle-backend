@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, ConflictException, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, ConflictException, Logger, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Keypair } from '@stellar/stellar-sdk';
@@ -320,6 +320,92 @@ export class AuthService {
     });
     if (!user) throw new NotFoundException('User not found');
     return user;
+  }
+
+  /**
+   * Issue a short-lived impersonation JWT so an admin can call the API as a target user.
+   * The token embeds impersonatorAdminId / isImpersonation for audit and guard enforcement.
+   */
+  async impersonateUser(
+    targetUserId: string,
+    adminId: string,
+    adminAddress: string,
+    ipAddress?: string,
+  ): Promise<{
+    accessToken: string;
+    expiresIn: string;
+    targetUser: { id: string; stellarAddress: string; role: UserRole; name: string | null };
+  }> {
+    if (targetUserId === adminId) {
+      throw new BadRequestException('Cannot impersonate your own account');
+    }
+
+    const target = await this.prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: {
+        id: true,
+        stellarAddress: true,
+        role: true,
+        name: true,
+        deactivatedAt: true,
+      },
+    });
+
+    if (!target) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (target.deactivatedAt) {
+      throw new ForbiddenException('Cannot impersonate a deactivated user');
+    }
+
+    if (target.role === UserRole.ADMIN) {
+      throw new ForbiddenException('Cannot impersonate another admin');
+    }
+
+    const expiresIn = this.config.get<string>('IMPERSONATION_JWT_EXPIRES_IN', '15m');
+
+    const accessToken = this.jwt.sign(
+      {
+        sub: target.id,
+        stellarAddress: target.stellarAddress,
+        role: target.role,
+        isImpersonation: true,
+        impersonatorAdminId: adminId,
+        impersonatorAddress: adminAddress,
+      },
+      { expiresIn },
+    );
+
+    await this.auditLog.record({
+      actorId: adminId,
+      actorAddress: adminAddress,
+      action: 'admin.impersonate',
+      resourceType: 'User',
+      resourceId: target.id,
+      metadata: {
+        targetUserId: target.id,
+        targetStellarAddress: target.stellarAddress,
+        targetRole: target.role,
+        expiresIn,
+      },
+      ipAddress,
+    });
+
+    this.logger.warn(
+      `Admin ${adminId} (${adminAddress}) started impersonating user ${target.id} (${target.stellarAddress})`,
+    );
+
+    return {
+      accessToken,
+      expiresIn,
+      targetUser: {
+        id: target.id,
+        stellarAddress: target.stellarAddress,
+        role: target.role,
+        name: target.name,
+      },
+    };
   }
 
   async updateProfile(userId: string, dto: UpdateProfileDto) {

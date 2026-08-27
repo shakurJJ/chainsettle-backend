@@ -35,6 +35,11 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   }
 
   async onModuleInit() {
+    // Skip DB connect when exporting OpenAPI for SDK generation
+    if (process.env.SDK_GENERATE === '1') {
+      this.logger.warn('Skipping database connect (SDK_GENERATE=1)');
+      return;
+    }
     await this.$connect();
     this.logger.log('Database connected');
     this.logger.log(`Prisma pool: limit=${this.connectionLimit}, timeout=${this.poolTimeout}s`);

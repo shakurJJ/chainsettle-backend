@@ -6,6 +6,8 @@ import { TerminusModule } from '@nestjs/terminus';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { envValidationSchema } from './config/env.validation';
 import { RolesGuard } from './common/guards/roles.guard';
+import { ImpersonationGuard } from './common/guards/impersonation.guard';
+import { DeprecationInterceptor } from './common/interceptors/deprecation.interceptor';
 
 import { PrismaModule } from './common/prisma/prisma.module';
 import { StellarModule } from './common/stellar/stellar.module';
@@ -92,7 +94,17 @@ import { ChainModule } from './modules/chain/chain.module';
       provide: APP_GUARD,
       useClass: RolesGuard,
     },
-    // Apply global audit logging interceptor (logs all mutations)
+    // Block sensitive routes when using an impersonation token
+    {
+      provide: APP_GUARD,
+      useClass: ImpersonationGuard,
+    },
+    // Emit Deprecation / Sunset headers for @DeprecatedRoute handlers
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: DeprecationInterceptor,
+    },
+    // Apply global audit logging interceptor (logs all mutations + impersonated requests)
     {
       provide: APP_INTERCEPTOR,
       useClass: AuditLogInterceptor,

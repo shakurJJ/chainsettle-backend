@@ -13,10 +13,8 @@ import { AuditLogService } from './audit-log.service';
  * AuditLogInterceptor
  *
  * Automatically records all successful POST, PATCH, DELETE mutations.
- * Skips GET requests (read-only operations don't need auditing).
- *
- * Extracts actor information from the request, derives action/resource
- * from the route, and passes to AuditLogService for recording.
+ * Additionally, EVERY request made with an impersonation token is logged
+ * (including GETs) so support sessions are fully traceable.
  */
 @Injectable()
 export class AuditLogInterceptor implements NestInterceptor {
@@ -26,22 +24,26 @@ export class AuditLogInterceptor implements NestInterceptor {
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
     const request = context.switchToHttp().getRequest();
-    const response = context.switchToHttp().getResponse();
 
     const method = request.method;
     const path = request.path;
     const user = request.user; // Set by JwtAuthGuard
 
-    // Skip GET requests (read-only operations)
-    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
+    const isImpersonation = !!user?.isImpersonation;
+    const isMutation =
+      method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
+
+    // Skip non-mutations unless this is an impersonation session
+    if (!isMutation && !isImpersonation) {
       return next.handle();
     }
 
-    // Extract actor information
-    const actorId = user?.id;
-    const actorAddress = user?.stellarAddress ?? 'SYSTEM';
+    // Extract actor information — for impersonation, actor is the admin
+    const actorId = isImpersonation ? user.impersonatorAdminId : user?.id;
+    const actorAddress = isImpersonation
+      ? (user.impersonatorAddress ?? 'SYSTEM')
+      : (user?.stellarAddress ?? 'SYSTEM');
 
-    // Derive action and resource from route
     const { action, resourceType, resourceId } = this.deriveActionAndResource(
       method,
       path,
@@ -49,71 +51,75 @@ export class AuditLogInterceptor implements NestInterceptor {
     );
 
     return next.handle().pipe(
-      tap((response) => {
-        // Only record on successful responses (2xx status)
+      tap(() => {
         const statusCode = context.switchToHttp().getResponse().statusCode;
         if (statusCode >= 200 && statusCode < 300) {
           this.auditLog.record({
             actorId,
             actorAddress,
-            action,
+            action: isImpersonation ? `impersonation.${action}` : action,
             resourceType,
             resourceId,
             metadata: {
               method,
               path,
               statusCode,
-              // Optionally include request body/params for context
               ...(request.body && { requestBody: this.sanitizeBody(request.body) }),
+              ...(isImpersonation && {
+                impersonation: true,
+                targetUserId: user.id,
+                targetStellarAddress: user.stellarAddress,
+                impersonatorAdminId: user.impersonatorAdminId,
+                impersonatorAddress: user.impersonatorAddress,
+              }),
             },
             ipAddress: this.getClientIp(request),
           });
         }
       }),
       catchError((error) => {
-        // Don't record failed operations (unless specifically needed)
         throw error;
       }),
     );
   }
 
-  /**
-   * Extract action, resourceType, and resourceId from the HTTP method and path.
-   * Examples:
-   *   POST /shipments → { action: 'shipment.create', resourceType: 'Shipment', resourceId: 'generated-id' }
-   *   PATCH /shipments/SHIP-001 → { action: 'shipment.update', resourceType: 'Shipment', resourceId: 'SHIP-001' }
-   *   DELETE /milestones/1 → { action: 'milestone.delete', resourceType: 'Milestone', resourceId: '1' }
-   */
   private deriveActionAndResource(
     method: string,
     path: string,
-    request: any,
+    _request: any,
   ): { action: string; resourceType: string; resourceId: string } {
-    const segments = path.split('/').filter(s => s.length > 0);
+    const segments = path.split('/').filter((s) => s.length > 0);
 
-    // Extract resource type (usually first segment after /api/v1)
     // Format: /api/v1/{resourceType}/{resourceId}/{subresource}
+    // After versioning: segments[0]=api, segments[1]=v1, segments[2]=resource
     let resourceType = 'Unknown';
     let resourceId = 'unknown-id';
     let subAction = '';
 
-    if (segments.length >= 2) {
-      resourceType = segments[1]; // e.g., 'shipments', 'milestones'
-      resourceType = resourceType.charAt(0).toUpperCase() + resourceType.slice(1, -1); // Singularize: shipments → Shipment
+    // Find the index after the version segment (v1, v2, ...)
+    let resourceIdx = 1;
+    if (segments[0] === 'api' && /^v\d+$/.test(segments[1] ?? '')) {
+      resourceIdx = 2;
+    } else if (segments[0] === 'api') {
+      resourceIdx = 1;
     }
 
-    if (segments.length >= 3) {
-      resourceId = segments[2];
+    if (segments.length > resourceIdx) {
+      const raw = segments[resourceIdx];
+      resourceType = raw.charAt(0).toUpperCase() + raw.slice(1).replace(/s$/, '');
+    }
 
-      // Check for sub-resources (e.g., /shipments/:id/sync)
-      if (segments.length >= 4) {
-        subAction = segments[3]; // e.g., 'sync', 'proof'
+    if (segments.length > resourceIdx + 1) {
+      resourceId = segments[resourceIdx + 1];
+      if (segments.length > resourceIdx + 2) {
+        subAction = segments[resourceIdx + 2];
       }
     }
 
-    // Determine action
     let action = `${resourceType.toLowerCase()}.create`;
-    if (method === 'PATCH') {
+    if (method === 'GET' || method === 'HEAD') {
+      action = `${resourceType.toLowerCase()}.read`;
+    } else if (method === 'PATCH' || method === 'PUT') {
       action = `${resourceType.toLowerCase()}.update`;
     } else if (method === 'DELETE') {
       action = `${resourceType.toLowerCase()}.delete`;
@@ -124,15 +130,10 @@ export class AuditLogInterceptor implements NestInterceptor {
     return { action, resourceType, resourceId };
   }
 
-  /**
-   * Sanitize request body to avoid logging sensitive data.
-   */
   private sanitizeBody(body: any): any {
     if (!body || typeof body !== 'object') return body;
 
     const sanitized = { ...body };
-
-    // Remove sensitive fields
     const sensitiveFields = [
       'password',
       'token',
@@ -140,6 +141,7 @@ export class AuditLogInterceptor implements NestInterceptor {
       'privateKey',
       'seed',
       'mnemonic',
+      'accessToken',
     ];
 
     sensitiveFields.forEach((field) => {
@@ -151,9 +153,6 @@ export class AuditLogInterceptor implements NestInterceptor {
     return sanitized;
   }
 
-  /**
-   * Extract client IP address from request.
-   */
   private getClientIp(request: any): string | undefined {
     return (
       request.headers['x-forwarded-for']?.split(',')[0] ||

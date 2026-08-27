@@ -85,6 +85,10 @@ export class IpfsService implements OnModuleInit {
   }
 
   async onModuleInit() {
+    if (process.env.SDK_GENERATE === '1') {
+      this.isHealthy = true;
+      return;
+    }
     await this.checkConnectivity();
 
     if (this.healthCheckInterval > 0) {
