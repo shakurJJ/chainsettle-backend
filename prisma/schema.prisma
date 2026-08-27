@@ -106,6 +106,7 @@ model User {
   apiKeys     ApiKey[]
   notificationPreference NotificationPreference?
   shipmentWatchers ShipmentWatcher[] @relation("ShipmentWatchers")
+  shipmentFavorites ShipmentFavorite[] @relation("ShipmentFavorites")
 
   @@map("users")
 }
@@ -153,6 +154,7 @@ model Shipment {
   shipmentNotes ShipmentNote[]
   trackingUpdates TrackingUpdate[]
   watchers  ShipmentWatcher[]
+  favorites ShipmentFavorite[]
 
   isDraft          Boolean         @default(false) // true when created via CSV bulk import; no on-chain backing yet
 
@@ -478,4 +480,18 @@ model ShipmentWatcher {
   @@unique([shipmentId, userId])
   @@index([userId])
   @@map("shipment_watchers")
+}
+
+model ShipmentFavorite {
+  id         String   @id @default(uuid())
+  shipmentId String
+  userId     String
+  createdAt  DateTime @default(now())
+
+  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  user     User     @relation("ShipmentFavorites", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([shipmentId, userId])
+  @@index([userId])
+  @@map("shipment_favorites")
 }

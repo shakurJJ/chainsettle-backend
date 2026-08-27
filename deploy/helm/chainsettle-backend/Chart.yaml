@@ -1,0 +1,6 @@
+apiVersion: v2
+name: chainsettle-backend
+description: Helm chart for the ChainSettle NestJS API
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

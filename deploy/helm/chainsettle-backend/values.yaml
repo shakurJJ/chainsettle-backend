@@ -1,0 +1,73 @@
+# Default replicaCount is 1 — the in-process event poller and cron jobs
+# must not run on multiple pods without a distributed lock.
+replicaCount: 1
+
+image:
+  repository: chainsettle-backend
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 3000
+
+# Container listens on PORT (default 3000)
+containerPort: 3000
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+probes:
+  liveness:
+    path: /api/v1/health/live
+    initialDelaySeconds: 20
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    path: /api/v1/health/ready
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+# Non-secret config injected as env vars
+env:
+  NODE_ENV: production
+  PORT: "3000"
+  API_PREFIX: api/v1
+  STELLAR_NETWORK: testnet
+  # Override the rest via --set or a values overlay / Secret
+
+# Names of existing Kubernetes secrets (create these before install)
+# Expected keys mirror .env.example required vars.
+existingSecret: ""
+# When existingSecret is empty, chart creates a Secret from secretEnv (dev only).
+secretEnv: {}
+  # JWT_SECRET: "change-me"
+  # DATABASE_URL: "postgresql://..."
+  # REDIS_URL: "redis://..."
+  # STELLAR_RPC_URL: "https://..."
+  # STELLAR_HORIZON_URL: "https://..."
+  # CHAINSETTTLE_CONTRACT_ID: "C..."
+  # USDC_TOKEN_ADDRESS: "C..."
+  # STELLAR_SECRET_KEY: "S..."
+  # SMTP_HOST: "..."
+  # SMTP_USER: "..."
+  # SMTP_PASS: "..."
+  # EMAIL_FROM: "..."
+
+serviceAccount:
+  create: true
+  name: ""
+
+podAnnotations: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -82,8 +82,10 @@ All endpoints are prefixed with `/api/v1`. Protected routes require `Authorizati
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `POST` | `/shipments` | ✓ | Register on-chain shipment in DB |
-| `GET` | `/shipments` | ✓ | List shipments (filter by buyer, supplier, status) |
-| `GET` | `/shipments/:id` | ✓ | Full shipment detail + milestones + events |
+| `GET` | `/shipments` | ✓ | List shipments (filters: buyer, supplier, status, `favorite=true`) |
+| `GET` | `/shipments/:id` | ✓ | Full shipment detail + milestones + events (`isFavorited`) |
+| `POST` | `/shipments/:id/favorite` | ✓ | Favorite (star) a shipment (participant only; private) |
+| `DELETE` | `/shipments/:id/favorite` | ✓ | Remove shipment from caller's favorites |
 | `POST` | `/shipments/:id/sync` | ✓ | Force sync shipment from Stellar chain |
 
 ### Milestones
@@ -275,6 +277,37 @@ The backend verifies the signature against the public key, then issues a JWT. Wi
 
 ---
 
+## Rate Limiting
+
+All API routes are rate-limited via Redis-backed `@nestjs/throttler`. Defaults are controlled by `THROTTLE_TTL` (window seconds, default `60`) and `THROTTLE_LIMIT` (max requests per key, default `100`). Auth and upload routes use tighter per-route limits; some auth routes key by Stellar address instead of IP.
+
+Every throttled response includes:
+
+| Header | Meaning |
+|--------|---------|
+| `X-RateLimit-Limit` | Max requests allowed in the current window |
+| `X-RateLimit-Remaining` | Requests left in the window (`0` when limited) |
+| `X-RateLimit-Reset` | Seconds until the window resets |
+| `Retry-After` | Present on `429` responses — same value as `X-RateLimit-Reset` |
+
+These headers are CORS-exposed so browser clients can read them. Use `./test-rate-limit.sh` against a running local API to verify success and `429` header behavior.
+
+---
+
+## Local mock Stellar chain (frontend dev)
+
+To iterate on the API/UI without a live testnet RPC:
+
+```bash
+npm run dev:mock-chain
+# set STELLAR_RPC_URL=http://127.0.0.1:8787 and STELLAR_HORIZON_URL=http://127.0.0.1:8788
+npm run start:dev
+```
+
+See [`test/mocks/README.md`](test/mocks/README.md) for tradeoffs. **Dev-only** — not for integration testing of real chain behavior.
+
+---
+
 ## Stellar Event Polling
 
 The `EventsService` runs a cron job every 5 seconds using `@nestjs/schedule`. It:
@@ -327,7 +360,7 @@ Errors follow a standardised format from `HttpExceptionFilter`:
 - [ ] Wire up real Stellar `Keypair.verify()` in `auth.service.ts`
 - [ ] Set `CORS_ORIGIN` to your production frontend URL
 - [ ] Add rate limiting tuning for production traffic
-- [ ] Deploy via Docker (Dockerfile not included — straightforward to add)
+- [x] Deploy via Docker / Helm (see [docs/deployment.md](docs/deployment.md))
 
 ---
 
