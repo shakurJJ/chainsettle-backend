@@ -1,0 +1,50 @@
+name: Load test (weekly)
+
+# Scheduled k6 run against a long-lived staging/dev instance.
+# Not triggered on PRs to avoid noisy failures from flaky shared envs.
+
+on:
+  schedule:
+    # Mondays 06:00 UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  k6:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+            --keyserver hkp://keyserver.ubuntu.com:80 \
+            --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
+            | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6
+
+      - name: Run auth load test
+        env:
+          BASE_URL: ${{ secrets.LOADTEST_BASE_URL }}
+        run: |
+          if [ -z "$BASE_URL" ]; then
+            echo "LOADTEST_BASE_URL secret not set — skipping"
+            exit 0
+          fi
+          k6 run load-tests/auth-login.js
+
+      - name: Run shipments list load test
+        env:
+          BASE_URL: ${{ secrets.LOADTEST_BASE_URL }}
+          JWT_TOKEN: ${{ secrets.LOADTEST_JWT_TOKEN }}
+        run: |
+          if [ -z "$BASE_URL" ] || [ -z "$JWT_TOKEN" ]; then
+            echo "Skipping authenticated shipment list (missing secrets)"
+            exit 0
+          fi
+          k6 run load-tests/shipments-list.js

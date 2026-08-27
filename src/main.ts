@@ -88,9 +88,10 @@ async function bootstrap() {
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
     exposedHeaders: [
       'X-Request-ID',
-      'Deprecation',
-      'Sunset',
-      'Link',
+      'X-RateLimit-Limit',
+      'X-RateLimit-Remaining',
+      'X-RateLimit-Reset',
+      'Retry-After',
     ],
     credentials: true,
   });

@@ -106,6 +106,7 @@ model User {
   apiKeys     ApiKey[]
   notificationPreference NotificationPreference?
   shipmentWatchers ShipmentWatcher[] @relation("ShipmentWatchers")
+  shipmentFavorites ShipmentFavorite[] @relation("ShipmentFavorites")
 
   @@map("users")
 }
@@ -153,6 +154,7 @@ model Shipment {
   shipmentNotes ShipmentNote[]
   trackingUpdates TrackingUpdate[]
   watchers  ShipmentWatcher[]
+  favorites ShipmentFavorite[]
 
   isDraft          Boolean         @default(false) // true when created via CSV bulk import; no on-chain backing yet
 
@@ -478,4 +480,29 @@ model ShipmentWatcher {
   @@unique([shipmentId, userId])
   @@index([userId])
   @@map("shipment_watchers")
+}
+
+/// Cold-storage copy of a COMPLETED/CANCELLED shipment moved out of the hot
+/// `shipments` table by the scheduled archival job. `payload` retains the full
+/// relational snapshot (milestones, events, comments, tracking, notes, evidence).
+model ArchivedShipment {
+  id               String         @id // original shipment id
+  status           ShipmentStatus
+  buyerAddress     String
+  supplierAddress  String
+  logisticsAddress String
+  arbiterAddress   String
+  referenceNumber  String?
+  terminalAt       DateTime       // when shipment became COMPLETED/CANCELLED
+  archivedAt       DateTime       @default(now())
+  payload          Json           // full history snapshot for compliance/reference
+
+  @@index([buyerAddress])
+  @@index([supplierAddress])
+  @@index([logisticsAddress])
+  @@index([arbiterAddress])
+  @@index([status])
+  @@index([archivedAt])
+  @@index([terminalAt])
+  @@map("archived_shipments")
 }

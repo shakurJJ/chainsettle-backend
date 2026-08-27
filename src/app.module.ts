@@ -1,13 +1,12 @@
 import { Module, MiddlewareConsumer } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TerminusModule } from '@nestjs/terminus';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { envValidationSchema } from './config/env.validation';
 import { RolesGuard } from './common/guards/roles.guard';
-import { ImpersonationGuard } from './common/guards/impersonation.guard';
-import { DeprecationInterceptor } from './common/interceptors/deprecation.interceptor';
+import { RateLimitThrottlerGuard } from './common/guards/rate-limit-throttler.guard';
 
 import { PrismaModule } from './common/prisma/prisma.module';
 import { StellarModule } from './common/stellar/stellar.module';
@@ -84,10 +83,10 @@ import { ChainModule } from './modules/chain/chain.module';
     ChainModule,
   ],
   providers: [
-    // Apply global throttler guard (can be overridden per route)
+    // Apply global throttler guard (sets X-RateLimit-* on success and 429)
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: RateLimitThrottlerGuard,
     },
     // Apply global roles guard — enforces @Roles() decorator across all routes
     {

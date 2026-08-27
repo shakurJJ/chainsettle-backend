@@ -18,8 +18,16 @@ export const envValidationSchema = Joi.object({
     .pattern(/^postgres(ql)?:\/\//)
     .required()
     .messages({ 'string.pattern.base': 'DATABASE_URL must start with postgresql:// or postgres://' }),
+  // Optional read replica. When unset, all queries use DATABASE_URL (primary).
+  DATABASE_REPLICA_URL: Joi.string()
+    .pattern(/^postgres(ql)?:\/\//)
+    .optional()
+    .messages({ 'string.pattern.base': 'DATABASE_REPLICA_URL must start with postgresql:// or postgres://' }),
   DATABASE_CONNECTION_LIMIT: Joi.number().integer().min(1).max(1000).default(10),
   DATABASE_POOL_TIMEOUT: Joi.number().integer().min(1).max(300).default(10),
+
+  // Cold-storage archival of completed/cancelled shipments (days; default 90)
+  SHIPMENT_ARCHIVAL_DAYS: Joi.number().integer().min(1).max(3650).default(90),
 
   // Stellar
   STELLAR_NETWORK: Joi.string().valid('testnet', 'mainnet', 'futurenet').default('testnet'),

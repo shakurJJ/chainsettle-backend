@@ -123,4 +123,42 @@ export class RedisService implements OnModuleDestroy {
       }
     } while (cursor !== '0');
   }
+
+  /**
+   * Acquire a distributed lock (SET NX PX). Returns true if this caller owns the lock.
+   */
+  async acquireLock(key: string, token: string, ttlMs: number): Promise<boolean> {
+    const result = await this.client.set(key, token, 'PX', ttlMs, 'NX');
+    return result === 'OK';
+  }
+
+  /**
+   * Renew a lock only if still owned by `token` (compare-and-expire via Lua).
+   */
+  async renewLock(key: string, token: string, ttlMs: number): Promise<boolean> {
+    const script = `
+      if redis.call("get", KEYS[1]) == ARGV[1] then
+        return redis.call("pexpire", KEYS[1], ARGV[2])
+      else
+        return 0
+      end
+    `;
+    const result = await this.client.eval(script, 1, key, token, ttlMs);
+    return result === 1;
+  }
+
+  /**
+   * Release a lock only if still owned by `token` (compare-and-del via Lua).
+   */
+  async releaseLock(key: string, token: string): Promise<boolean> {
+    const script = `
+      if redis.call("get", KEYS[1]) == ARGV[1] then
+        return redis.call("del", KEYS[1])
+      else
+        return 0
+      end
+    `;
+    const result = await this.client.eval(script, 1, key, token);
+    return result === 1;
+  }
 }

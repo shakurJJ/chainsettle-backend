@@ -1,7 +1,9 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { RedisService } from '../../common/redis/redis.service';
 import { StellarService } from '../../common/stellar/stellar.service';
 import { MilestonesService } from '../milestones/milestones.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -10,6 +12,10 @@ import { MetricsService } from '../../common/metrics/metrics.service';
 import { NotificationType } from '@prisma/client';
 
 const MAX_ATTEMPTS = 5;
+const POLLER_LOCK_KEY = 'chainsettle:event-poller:leader';
+/** Lock TTL must exceed the renew interval so a healthy leader keeps ownership. */
+const POLLER_LOCK_TTL_MS = 15_000;
+const POLLER_LOCK_RENEW_MS = 5_000;
 
 /**
  * EventsService
@@ -23,17 +29,24 @@ const MAX_ATTEMPTS = 5;
  *
  * Failed events are persisted to failed_events (DLQ) and retried with
  * exponential back-off up to MAX_ATTEMPTS times.
+ *
+ * Only one process holds the Redis leader lock at a time so blue/green
+ * deploys (or multi-replica) never double-process chain events.
  */
 @Injectable()
-export class EventsService implements OnModuleInit {
+export class EventsService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(EventsService.name);
   /** In-memory mirror of the DB cursor — updated after each processed event. */
   private lastProcessedLedger: number = 0;
   private unsubscribeFn: (() => void) | null = null;
   private reconnectBackoffMs = 0;
+  private readonly lockToken = randomUUID();
+  private isLeader = false;
+  private leadershipTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly redis: RedisService,
     private readonly stellar: StellarService,
     private readonly milestones: MilestonesService,
     private readonly notifications: NotificationsService,
@@ -85,7 +98,64 @@ export class EventsService implements OnModuleInit {
       }
     }
 
+    // Try to become leader immediately; keep contending so a deploy handoff is fast.
+    await this.tryBecomeLeader();
+    this.leadershipTimer = setInterval(() => {
+      void this.tryBecomeLeader();
+    }, POLLER_LOCK_RENEW_MS);
+  }
+
+  async onModuleDestroy() {
+    if (this.leadershipTimer) {
+      clearInterval(this.leadershipTimer);
+      this.leadershipTimer = null;
+    }
+    await this.stepDownAsLeader();
+  }
+
+  private async tryBecomeLeader(): Promise<void> {
+    if (this.isLeader) {
+      const renewed = await this.redis.renewLock(
+        POLLER_LOCK_KEY,
+        this.lockToken,
+        POLLER_LOCK_TTL_MS,
+      );
+      if (!renewed) {
+        this.logger.warn('Lost event-poller leadership — stopping stream');
+        await this.stopStreamSubscription();
+        this.isLeader = false;
+      }
+      return;
+    }
+
+    const acquired = await this.redis.acquireLock(
+      POLLER_LOCK_KEY,
+      this.lockToken,
+      POLLER_LOCK_TTL_MS,
+    );
+    if (!acquired) {
+      return;
+    }
+
+    this.isLeader = true;
+    this.logger.log(`Acquired event-poller leadership (token=${this.lockToken})`);
     this.startStreamSubscription();
+  }
+
+  private async stepDownAsLeader(): Promise<void> {
+    await this.stopStreamSubscription();
+    if (this.isLeader) {
+      await this.redis.releaseLock(POLLER_LOCK_KEY, this.lockToken);
+      this.isLeader = false;
+      this.logger.log('Released event-poller leadership');
+    }
+  }
+
+  private async stopStreamSubscription(): Promise<void> {
+    if (this.unsubscribeFn) {
+      this.unsubscribeFn();
+      this.unsubscribeFn = null;
+    }
   }
 
   // ----------------------------------------------------------
@@ -132,6 +202,11 @@ export class EventsService implements OnModuleInit {
 
   @Cron(CronExpression.EVERY_MINUTE)
   async retryFailedEvents() {
+    // Only the poller leader retries DLQ work to avoid duplicate side-effects.
+    if (!this.isLeader) {
+      return;
+    }
+
     const now = new Date();
 
     const pending = await this.prisma.failedEvent.findMany({
@@ -519,14 +594,16 @@ export class EventsService implements OnModuleInit {
       };
     }
 
-    const [events, total] = await this.prisma.$transaction([
-      this.prisma.chainEvent.findMany({
+    // Read-heavy list — route through replica when configured
+    const db = this.prisma.read;
+    const [events, total] = await db.$transaction([
+      db.chainEvent.findMany({
         where,
         orderBy: { ledger: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
       }),
-      this.prisma.chainEvent.count({ where }),
+      db.chainEvent.count({ where }),
     ]);
 
     return { 
@@ -556,6 +633,7 @@ export class EventsService implements OnModuleInit {
       lag,
       updatedAt: persisted?.updatedAt ?? null,
       healthy: lag <= 100,
+      isPollerLeader: this.isLeader,
     };
   }
 
