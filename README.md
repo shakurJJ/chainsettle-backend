@@ -97,6 +97,8 @@ All endpoints are prefixed with `/api/v1` (URI versioning; see [API Versioning](
 |--------|------|------|-------------|
 | `GET` | `/shipments/:id/milestones` | ✓ | List all milestones for a shipment |
 | `GET` | `/shipments/:id/milestones/:index` | ✓ | Get single milestone |
+| `POST` | `/shipments/:id/milestones/:index/confirm` | ✓ | Confirm a single milestone (buyer) |
+| `POST` | `/shipments/:id/milestones/bulk-confirm` | ✓ | Batch-confirm milestones (buyer) |
 
 ### Events (on-chain audit log)
 | Method | Path | Auth | Description |
@@ -109,6 +111,8 @@ All endpoints are prefixed with `/api/v1` (URI versioning; see [API Versioning](
 | `GET` | `/notifications` | ✓ | Get user notifications |
 | `PATCH` | `/notifications/:id/read` | ✓ | Mark notification as read |
 | `PATCH` | `/notifications/read-all` | ✓ | Mark all as read |
+| `GET` | `/notifications/preferences` | ✓ | Get channel preferences (+ Slack webhook) |
+| `PATCH` | `/notifications/preferences` | ✓ | Update preferences / Slack webhook URL |
 
 ### Health
 | Method | Path | Auth | Description |
@@ -412,6 +416,21 @@ Errors follow a standardised format from `HttpExceptionFilter`:
   "path": "/api/v1/shipments/SHIP-999",
   "message": "Shipment SHIP-999 not found"
 }
+```
+
+Send `Accept-Language: es` to receive Spanish error messages for mapped strings (falls back to English). See [`src/i18n/README.md`](src/i18n/README.md).
+
+---
+
+## SBOM (Software Bill of Materials)
+
+Release builds generate a CycloneDX SBOM via [`.github/workflows/sbom.yml`](.github/workflows/sbom.yml). The artifact `sbom.cdx.json` is uploaded on release/tag runs and attached to GitHub Releases.
+
+Regenerate locally (requires Node 20+ and an installed lockfile):
+
+```bash
+npm run sbom
+# writes ./sbom.cdx.json from package-lock.json
 ```
 
 ---

@@ -32,6 +32,7 @@ import { Response } from 'express';
 import { MilestonesService } from './milestones.service';
 import { AppendMilestoneDto } from './dto/append-milestone.dto';
 import { ConfirmMilestoneDto } from './dto/confirm-milestone.dto';
+import { BulkConfirmMilestonesDto } from './dto/bulk-confirm-milestones.dto';
 import { RebalanceMilestonesDto } from './dto/rebalance-milestones.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';

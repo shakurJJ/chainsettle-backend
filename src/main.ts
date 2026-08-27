@@ -6,8 +6,6 @@ import helmet from 'helmet';
 import * as compression from 'compression';
 import { IoAdapter } from '@nestjs/platform-socket.io';
 import { AppModule } from './app.module';
-import { HttpExceptionFilter } from './common/filters/http-exception.filter';
-import { ThrottlerExceptionFilter } from './common/filters/throttler-exception.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 import { createWinstonLogger } from './common/logger/winston.logger';
 import * as fs from 'fs';
@@ -118,11 +116,7 @@ async function bootstrap() {
     }),
   );
 
-  // Global exception filter — standardised error responses
-  app.useGlobalFilters(
-    new HttpExceptionFilter(),
-    new ThrottlerExceptionFilter(),
-  );
+  // Exception filters are registered via APP_FILTER in AppModule (i18n-aware)
 
   // Global response transform — wraps all responses in { success, data, timestamp }
   app.useGlobalInterceptors(new TransformInterceptor());

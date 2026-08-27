@@ -8,11 +8,15 @@ import { RateLimitInfo } from '../guards/rate-limit-throttler.guard';
  * Adds Retry-After and X-RateLimit-* headers to 429 responses.
  */
 @Catch(ThrottlerException)
+@Injectable()
 export class ThrottlerExceptionFilter implements ExceptionFilter {
+  constructor(private readonly i18n: I18nService) {}
+
   catch(exception: ThrottlerException, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
     const request = ctx.getRequest<Request & { rateLimit?: RateLimitInfo }>();
     const response = ctx.getResponse<Response>();
+    const request = ctx.getRequest<Request>();
     const status = exception.getStatus();
     const exceptionResponse = exception.getResponse();
 

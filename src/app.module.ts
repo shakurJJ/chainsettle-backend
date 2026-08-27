@@ -3,7 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TerminusModule } from '@nestjs/terminus';
-import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { envValidationSchema } from './config/env.validation';
 import { RolesGuard } from './common/guards/roles.guard';
 import { RateLimitThrottlerGuard } from './common/guards/rate-limit-throttler.guard';
@@ -119,11 +119,19 @@ import { ArbitersModule } from './modules/arbiters/arbiters.module';
       provide: APP_INTERCEPTOR,
       useClass: HttpMetricsInterceptor,
     },
+    {
+      provide: APP_FILTER,
+      useClass: HttpExceptionFilter,
+    },
+    {
+      provide: APP_FILTER,
+      useClass: ThrottlerExceptionFilter,
+    },
   ],
 })
 export class AppModule {
   configure(consumer: MiddlewareConsumer) {
-    // Runs before JWT guard — attaches X-Request-ID to every request
-    consumer.apply(RequestIdMiddleware).forRoutes('*');
+    // Runs before JWT guard — attaches X-Request-ID and locale to every request
+    consumer.apply(RequestIdMiddleware, LocaleMiddleware).forRoutes('*');
   }
 }
