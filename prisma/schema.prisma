@@ -106,6 +106,7 @@ model User {
   apiKeys     ApiKey[]
   notificationPreference NotificationPreference?
   shipmentWatchers ShipmentWatcher[] @relation("ShipmentWatchers")
+  shipmentFavorites ShipmentFavorite[] @relation("ShipmentFavorites")
 
   @@map("users")
 }
@@ -153,6 +154,7 @@ model Shipment {
   shipmentNotes ShipmentNote[]
   trackingUpdates TrackingUpdate[]
   watchers  ShipmentWatcher[]
+  favorites ShipmentFavorite[]
 
   isDraft          Boolean         @default(false) // true when created via CSV bulk import; no on-chain backing yet
 

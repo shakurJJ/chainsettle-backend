@@ -1,0 +1,13 @@
+# Ignore build artifacts and secrets when sending context to Docker
+node_modules
+npm-debug.log
+dist
+coverage
+.env
+.env.*
+!.env.example
+.git
+.github
+*.md
+!README.md
+test

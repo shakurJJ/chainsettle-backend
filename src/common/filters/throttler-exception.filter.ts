@@ -1,30 +1,42 @@
-import { ExceptionFilter, Catch, ArgumentsHost, HttpException } from '@nestjs/common';
+import { ExceptionFilter, Catch, ArgumentsHost } from '@nestjs/common';
 import { ThrottlerException } from '@nestjs/throttler';
-import { Response } from 'express';
+import { Request, Response } from 'express';
+import { RateLimitInfo } from '../guards/rate-limit-throttler.guard';
 
 /**
- * Custom exception filter for throttler exceptions
- * Adds Retry-After header to 429 responses
+ * Custom exception filter for throttler exceptions.
+ * Adds Retry-After and X-RateLimit-* headers to 429 responses.
  */
 @Catch(ThrottlerException)
 export class ThrottlerExceptionFilter implements ExceptionFilter {
   catch(exception: ThrottlerException, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
+    const request = ctx.getRequest<Request & { rateLimit?: RateLimitInfo }>();
     const response = ctx.getResponse<Response>();
     const status = exception.getStatus();
-    const exceptionResponse = exception.getResponse() as any;
+    const exceptionResponse = exception.getResponse();
 
-    // Calculate retry-after in seconds (default to 60 if not available)
-    const retryAfter = Math.ceil((exceptionResponse.ttl || 60000) / 1000);
+    const rate = request.rateLimit;
+    const reset = rate?.reset ?? 60;
+    const limit = rate?.limit;
+    const remaining = rate?.remaining ?? 0;
+
+    const message =
+      typeof exceptionResponse === 'string'
+        ? exceptionResponse
+        : (exceptionResponse as { message?: string })?.message || 'Too Many Requests';
 
     response
       .status(status)
-      .header('Retry-After', retryAfter.toString())
+      .header('Retry-After', String(reset))
+      .header('X-RateLimit-Limit', limit !== undefined ? String(limit) : '')
+      .header('X-RateLimit-Remaining', String(remaining))
+      .header('X-RateLimit-Reset', String(reset))
       .json({
         statusCode: status,
-        message: exceptionResponse.message || 'Too Many Requests',
+        message,
         error: 'ThrottlerException',
-        retryAfter: `${retryAfter}s`,
+        retryAfter: `${reset}s`,
       });
   }
 }

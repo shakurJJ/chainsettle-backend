@@ -149,6 +149,8 @@ export class ShipmentsController {
       includeArchived: query.includeArchived,
       search: query.search,
       isDraft: query.isDraft,
+      favorite: query.favorite,
+      callerUserId: user?.id,
     });
   }
 
@@ -360,8 +362,8 @@ export class ShipmentsController {
   @ApiOperation({ summary: 'Get full shipment details including milestones and events' })
   @ApiResponse({ status: 200, description: 'Shipment found' })
   @ApiResponse({ status: 404, description: 'Shipment not found' })
-  findOne(@Param('id') id: string) {
-    return this.shipmentsService.findOne(id);
+  findOne(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.shipmentsService.findOne(id, user?.id);
   }
 
   /**
@@ -398,6 +400,35 @@ export class ShipmentsController {
   @ApiResponse({ status: 404, description: 'Shipment not found or no metadata set' })
   validateMetadata(@Param('id') id: string, @Body() dto: ValidateMetadataDto) {
     return this.shipmentsService.validateMetadata(id, dto.schema);
+  }
+
+  /**
+   * POST /api/v1/shipments/:id/favorite
+   * Star a shipment for quick access (private to the caller).
+   */
+  @Post(':id/favorite')
+  @UseGuards(ShipmentParticipantGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Favorite (star) a shipment for quick access' })
+  @ApiResponse({ status: 200, description: 'Shipment favorited' })
+  @ApiResponse({ status: 403, description: 'Not a shipment participant' })
+  @ApiResponse({ status: 404, description: 'Shipment not found' })
+  favoriteShipment(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.shipmentsService.favoriteShipment(id, user.id);
+  }
+
+  /**
+   * DELETE /api/v1/shipments/:id/favorite
+   * Remove a shipment from the caller's favorites.
+   */
+  @Delete(':id/favorite')
+  @UseGuards(ShipmentParticipantGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Unfavorite a shipment' })
+  @ApiResponse({ status: 200, description: 'Shipment unfavorited' })
+  @ApiResponse({ status: 403, description: 'Not a shipment participant' })
+  unfavoriteShipment(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.shipmentsService.unfavoriteShipment(id, user.id);
   }
 
   /**

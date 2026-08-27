@@ -31,25 +31,30 @@ export class RedisThrottlerStorageService implements ThrottlerStorage, OnModuleD
 
   async increment(key: string, ttl: number): Promise<{ totalHits: number; timeToExpire: number }> {
     const redisKey = `${this.prefix}${key}`;
-    
+
     try {
+      // Fixed window: only set TTL when the key is new so the window does not slide.
       const multi = this.redis.multi();
       multi.incr(redisKey);
-      multi.pexpire(redisKey, ttl);
       multi.pttl(redisKey);
-      
       const results = await multi.exec();
-      
+
       if (!results) {
         throw new Error('Redis multi command failed');
       }
 
       const totalHits = results[0][1] as number;
-      const timeToExpire = results[2][1] as number;
+      let pttl = results[1][1] as number;
 
+      if (pttl < 0) {
+        await this.redis.pexpire(redisKey, ttl);
+        pttl = ttl;
+      }
+
+      // @nestjs/throttler expects timeToExpire in seconds
       return {
         totalHits,
-        timeToExpire: timeToExpire > 0 ? timeToExpire : 0,
+        timeToExpire: pttl > 0 ? Math.ceil(pttl / 1000) : 0,
       };
     } catch (error) {
       console.error('Redis increment error:', error);

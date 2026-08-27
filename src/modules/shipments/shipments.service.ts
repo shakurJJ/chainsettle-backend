@@ -190,6 +190,8 @@ export class ShipmentsService {
     includeArchived?: boolean;
     search?: string;
     isDraft?: boolean;
+    favorite?: boolean;
+    callerUserId?: string;
   }) {
     const {
       buyerAddress,
@@ -209,6 +211,8 @@ export class ShipmentsService {
       includeArchived = false,
       search,
       isDraft,
+      favorite,
+      callerUserId,
     } = filters;
 
     if (cursor && page && page !== 1) {
@@ -248,6 +252,13 @@ export class ShipmentsService {
       where.isDraft = isDraft;
     }
 
+    if (favorite === true) {
+      if (!callerUserId) {
+        throw new BadRequestException('Authentication required to filter favorites');
+      }
+      where.favorites = { some: { userId: callerUserId } };
+    }
+
     // Scope to shipments where the caller is a participant (buyer/supplier/logistics/arbiter)
     if (!isAdmin && callerStellarAddress) {
       where.AND = where.AND ?? [];
@@ -260,6 +271,10 @@ export class ShipmentsService {
         ],
       });
     }
+
+    const favoriteInclude = callerUserId
+      ? { favorites: { where: { userId: callerUserId }, select: { id: true } } }
+      : {};
 
     let shipments: any[];
     let total: number | null = null;
@@ -310,6 +325,12 @@ export class ShipmentsService {
           where: { shipmentId: s.id },
           orderBy: { milestoneIndex: 'asc' },
         });
+        if (callerUserId) {
+          s.favorites = await this.prisma.shipmentFavorite.findMany({
+            where: { shipmentId: s.id, userId: callerUserId },
+            select: { id: true },
+          });
+        }
       }
     } else if (cursor) {
       let decoded: { createdAt: string; id: string };
@@ -322,7 +343,10 @@ export class ShipmentsService {
       const db = this.prisma.read;
       shipments = await db.shipment.findMany({
         where: { ...where, createdAt: { lte: new Date(decoded.createdAt) } },
-        include: { milestones: { orderBy: { milestoneIndex: 'asc' } } },
+        include: {
+          milestones: { orderBy: { milestoneIndex: 'asc' } },
+          ...favoriteInclude,
+        },
         orderBy: { createdAt: 'desc' },
         cursor: { id: decoded.id },
         skip: 1,
@@ -343,7 +367,10 @@ export class ShipmentsService {
       [shipments, total] = await db.$transaction([
         db.shipment.findMany({
           where,
-          include: { milestones: { orderBy: { milestoneIndex: 'asc' } } },
+          include: {
+            milestones: { orderBy: { milestoneIndex: 'asc' } },
+            ...favoriteInclude,
+          },
           orderBy: { createdAt: 'desc' },
           skip: (page - 1) * limit,
           take: limit,
@@ -353,7 +380,7 @@ export class ShipmentsService {
     }
 
     return {
-      data: shipments.map((s) => this.serialize(s)),
+      data: shipments.map((s) => this.serialize(s, callerUserId)),
       meta: cursor
         ? { nextCursor, limit }
         : {
@@ -374,10 +401,13 @@ export class ShipmentsService {
         milestones: { orderBy: { milestoneIndex: 'asc' } },
         events: { orderBy: { ledger: 'desc' }, take: 20 },
         trackingUpdates: { orderBy: { createdAt: 'asc' } },
+        ...(callerUserId
+          ? { favorites: { where: { userId: callerUserId }, select: { id: true } } }
+          : {}),
       },
     });
     if (!shipment) throw new NotFoundException(`Shipment ${id} not found`);
-    return this.serialize(shipment);
+    return this.serialize(shipment, callerUserId);
   }
 
   /**
@@ -1152,6 +1182,37 @@ export class ShipmentsService {
     })) || [];
 
     return { valid: false, errors };
+  }
+
+  // ----------------------------------------------------------
+  // FAVORITES
+  // ----------------------------------------------------------
+
+  async favoriteShipment(shipmentId: string, userId: string) {
+    const shipment = await this.prisma.shipment.findUnique({
+      where: { id: shipmentId },
+    });
+    if (!shipment) throw new NotFoundException(`Shipment ${shipmentId} not found`);
+
+    const existing = await this.prisma.shipmentFavorite.findFirst({
+      where: { shipmentId, userId },
+    });
+
+    if (!existing) {
+      await this.prisma.shipmentFavorite.create({
+        data: { shipmentId, userId },
+      });
+    }
+
+    return { favorited: true, shipmentId, userId };
+  }
+
+  async unfavoriteShipment(shipmentId: string, userId: string) {
+    await this.prisma.shipmentFavorite.deleteMany({
+      where: { shipmentId, userId },
+    });
+
+    return { unfavorited: true };
   }
 
   // ----------------------------------------------------------
@@ -1942,7 +2003,7 @@ export class ShipmentsService {
     await this.redis.delByPrefix(`shipments:${callerStellarAddress}:`);
   }
 
-  private serialize(shipment: any) {
+  private serialize(shipment: any, callerUserId?: string) {
     const now = new Date();
     const decimals: number = shipment.tokenDecimals ?? 7;
     const symbol: string = shipment.tokenSymbol ?? 'USDC';
@@ -1962,14 +2023,20 @@ export class ShipmentsService {
       ? trackingUpdates[trackingUpdates.length - 1]
       : null;
 
+    const { favorites, ...rest } = shipment;
+    const isFavorited = callerUserId
+      ? Array.isArray(favorites) && favorites.length > 0
+      : false;
+
     return {
-      ...shipment,
+      ...rest,
       tokenSymbol: symbol,
       tokenDecimals: decimals,
       totalAmount: shipment.totalAmount?.toString(),
       releasedAmount: shipment.releasedAmount?.toString(),
       totalAmountFormatted: this.stellar.toHumanAmount(shipment.totalAmount ?? 0n, decimals),
       releasedAmountFormatted: this.stellar.toHumanAmount(shipment.releasedAmount ?? 0n, decimals),
+      isFavorited,
       milestones: shipment.milestones?.map((m: any) => {
         const isOverdue =
           m.dueAt &&
