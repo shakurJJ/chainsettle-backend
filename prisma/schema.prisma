@@ -74,6 +74,13 @@ enum UserRole {
   ADMIN
 }
 
+enum KycStatus {
+  UNVERIFIED
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
 // ============================================================
 // MODELS
 // ============================================================
@@ -87,6 +94,8 @@ model User {
   name             String?
   role             UserRole  @default(BUYER)
   deactivatedAt    DateTime? // set when the user deactivates their account (soft-delete)
+  kycStatus        KycStatus @default(UNVERIFIED)
+  kycReference     String?   // opaque verification reference/ID from the KYC provider — never raw identity documents
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 

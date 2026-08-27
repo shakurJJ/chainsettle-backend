@@ -16,6 +16,7 @@ import { TokenRegistryModule } from './common/token-registry/token-registry.modu
 import { RedisThrottlerStorageService } from './common/throttler/redis-throttler-storage.service';
 import { MetricsModule } from './common/metrics/metrics.module';
 import { HttpMetricsInterceptor } from './common/interceptors/http-metrics.interceptor';
+import { FxModule } from './common/fx/fx.module';
 
 import { AuthModule } from './modules/auth/auth.module';
 import { ShipmentsModule } from './modules/shipments/shipments.module';
@@ -29,6 +30,8 @@ import { AuditLogInterceptor } from './modules/audit-logs/audit-log.interceptor'
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { ChainModule } from './modules/chain/chain.module';
+import { KycModule } from './modules/kyc/kyc.module';
+import { ArbitersModule } from './modules/arbiters/arbiters.module';
 
 @Module({
   imports: [
@@ -69,6 +72,7 @@ import { ChainModule } from './modules/chain/chain.module';
     IpfsModule,
     TokenRegistryModule,
     MetricsModule,
+    FxModule,
 
     // Feature modules
     AuthModule,
@@ -81,6 +85,8 @@ import { ChainModule } from './modules/chain/chain.module';
     AuditLogsModule,
     WebhooksModule,
     ChainModule,
+    KycModule,
+    ArbitersModule,
   ],
   providers: [
     // Apply global throttler guard (sets X-RateLimit-* on success and 429)

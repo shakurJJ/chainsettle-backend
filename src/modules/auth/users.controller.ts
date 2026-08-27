@@ -14,6 +14,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { UserRole } from '@prisma/client';
 import { AuthService } from './auth.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -47,6 +48,22 @@ export class UsersController {
   @ApiResponse({ status: 409, description: 'Email already in use' })
   updateProfile(@CurrentUser() user: any, @Body() dto: UpdateProfileDto) {
     return this.authService.updateProfile(user.id, dto);
+  }
+
+  @Get('me/export')
+  @Throttle({ default: { limit: 3, ttl: 60 * 60 * 1000 } })
+  @ApiOperation({
+    summary: "Export the authenticated user's personal data (GDPR/CCPA)",
+    description:
+      'Returns a complete JSON bundle of the caller\'s own profile, shipments they are party to, ' +
+      'comments, notifications, and audit log entries. Other participants on shared records are only ' +
+      'ever identified by their public Stellar address — never their name or email.',
+  })
+  @ApiResponse({ status: 200, description: 'Full data export for the authenticated user' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
+  exportMyData(@CurrentUser('id') userId: string) {
+    return this.authService.exportUserData(userId);
   }
 
   @Delete('me')
