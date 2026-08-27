@@ -56,6 +56,10 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   async onModuleInit() {
+    if (process.env.SDK_GENERATE === '1') {
+      this.logger.warn('Skipping event poller init (SDK_GENERATE=1)');
+      return;
+    }
     try {
       // Attempt to load the persisted cursor from the database
       const cursor = await this.prisma.eventCursor.findUnique({

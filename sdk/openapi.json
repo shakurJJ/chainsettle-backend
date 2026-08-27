@@ -1,0 +1,303 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "ChainSettle API",
+    "description": "Backend API for ChainSettle — milestone-based supply chain escrow on Stellar Soroban. Regenerate with `npm run generate:sdk`.",
+    "version": "1.0",
+    "contact": {}
+  },
+  "tags": [
+    { "name": "auth", "description": "Authentication via Stellar address" },
+    { "name": "shipments", "description": "Shipment lifecycle management" },
+    { "name": "milestones", "description": "Milestone proof and confirmation" },
+    { "name": "events", "description": "On-chain Stellar event feed" },
+    { "name": "notifications", "description": "User notifications" },
+    { "name": "health", "description": "Health check endpoints" },
+    { "name": "admin", "description": "Admin-only operations" },
+    { "name": "users", "description": "User profiles" }
+  ],
+  "servers": [],
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "type": "http"
+      }
+    },
+    "schemas": {
+      "Envelope": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean" },
+          "data": {},
+          "timestamp": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/api/v1/auth/nonce": {
+      "get": {
+        "tags": ["auth"],
+        "operationId": "AuthController_getNonce",
+        "summary": "Get challenge nonce for a Stellar address",
+        "parameters": [
+          {
+            "name": "address",
+            "required": true,
+            "in": "query",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Nonce issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "data": {
+                      "type": "object",
+                      "properties": { "nonce": { "type": "string" } }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "tags": ["auth"],
+        "operationId": "AuthController_login",
+        "summary": "Submit signed nonce, receive JWT",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["stellarAddress", "signedNonce", "signature"],
+                "properties": {
+                  "stellarAddress": { "type": "string" },
+                  "signedNonce": { "type": "string" },
+                  "signature": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "JWT issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "accessToken": { "type": "string" },
+                        "user": { "type": "object" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/shipments": {
+      "get": {
+        "tags": ["shipments"],
+        "operationId": "ShipmentsController_findAll",
+        "summary": "List shipments",
+        "security": [{ "bearer": [] }],
+        "parameters": [
+          { "name": "page", "in": "query", "schema": { "type": "integer" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer" } },
+          { "name": "status", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated shipments",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["shipments"],
+        "operationId": "ShipmentsController_create",
+        "summary": "Register on-chain shipment in DB",
+        "security": [{ "bearer": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Shipment created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/shipments/{id}": {
+      "get": {
+        "tags": ["shipments"],
+        "operationId": "ShipmentsController_findOne",
+        "summary": "Full shipment detail",
+        "security": [{ "bearer": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Shipment detail",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/notifications": {
+      "get": {
+        "tags": ["notifications"],
+        "operationId": "NotificationsController_findAll",
+        "summary": "Get user notifications",
+        "security": [{ "bearer": [] }],
+        "responses": {
+          "200": {
+            "description": "Notifications list",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/events": {
+      "get": {
+        "tags": ["events"],
+        "operationId": "EventsController_findAll",
+        "summary": "List chain events",
+        "security": [{ "bearer": [] }],
+        "responses": {
+          "200": {
+            "description": "Events list",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "tags": ["health"],
+        "operationId": "HealthController_check",
+        "summary": "Database + service health check",
+        "responses": {
+          "200": {
+            "description": "Health status",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/users/{id}/impersonate": {
+      "post": {
+        "tags": ["admin"],
+        "operationId": "AdminUsersController_impersonate",
+        "summary": "Obtain a short-lived impersonation token",
+        "security": [{ "bearer": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Impersonation token issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "accessToken": { "type": "string" },
+                        "expiresIn": { "type": "string" },
+                        "targetUser": { "type": "object" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/me": {
+      "get": {
+        "tags": ["users"],
+        "operationId": "UsersController_getProfile",
+        "summary": "Get the authenticated user profile",
+        "security": [{ "bearer": [] }],
+        "responses": {
+          "200": {
+            "description": "User profile",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

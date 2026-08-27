@@ -21,6 +21,7 @@ import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { BlockImpersonation } from '../../common/decorators/block-impersonation.decorator';
 
 @ApiTags('users')
 @Controller('users')
@@ -38,15 +39,18 @@ export class UsersController {
   }
 
   @Patch('me')
+  @BlockImpersonation()
   @ApiOperation({ summary: 'Update user profile (name, email)' })
   @ApiResponse({ status: 200, description: 'Profile updated successfully' })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 403, description: 'Blocked during impersonation' })
   @ApiResponse({ status: 409, description: 'Email already in use' })
   updateProfile(@CurrentUser() user: any, @Body() dto: UpdateProfileDto) {
     return this.authService.updateProfile(user.id, dto);
   }
 
   @Delete('me')
+  @BlockImpersonation()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Deactivate the authenticated user account',
@@ -55,6 +59,7 @@ export class UsersController {
   })
   @ApiResponse({ status: 200, description: 'Account deactivated successfully' })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 403, description: 'Blocked during impersonation' })
   @ApiResponse({
     status: 409,
     description: 'User has active shipments that must be resolved or transferred first',

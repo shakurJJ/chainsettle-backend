@@ -93,7 +93,17 @@ import { ChainModule } from './modules/chain/chain.module';
       provide: APP_GUARD,
       useClass: RolesGuard,
     },
-    // Apply global audit logging interceptor (logs all mutations)
+    // Block sensitive routes when using an impersonation token
+    {
+      provide: APP_GUARD,
+      useClass: ImpersonationGuard,
+    },
+    // Emit Deprecation / Sunset headers for @DeprecatedRoute handlers
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: DeprecationInterceptor,
+    },
+    // Apply global audit logging interceptor (logs all mutations + impersonated requests)
     {
       provide: APP_INTERCEPTOR,
       useClass: AuditLogInterceptor,

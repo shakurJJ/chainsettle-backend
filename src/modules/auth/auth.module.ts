@@ -8,6 +8,7 @@ import { JwtStrategy } from './jwt.strategy';
 import { ApiKeyStrategy } from './api-key.strategy';
 import { ApiKeysController } from './api-keys.controller';
 import { UsersController } from './users.controller';
+import { AdminUsersController } from './admin-users.controller';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { AuditLogsModule } from '../audit-logs/audit-logs.module';
 
@@ -25,7 +26,7 @@ import { AuditLogsModule } from '../audit-logs/audit-logs.module';
     NotificationsModule,
     AuditLogsModule,
   ],
-  controllers: [AuthController, UsersController, ApiKeysController],
+  controllers: [AuthController, UsersController, ApiKeysController, AdminUsersController],
   providers: [AuthService, JwtStrategy, ApiKeyStrategy],
   exports: [AuthService],
 })

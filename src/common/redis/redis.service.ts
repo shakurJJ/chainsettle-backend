@@ -13,12 +13,14 @@ export class RedisService implements OnModuleDestroy {
 
   constructor(private readonly configService: ConfigService) {
     const redisUrl = this.configService.get<string>('REDIS_URL', 'redis://localhost:6379');
+    const skipConnect = process.env.SDK_GENERATE === '1';
 
     this.client = new Redis(redisUrl, {
       maxRetriesPerRequest: 3,
-      enableReadyCheck: true,
-      lazyConnect: false,
+      enableReadyCheck: !skipConnect,
+      lazyConnect: skipConnect,
       retryStrategy: (times) => {
+        if (skipConnect) return null;
         const delay = Math.min(times * 50, 2000);
         return delay;
       },
@@ -29,6 +31,7 @@ export class RedisService implements OnModuleDestroy {
     });
 
     this.client.on('error', (err) => {
+      if (skipConnect) return;
       this.logger.error('Redis connection error:', err);
     });
 

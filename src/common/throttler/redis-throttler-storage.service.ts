@@ -14,13 +14,16 @@ export class RedisThrottlerStorageService implements ThrottlerStorage, OnModuleD
 
   constructor(private readonly configService: ConfigService) {
     const redisUrl = this.configService.get<string>('REDIS_URL', 'redis://localhost:6379');
+    const skipConnect = process.env.SDK_GENERATE === '1';
     this.redis = new Redis(redisUrl, {
       maxRetriesPerRequest: 3,
-      enableReadyCheck: true,
-      lazyConnect: false,
+      enableReadyCheck: !skipConnect,
+      lazyConnect: skipConnect,
+      retryStrategy: skipConnect ? () => null : undefined,
     });
 
     this.redis.on('error', (err) => {
+      if (skipConnect) return;
       console.error('Redis Throttler Storage Error:', err);
     });
   }
