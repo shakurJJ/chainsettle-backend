@@ -324,10 +324,12 @@ Errors follow a standardised format from `HttpExceptionFilter`:
 - [ ] Persist `lastProcessedLedger` in DB (not memory) for crash recovery
 - [ ] Enable HTTPS (reverse proxy — nginx or Caddy)
 - [ ] Set up Prisma connection pooling (PgBouncer)
+- [ ] Optionally set `DATABASE_REPLICA_URL` for read-heavy GET offload (see `docs/deployment.md`)
 - [ ] Wire up real Stellar `Keypair.verify()` in `auth.service.ts`
 - [ ] Set `CORS_ORIGIN` to your production frontend URL
 - [ ] Add rate limiting tuning for production traffic
-- [ ] Deploy via Docker (Dockerfile not included — straightforward to add)
+- [ ] Deploy via blue/green workflow (`.github/workflows/deploy-blue-green.yml` — see `docs/deployment.md`)
+- [ ] Run `npm run loadtest` against staging before scale-up (see `docs/load-testing.md`)
 
 ---
 
@@ -338,6 +340,8 @@ Errors follow a standardised format from `HttpExceptionFilter`:
 | `NODE_ENV` | Yes | `development` or `production` |
 | `PORT` | No | API port (default: 3000) |
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
+| `DATABASE_REPLICA_URL` | No | Optional read-replica URL for GET-heavy paths |
+| `SHIPMENT_ARCHIVAL_DAYS` | No | Days before terminal shipments move to cold storage (default: 90) |
 | `JWT_SECRET` | Yes | Secret for signing JWTs |
 | `JWT_EXPIRES_IN` | No | Token expiry (default: `7d`) |
 | `STELLAR_NETWORK` | Yes | `testnet` or `mainnet` |

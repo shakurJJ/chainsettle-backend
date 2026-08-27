@@ -287,7 +287,10 @@ export class ShipmentsService {
         ${participantCondition}
       `;
 
-      shipments = await this.prisma.$queryRawUnsafe(
+      // Read-heavy list path — use replica when DATABASE_REPLICA_URL is set
+      const db = this.prisma.read;
+
+      shipments = await db.$queryRawUnsafe(
         query,
         ...participantParams,
         search,
@@ -295,7 +298,7 @@ export class ShipmentsService {
         (page - 1) * limit,
       );
 
-      const countResult = await this.prisma.$queryRawUnsafe(
+      const countResult = await db.$queryRawUnsafe(
         countQuery,
         ...participantParams,
         search,
@@ -303,7 +306,7 @@ export class ShipmentsService {
       total = Number((countResult as any[])[0].count);
 
       for (const s of shipments) {
-        s.milestones = await this.prisma.milestone.findMany({
+        s.milestones = await db.milestone.findMany({
           where: { shipmentId: s.id },
           orderBy: { milestoneIndex: 'asc' },
         });
@@ -316,7 +319,8 @@ export class ShipmentsService {
         throw new BadRequestException('Invalid cursor format');
       }
 
-      shipments = await this.prisma.shipment.findMany({
+      const db = this.prisma.read;
+      shipments = await db.shipment.findMany({
         where: { ...where, createdAt: { lte: new Date(decoded.createdAt) } },
         include: { milestones: { orderBy: { milestoneIndex: 'asc' } } },
         orderBy: { createdAt: 'desc' },
@@ -335,15 +339,16 @@ export class ShipmentsService {
             ).toString('base64')
           : null;
     } else {
-      [shipments, total] = await this.prisma.$transaction([
-        this.prisma.shipment.findMany({
+      const db = this.prisma.read;
+      [shipments, total] = await db.$transaction([
+        db.shipment.findMany({
           where,
           include: { milestones: { orderBy: { milestoneIndex: 'asc' } } },
           orderBy: { createdAt: 'desc' },
           skip: (page - 1) * limit,
           take: limit,
         }),
-        this.prisma.shipment.count({ where }),
+        db.shipment.count({ where }),
       ]);
     }
 
@@ -362,7 +367,8 @@ export class ShipmentsService {
   }
 
   async findOne(id: string) {
-    const shipment = await this.prisma.shipment.findUnique({
+    const db = this.prisma.read;
+    const shipment = await db.shipment.findUnique({
       where: { id },
       include: {
         milestones: { orderBy: { milestoneIndex: 'asc' } },
@@ -372,6 +378,86 @@ export class ShipmentsService {
     });
     if (!shipment) throw new NotFoundException(`Shipment ${id} not found`);
     return this.serialize(shipment);
+  }
+
+  /**
+   * List shipments moved to cold storage by the archival job.
+   * Always reads from primary so freshly archived rows are immediately visible.
+   */
+  async findArchived(filters: {
+    page?: number;
+    limit?: number;
+    callerStellarAddress?: string;
+    isAdmin?: boolean;
+    status?: ShipmentStatus;
+  }) {
+    const { page = 1, limit = 20, callerStellarAddress, isAdmin = false, status } = filters;
+    const where: any = {};
+
+    if (status) where.status = status;
+
+    if (!isAdmin && callerStellarAddress) {
+      where.OR = [
+        { buyerAddress: callerStellarAddress },
+        { supplierAddress: callerStellarAddress },
+        { logisticsAddress: callerStellarAddress },
+        { arbiterAddress: callerStellarAddress },
+      ];
+    }
+
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.archivedShipment.findMany({
+        where,
+        orderBy: { archivedAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.archivedShipment.count({ where }),
+    ]);
+
+    return {
+      data: rows.map((row) => ({
+        ...(row.payload as object),
+        id: row.id,
+        status: row.status,
+        buyerAddress: row.buyerAddress,
+        supplierAddress: row.supplierAddress,
+        logisticsAddress: row.logisticsAddress,
+        arbiterAddress: row.arbiterAddress,
+        coldArchivedAt: row.archivedAt,
+        terminalAt: row.terminalAt,
+      })),
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  async findArchivedOne(id: string, callerStellarAddress?: string, isAdmin = false) {
+    const row = await this.prisma.archivedShipment.findUnique({ where: { id } });
+    if (!row) throw new NotFoundException(`Archived shipment ${id} not found`);
+
+    if (
+      !isAdmin &&
+      callerStellarAddress &&
+      row.buyerAddress !== callerStellarAddress &&
+      row.supplierAddress !== callerStellarAddress &&
+      row.logisticsAddress !== callerStellarAddress &&
+      row.arbiterAddress !== callerStellarAddress
+    ) {
+      throw new ForbiddenException('Not a participant on this archived shipment');
+    }
+
+    return {
+      ...(row.payload as object),
+      id: row.id,
+      status: row.status,
+      coldArchivedAt: row.archivedAt,
+      terminalAt: row.terminalAt,
+    };
   }
 
   async bulkStatus(
