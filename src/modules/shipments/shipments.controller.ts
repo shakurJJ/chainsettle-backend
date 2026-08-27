@@ -155,6 +155,47 @@ export class ShipmentsController {
   }
 
   /**
+   * GET /api/v1/shipments/archived
+   * List shipments moved to cold storage by the scheduled archival job.
+   */
+  @Get('archived')
+  @ApiOperation({
+    summary: 'List cold-archived shipments',
+    description:
+      'Returns shipments that were moved out of the hot path after the retention threshold. ' +
+      'Full milestone/event/audit history is preserved in each record payload.',
+  })
+  @ApiResponse({ status: 200, description: 'Paginated cold-archived shipments' })
+  findArchived(
+    @CurrentUser() user: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('status') status?: string,
+  ) {
+    const isAdmin = user?.role === UserRole.ADMIN;
+    return this.shipmentsService.findArchived({
+      page: page ? parseInt(page, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : undefined,
+      callerStellarAddress: user?.stellarAddress,
+      isAdmin,
+      status: status as any,
+    });
+  }
+
+  /**
+   * GET /api/v1/shipments/archived/:id
+   * Retrieve a single cold-archived shipment with full history snapshot.
+   */
+  @Get('archived/:id')
+  @ApiOperation({ summary: 'Get a cold-archived shipment by id' })
+  @ApiResponse({ status: 200, description: 'Archived shipment with full history' })
+  @ApiResponse({ status: 404, description: 'Archived shipment not found' })
+  findArchivedOne(@Param('id') id: string, @CurrentUser() user: any) {
+    const isAdmin = user?.role === UserRole.ADMIN;
+    return this.shipmentsService.findArchivedOne(id, user?.stellarAddress, isAdmin);
+  }
+
+  /**
    * GET /api/v1/shipments/export?format=csv|pdf
    * Export all shipments visible to the caller.
    * Rate-limited to 5 requests per hour per user.

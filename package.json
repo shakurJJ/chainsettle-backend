@@ -17,7 +17,7 @@
     "test:cov": "jest --coverage",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "format": "prettier --write \"src/**/*.ts\"",
-    "dev:mock-chain": "ts-node --transpile-only test/mocks/stellar-rpc-server.ts"
+    "loadtest": "bash load-tests/run-all.sh"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",
