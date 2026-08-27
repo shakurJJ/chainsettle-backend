@@ -1,0 +1,92 @@
+{
+  "consumer": {
+    "name": "chainsettle-frontend"
+  },
+  "provider": {
+    "name": "chainsettle-backend"
+  },
+  "interactions": [
+    {
+      "description": "a request for a nonce",
+      "providerState": "a user exists with the given Stellar address",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/auth/nonce",
+        "query": "address=GABC1234PROVIDER0000000000000000000000000000000000000000000",
+        "headers": {
+          "Accept": "application/json"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json; charset=utf-8"
+        },
+        "body": {
+          "success": true,
+          "data": {
+            "nonce": "chainsettle:GABC1234PROVIDER0000000000000000000000000000000000000000000:1234567890:abc123",
+            "address": "GABC1234PROVIDER0000000000000000000000000000000000000000000"
+          },
+          "timestamp": "2026-08-27T00:00:00.000Z"
+        },
+        "matchingRules": {
+          "body": {
+            "$.data.nonce": { "match": "type" },
+            "$.data.address": { "match": "type" },
+            "$.timestamp": { "match": "type" }
+          }
+        }
+      }
+    },
+    {
+      "description": "a successful login",
+      "providerState": "a nonce has been generated for the address",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/auth/login",
+        "headers": {
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        },
+        "body": {
+          "stellarAddress": "GABC1234PROVIDER0000000000000000000000000000000000000000000",
+          "signedNonce": "chainsettle:GABC1234PROVIDER0000000000000000000000000000000000000000000:1234567890:abc123",
+          "signature": "base64sighere"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json; charset=utf-8"
+        },
+        "body": {
+          "success": true,
+          "data": {
+            "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.example",
+            "user": {
+              "id": "provider-user-uuid-0001",
+              "stellarAddress": "GABC1234PROVIDER0000000000000000000000000000000000000000000",
+              "role": "BUYER"
+            }
+          },
+          "timestamp": "2026-08-27T00:00:00.000Z"
+        },
+        "matchingRules": {
+          "body": {
+            "$.data.accessToken": { "match": "type" },
+            "$.data.user.id": { "match": "type" },
+            "$.data.user.stellarAddress": { "match": "type" },
+            "$.data.user.role": { "match": "regex", "regex": "BUYER|SUPPLIER|LOGISTICS|ARBITER|ADMIN" },
+            "$.timestamp": { "match": "type" }
+          }
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "pactSpecification": {
+      "version": "2.0.0"
+    }
+  }
+}

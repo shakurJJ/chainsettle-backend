@@ -1,3 +1,9 @@
+// ── OpenTelemetry must be initialised before any other import that touches
+//    Node.js built-in modules (http, https, net).  The call is a no-op when
+//    OTEL_EXPORTER_OTLP_ENDPOINT is not set.
+import { initTracing } from './common/tracing/tracing';
+initTracing();
+
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger, RequestMethod } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';

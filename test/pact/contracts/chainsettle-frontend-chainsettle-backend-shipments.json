@@ -1,0 +1,136 @@
+{
+  "consumer": {
+    "name": "chainsettle-frontend"
+  },
+  "provider": {
+    "name": "chainsettle-backend"
+  },
+  "interactions": [
+    {
+      "description": "a request to list shipments",
+      "providerState": "the shipment list is not empty",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/shipments",
+        "headers": {
+          "Accept": "application/json"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json; charset=utf-8"
+        },
+        "body": {
+          "success": true,
+          "data": {
+            "data": [
+              {
+                "id": "shp-contract-test-001",
+                "buyerAddress": "GABC1234PROVIDER0000000000000000000000000000000000000000000",
+                "supplierAddress": "GSUPPLIER000000000000000000000000000000000000000000000000",
+                "logisticsAddress": "GLOGISTICS00000000000000000000000000000000000000000000000",
+                "arbiterAddress": "GARBITER000000000000000000000000000000000000000000000000",
+                "status": "ACTIVE",
+                "tokenSymbol": "USDC",
+                "totalAmountFormatted": "10.0000000",
+                "releasedAmountFormatted": "0.0000000"
+              }
+            ],
+            "meta": {
+              "total": 1,
+              "page": 1,
+              "limit": 20
+            }
+          },
+          "timestamp": "2026-08-27T00:00:00.000Z"
+        },
+        "matchingRules": {
+          "body": {
+            "$.data.data": { "match": "type", "min": 1 },
+            "$.data.data[*].id": { "match": "type" },
+            "$.data.data[*].buyerAddress": { "match": "type" },
+            "$.data.data[*].status": { "match": "regex", "regex": "ACTIVE|COMPLETED|CANCELLED" },
+            "$.data.data[*].tokenSymbol": { "match": "type" },
+            "$.data.data[*].totalAmountFormatted": { "match": "type" },
+            "$.data.meta.total": { "match": "integer" },
+            "$.data.meta.page": { "match": "integer" },
+            "$.data.meta.limit": { "match": "integer" },
+            "$.timestamp": { "match": "type" }
+          }
+        }
+      }
+    },
+    {
+      "description": "a request to get a single shipment",
+      "providerState": "a shipment exists",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/shipments/shp-contract-test-001",
+        "headers": {
+          "Accept": "application/json"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json; charset=utf-8"
+        },
+        "body": {
+          "success": true,
+          "data": {
+            "id": "shp-contract-test-001",
+            "buyerAddress": "GABC1234PROVIDER0000000000000000000000000000000000000000000",
+            "supplierAddress": "GSUPPLIER000000000000000000000000000000000000000000000000",
+            "logisticsAddress": "GLOGISTICS00000000000000000000000000000000000000000000000",
+            "arbiterAddress": "GARBITER000000000000000000000000000000000000000000000000",
+            "status": "ACTIVE",
+            "arbiterStatus": "PENDING_ACCEPTANCE",
+            "tokenSymbol": "USDC",
+            "tokenDecimals": 7,
+            "totalAmount": "100000000",
+            "releasedAmount": "0",
+            "totalAmountFormatted": "10.0000000",
+            "releasedAmountFormatted": "0.0000000",
+            "description": "Contract test shipment",
+            "referenceNumber": "REF-CT-001",
+            "milestones": [
+              {
+                "id": "ms-001",
+                "milestoneIndex": 0,
+                "name": "Milestone 1",
+                "paymentPercent": 100,
+                "status": "PENDING"
+              }
+            ]
+          },
+          "timestamp": "2026-08-27T00:00:00.000Z"
+        },
+        "matchingRules": {
+          "body": {
+            "$.data.id": { "match": "type" },
+            "$.data.buyerAddress": { "match": "type" },
+            "$.data.status": { "match": "regex", "regex": "ACTIVE|COMPLETED|CANCELLED" },
+            "$.data.arbiterStatus": { "match": "regex", "regex": "PENDING_ACCEPTANCE|ACCEPTED|DECLINED" },
+            "$.data.tokenSymbol": { "match": "type" },
+            "$.data.tokenDecimals": { "match": "integer" },
+            "$.data.totalAmount": { "match": "type" },
+            "$.data.releasedAmount": { "match": "type" },
+            "$.data.totalAmountFormatted": { "match": "type" },
+            "$.data.releasedAmountFormatted": { "match": "type" },
+            "$.data.milestones": { "match": "type", "min": 1 },
+            "$.data.milestones[*].milestoneIndex": { "match": "integer" },
+            "$.data.milestones[*].paymentPercent": { "match": "integer" },
+            "$.data.milestones[*].status": { "match": "type" },
+            "$.timestamp": { "match": "type" }
+          }
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "pactSpecification": {
+      "version": "2.0.0"
+    }
+  }
+}

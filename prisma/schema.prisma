@@ -392,20 +392,24 @@ model WebhookEndpoint {
 }
 
 model WebhookDelivery {
-  id           String    @id @default(uuid())
-  endpointId   String
-  eventType    String
-  payload      Json
-  statusCode   Int?
-  responseBody String?
-  deliveredAt  DateTime?
-  nextRetryAt  DateTime?
-  attemptCount Int       @default(0)
+  id                  String    @id @default(uuid())
+  endpointId          String
+  eventType           String
+  payload             Json
+  statusCode          Int?
+  responseBody        String?
+  deliveredAt         DateTime?
+  nextRetryAt         DateTime?
+  attemptCount        Int       @default(0)
+  /// Set when all retry attempts are exhausted — delivery is permanently failed.
+  permanentlyFailedAt DateTime?
+  createdAt           DateTime  @default(now())
 
   endpoint WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
 
   @@index([endpointId])
   @@index([nextRetryAt])
+  @@index([permanentlyFailedAt])
   @@map("webhook_deliveries")
 }
 

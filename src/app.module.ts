@@ -15,6 +15,8 @@ import { TokenRegistryModule } from './common/token-registry/token-registry.modu
 import { RedisThrottlerStorageService } from './common/throttler/redis-throttler-storage.service';
 import { MetricsModule } from './common/metrics/metrics.module';
 import { HttpMetricsInterceptor } from './common/interceptors/http-metrics.interceptor';
+import { TracingModule } from './common/tracing/tracing.module';
+import { TracingInterceptor } from './common/tracing/tracing.interceptor';
 
 import { AuthModule } from './modules/auth/auth.module';
 import { ShipmentsModule } from './modules/shipments/shipments.module';
@@ -68,6 +70,7 @@ import { ChainModule } from './modules/chain/chain.module';
     IpfsModule,
     TokenRegistryModule,
     MetricsModule,
+    TracingModule,
 
     // Feature modules
     AuthModule,
@@ -101,6 +104,12 @@ import { ChainModule } from './modules/chain/chain.module';
     {
       provide: APP_INTERCEPTOR,
       useClass: HttpMetricsInterceptor,
+    },
+    // Enrich active OTel span with route name, X-Request-ID, and user identity.
+    // No-op when OTEL_EXPORTER_OTLP_ENDPOINT is not configured.
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: TracingInterceptor,
     },
   ],
 })

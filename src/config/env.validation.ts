@@ -59,4 +59,10 @@ export const envValidationSchema = Joi.object({
 
   // Development
   SLOW_QUERY_THRESHOLD_MS: Joi.number().integer().min(0).default(100),
+
+  // OpenTelemetry (all optional — tracing is disabled when endpoint is absent)
+  OTEL_EXPORTER_OTLP_ENDPOINT: Joi.string().uri().optional().allow(''),
+  OTEL_SERVICE_NAME: Joi.string().optional().default('chainsettle-backend'),
+  // JSON object of extra OTLP headers, e.g. '{"x-honeycomb-team":"TOKEN"}'
+  OTEL_EXPORTER_OTLP_HEADERS: Joi.string().optional().allow(''),
 }).options({ allowUnknown: true });
