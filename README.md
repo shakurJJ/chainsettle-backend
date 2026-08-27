@@ -10,6 +10,8 @@ This is **Repo 2 of 3** in the ChainSettle project:
 | `chainsetttle-backend` ← you are here | NestJS REST API + event poller |
 | `chainsetttle-frontend` | React + Freighter wallet UI |
 
+> **Contributing?** See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, branching/commit conventions, and PR expectations.
+
 ---
 
 ## What This Backend Does
