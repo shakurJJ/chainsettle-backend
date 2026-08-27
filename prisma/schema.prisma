@@ -479,3 +479,28 @@ model ShipmentWatcher {
   @@index([userId])
   @@map("shipment_watchers")
 }
+
+/// Cold-storage copy of a COMPLETED/CANCELLED shipment moved out of the hot
+/// `shipments` table by the scheduled archival job. `payload` retains the full
+/// relational snapshot (milestones, events, comments, tracking, notes, evidence).
+model ArchivedShipment {
+  id               String         @id // original shipment id
+  status           ShipmentStatus
+  buyerAddress     String
+  supplierAddress  String
+  logisticsAddress String
+  arbiterAddress   String
+  referenceNumber  String?
+  terminalAt       DateTime       // when shipment became COMPLETED/CANCELLED
+  archivedAt       DateTime       @default(now())
+  payload          Json           // full history snapshot for compliance/reference
+
+  @@index([buyerAddress])
+  @@index([supplierAddress])
+  @@index([logisticsAddress])
+  @@index([arbiterAddress])
+  @@index([status])
+  @@index([archivedAt])
+  @@index([terminalAt])
+  @@map("archived_shipments")
+}

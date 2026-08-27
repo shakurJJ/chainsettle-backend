@@ -99,8 +99,10 @@ export class AuditLogService {
       if (endDate) where.createdAt.lte = endDate;
     }
 
-    const [logs, total] = await this.prisma.$transaction([
-      this.prisma.auditLog.findMany({
+    // Read-heavy admin list — route through replica when configured
+    const db = this.prisma.read;
+    const [logs, total] = await db.$transaction([
+      db.auditLog.findMany({
         where,
         include: {
           user: {
@@ -116,7 +118,7 @@ export class AuditLogService {
         skip: (page - 1) * limit,
         take: limit,
       }),
-      this.prisma.auditLog.count({ where }),
+      db.auditLog.count({ where }),
     ]);
 
     return {
