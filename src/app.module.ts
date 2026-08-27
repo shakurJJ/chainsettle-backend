@@ -3,7 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TerminusModule } from '@nestjs/terminus';
-import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { envValidationSchema } from './config/env.validation';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -15,6 +15,10 @@ import { TokenRegistryModule } from './common/token-registry/token-registry.modu
 import { RedisThrottlerStorageService } from './common/throttler/redis-throttler-storage.service';
 import { MetricsModule } from './common/metrics/metrics.module';
 import { HttpMetricsInterceptor } from './common/interceptors/http-metrics.interceptor';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { ThrottlerExceptionFilter } from './common/filters/throttler-exception.filter';
+import { I18nModule } from './i18n/i18n.module';
+import { LocaleMiddleware } from './i18n/locale.middleware';
 
 import { AuthModule } from './modules/auth/auth.module';
 import { ShipmentsModule } from './modules/shipments/shipments.module';
@@ -68,6 +72,7 @@ import { ChainModule } from './modules/chain/chain.module';
     IpfsModule,
     TokenRegistryModule,
     MetricsModule,
+    I18nModule,
 
     // Feature modules
     AuthModule,
@@ -102,11 +107,19 @@ import { ChainModule } from './modules/chain/chain.module';
       provide: APP_INTERCEPTOR,
       useClass: HttpMetricsInterceptor,
     },
+    {
+      provide: APP_FILTER,
+      useClass: HttpExceptionFilter,
+    },
+    {
+      provide: APP_FILTER,
+      useClass: ThrottlerExceptionFilter,
+    },
   ],
 })
 export class AppModule {
   configure(consumer: MiddlewareConsumer) {
-    // Runs before JWT guard — attaches X-Request-ID to every request
-    consumer.apply(RequestIdMiddleware).forRoutes('*');
+    // Runs before JWT guard — attaches X-Request-ID and locale to every request
+    consumer.apply(RequestIdMiddleware, LocaleMiddleware).forRoutes('*');
   }
 }

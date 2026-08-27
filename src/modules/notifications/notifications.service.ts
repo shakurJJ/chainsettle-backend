@@ -9,18 +9,30 @@ import { NotificationType } from '@prisma/client';
 import { NotificationsGateway } from './notifications.gateway';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
+import { DEFAULT_LOCALE, I18nService } from '../../i18n/i18n.service';
 
-type PreferenceMap = Record<NotificationType, { inApp: boolean; email: boolean }>;
+type ChannelPrefs = { inApp: boolean; email: boolean; slack: boolean };
+type PreferenceMap = Record<NotificationType, ChannelPrefs>;
 export type DigestFrequency = 'instant' | 'daily' | 'weekly';
-type StoredPreferences = PreferenceMap & { _meta?: { digestFrequency?: DigestFrequency } };
+type StoredPreferences = PreferenceMap & {
+  _meta?: { digestFrequency?: DigestFrequency };
+};
 
 const DEFAULT_DIGEST_FREQUENCY: DigestFrequency = 'daily';
 
 function buildDefaultPreferences(): PreferenceMap {
   return Object.values(NotificationType).reduce((acc, type) => {
-    acc[type] = { inApp: true, email: true };
+    acc[type] = { inApp: true, email: true, slack: true };
     return acc;
   }, {} as PreferenceMap);
+}
+
+function normalizeChannelPrefs(raw: Partial<ChannelPrefs> | undefined): ChannelPrefs {
+  return {
+    inApp: raw?.inApp ?? true,
+    email: raw?.email ?? true,
+    slack: raw?.slack ?? true,
+  };
 }
 
 @Injectable()
@@ -31,6 +43,7 @@ export class NotificationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly i18n: I18nService,
     @Optional() private readonly gateway: NotificationsGateway,
     @Optional() private readonly webhooks: WebhooksService,
   ) {
@@ -49,6 +62,8 @@ export class NotificationsService {
    * Creates an in-app notification for a user (by their Stellar address)
    * and optionally sends an email if they have one registered.
    * Both channels are gated on the user's NotificationPreference record.
+   * When a Slack webhook URL is configured and the type opts into Slack,
+   * a formatted message is also posted to that channel.
    */
   async notifyUser(
     stellarAddress: string,
@@ -67,8 +82,8 @@ export class NotificationsService {
         return;
       }
 
-      const prefs = await this.getOrCreatePreferences(user.id);
-      const { inApp, email: emailEnabled } = prefs[type];
+      const { preferences: prefs, slackWebhookUrl } = await this.getOrCreatePreferenceRecord(user.id);
+      const { inApp, email: emailEnabled, slack: slackEnabled } = normalizeChannelPrefs(prefs[type]);
 
       if (!inApp) return;
 
@@ -82,6 +97,10 @@ export class NotificationsService {
           where: { id: notification.id },
           data: { emailSent: true },
         });
+      }
+
+      if (slackEnabled && slackWebhookUrl) {
+        await this.sendSlackMessage(slackWebhookUrl, type, title, message, data);
       }
 
       this.gateway?.pushToUser(user.id, notification);
@@ -218,25 +237,47 @@ export class NotificationsService {
   }
 
   async getOrCreatePreferences(userId: string): Promise<PreferenceMap> {
+    const record = await this.getOrCreatePreferenceRecord(userId);
+    return record.preferences;
+  }
+
+  private async getOrCreatePreferenceRecord(userId: string): Promise<{
+    preferences: PreferenceMap;
+    slackWebhookUrl: string | null;
+  }> {
     const record = await this.prisma.notificationPreference.upsert({
       where: { userId },
       create: { userId, preferences: buildDefaultPreferences() },
       update: {},
     });
-    return record.preferences as PreferenceMap;
+    return {
+      preferences: record.preferences as PreferenceMap,
+      slackWebhookUrl: record.slackWebhookUrl ?? null,
+    };
   }
 
-  async updatePreferences(userId: string, dto: UpdatePreferencesDto): Promise<PreferenceMap> {
+  async updatePreferences(userId: string, dto: UpdatePreferencesDto) {
     const current = (await this.getOrCreatePreferences(userId)) as StoredPreferences;
     const merged: StoredPreferences = { ...current, ...(dto.preferences ?? {}) };
     if (dto.digestFrequency) {
       merged._meta = { ...current._meta, digestFrequency: dto.digestFrequency };
     }
-    const record = await this.prisma.notificationPreference.update({
+
+    const data: { preferences: StoredPreferences; slackWebhookUrl?: string | null } = {
+      preferences: merged,
+    };
+    if (dto.slackWebhookUrl !== undefined) {
+      data.slackWebhookUrl =
+        dto.slackWebhookUrl === '' || dto.slackWebhookUrl === null
+          ? null
+          : dto.slackWebhookUrl;
+    }
+
+    await this.prisma.notificationPreference.update({
       where: { userId },
-      data: { preferences: merged },
+      data,
     });
-    return record.preferences as PreferenceMap;
+    return this.getPreferencesResponse(userId);
   }
 
   /**
@@ -249,9 +290,14 @@ export class NotificationsService {
   }
 
   async getPreferencesResponse(userId: string) {
-    const prefs = (await this.getOrCreatePreferences(userId)) as StoredPreferences;
-    const { _meta, ...typePreferences } = prefs;
-    return { ...typePreferences, digestFrequency: _meta?.digestFrequency ?? DEFAULT_DIGEST_FREQUENCY };
+    const { preferences, slackWebhookUrl } = await this.getOrCreatePreferenceRecord(userId);
+    const stored = preferences as StoredPreferences;
+    const { _meta, ...typePreferences } = stored;
+    return {
+      ...typePreferences,
+      digestFrequency: _meta?.digestFrequency ?? DEFAULT_DIGEST_FREQUENCY,
+      slackWebhookUrl,
+    };
   }
 
   async findForUser(userId: string, unreadOnly = false, page = 1, limit = 20) {
@@ -339,8 +385,13 @@ export class NotificationsService {
   /**
    * Loads and renders a Handlebars template for the given notification type.
    * Returns null when no template file exists for that type (triggers plain-text fallback).
+   * Localized copy is injected as `t` from the i18n email catalog.
    */
-  private renderTemplate(type: NotificationType, data: Record<string, any>): string | null {
+  private renderTemplate(
+    type: NotificationType,
+    data: Record<string, any>,
+    locale: string = DEFAULT_LOCALE,
+  ): string | null {
     const templatePath = path.join(__dirname, 'templates', `${type}.hbs`);
     if (!fs.existsSync(templatePath)) {
       return null;
@@ -348,7 +399,18 @@ export class NotificationsService {
     try {
       const source = fs.readFileSync(templatePath, 'utf-8');
       const template = Handlebars.compile(source);
-      return template(data ?? {});
+      const emailCopy = this.i18n.getEmailCopy(type, locale);
+      const interpolated = emailCopy
+        ? Object.fromEntries(
+            Object.entries(emailCopy).map(([k, v]) => [
+              k,
+              typeof v === 'string'
+                ? Handlebars.compile(v)(data ?? {})
+                : v,
+            ]),
+          )
+        : {};
+      return template({ ...(data ?? {}), t: interpolated });
     } catch (error) {
       this.logger.error(`Failed to render template for ${type}`, error.message);
       return null;
@@ -362,29 +424,98 @@ export class NotificationsService {
     html?: string,
     type?: NotificationType,
     data?: Record<string, any>,
+    locale: string = DEFAULT_LOCALE,
   ) {
     try {
       let renderedHtml = html;
       if (!renderedHtml && type) {
-        renderedHtml = this.renderTemplate(type, data ?? {}) ?? undefined;
+        renderedHtml = this.renderTemplate(type, data ?? {}, locale) ?? undefined;
       }
+      const localizedSubject =
+        type && this.i18n.getEmailCopy(type, locale)?.subject
+          ? this.i18n.getEmailCopy(type, locale)!.subject
+          : subject;
+      const footer =
+        this.i18n.t('email.GENERIC_FOOTER', locale) ||
+        "You're receiving this because you're a participant on ChainSettle.";
       await this.transporter.sendMail({
         from: this.config.get('EMAIL_FROM', 'noreply@chainsetttle.com'),
         to,
-        subject: `ChainSettle — ${subject}`,
+        subject: `ChainSettle — ${localizedSubject}`,
         text,
         html: renderedHtml ?? `
           <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
             <h2 style="color: #1a1a2e;">ChainSettle</h2>
             <p>${text}</p>
             <hr />
-            <small style="color: #888;">You're receiving this because you're a participant on ChainSettle.</small>
+            <small style="color: #888;">${footer}</small>
           </div>
         `,
       });
-      this.logger.log(`Email sent to ${to}: ${subject}`);
+      this.logger.log(`Email sent to ${to}: ${localizedSubject}`);
     } catch (error) {
       this.logger.error(`Email failed to ${to}`, error.message);
+    }
+  }
+
+  /**
+   * Posts a Slack Incoming Webhook payload for a notification event.
+   * Failures are logged and never throw — Slack must not break in-app/email.
+   */
+  async sendSlackMessage(
+    webhookUrl: string,
+    type: NotificationType,
+    title: string,
+    message: string,
+    data?: Record<string, any>,
+  ) {
+    try {
+      const shipmentId = data?.shipmentId ? String(data.shipmentId) : undefined;
+      const milestoneIndex =
+        data?.milestoneIndex !== undefined ? String(data.milestoneIndex) : undefined;
+
+      const fields = [
+        shipmentId ? { type: 'mrkdwn', text: `*Shipment:*\n\`${shipmentId}\`` } : null,
+        milestoneIndex !== undefined
+          ? { type: 'mrkdwn', text: `*Milestone:*\n${milestoneIndex}` }
+          : null,
+        { type: 'mrkdwn', text: `*Type:*\n${type}` },
+      ].filter(Boolean);
+
+      const payload = {
+        text: `ChainSettle — ${title}`,
+        blocks: [
+          {
+            type: 'header',
+            text: { type: 'plain_text', text: `ChainSettle — ${title}`, emoji: true },
+          },
+          {
+            type: 'section',
+            text: { type: 'mrkdwn', text: message },
+          },
+          ...(fields.length
+            ? [{ type: 'section', fields }]
+            : []),
+        ],
+      };
+
+      const response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        this.logger.error(
+          `Slack webhook failed (${response.status}): ${body || response.statusText}`,
+        );
+        return;
+      }
+
+      this.logger.log(`Slack notification sent for ${type}: ${title}`);
+    } catch (error) {
+      this.logger.error(`Slack notification failed for ${type}`, (error as Error).message);
     }
   }
 }

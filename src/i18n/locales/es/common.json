@@ -1,0 +1,40 @@
+{
+  "errors": {
+    "ONLY_BUYER_MAY_CONFIRM": "Solo el comprador del envío puede confirmar hitos",
+    "SHIPMENT_NOT_FOUND": "Envío {id} no encontrado",
+    "MILESTONE_NOT_FOUND": "Hito {index} no encontrado en el envío {id}",
+    "MILESTONE_CONFIRM_STATUS": "El hito {index} debe estar en estado PROOF_SUBMITTED para confirmar (actualmente {status})",
+    "INTERNAL_SERVER_ERROR": "Error interno del servidor",
+    "TOO_MANY_REQUESTS": "Demasiadas solicitudes",
+    "NOTIFICATION_NOT_FOUND": "Notificación no encontrada",
+    "PROOF_FILE_REQUIRED": "Se debe proporcionar un archivo de prueba en el campo \"file\"",
+    "UNSUPPORTED_FILE_TYPE": "Tipo de archivo no admitido: {mime}. Permitidos: PDF, imágenes, MP4.",
+    "CANCELLED_SHIPMENT_CONFIRM": "No se puede confirmar un hito de un envío cancelado"
+  },
+  "email": {
+    "PROOF_SUBMITTED": {
+      "subject": "Prueba enviada",
+      "heading": "ChainSettle — Prueba enviada",
+      "body": "Se ha enviado una prueba para el hito <strong>{{milestoneName}}</strong> del envío <strong>{{shipmentId}}</strong>.",
+      "cta": "Ver prueba en IPFS",
+      "footer_action": "Revise y confirme o dispute la prueba enviada.",
+      "footer": "Recibe este mensaje porque es participante de ChainSettle."
+    },
+    "PAYMENT_RELEASED": {
+      "subject": "Pago liberado",
+      "heading": "ChainSettle — Pago liberado",
+      "body": "Se ha liberado un pago de <strong>{{amount}} {{tokenSymbol}}</strong> para el hito <strong>{{milestoneIndex}}</strong> del envío <strong>{{shipmentId}}</strong>.",
+      "cta": "Ver envío",
+      "footer": "Recibe este mensaje porque es participante de ChainSettle."
+    },
+    "DISPUTE_RAISED": {
+      "subject": "Disputa iniciada",
+      "heading": "ChainSettle — Disputa iniciada",
+      "body": "Se ha iniciado una disputa para el hito <strong>{{milestoneIndex}}</strong> del envío <strong>{{shipmentId}}</strong>.",
+      "action": "Envíe su evidencia a la brevedad para que el árbitro pueda revisar el caso.",
+      "cta": "Enviar evidencia",
+      "footer": "Recibe este mensaje porque es participante de ChainSettle."
+    },
+    "GENERIC_FOOTER": "Recibe este mensaje porque es participante de ChainSettle."
+  }
+}

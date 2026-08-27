@@ -16,7 +16,8 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "format": "prettier --write \"src/**/*.ts\""
+    "format": "prettier --write \"src/**/*.ts\"",
+    "sbom": "npx --yes @cyclonedx/cyclonedx-npm@1.19.3 --output-file sbom.cdx.json --output-format JSON --spec-version 1.5"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",
