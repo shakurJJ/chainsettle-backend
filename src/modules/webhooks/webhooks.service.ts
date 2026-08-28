@@ -9,7 +9,7 @@ import * as crypto from 'crypto';
 import axios, { AxiosError } from 'axios';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AuditLogService } from '../audit-logs/audit-log.service';
-import { NotificationType } from '@prisma/client';
+import { NotificationType, Prisma } from '@prisma/client';
 import { CreateWebhookDto } from './dto/create-webhook.dto';
 
 // ─── Retry policy ────────────────────────────────────────────────────────────
@@ -303,7 +303,12 @@ export class WebhooksService {
     const signature = signBody(ep.secret, body);
 
     const delivery = await this.prisma.webhookDelivery.create({
-      data: { endpointId: ep.id, eventType, payload, attemptCount: 1 },
+      data: {
+        endpointId: ep.id,
+        eventType,
+        payload: payload as Prisma.InputJsonValue,
+        attemptCount: 1,
+      },
     });
 
     try {

@@ -1,12 +1,12 @@
-import { Controller, Get, Param, NotFoundException, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, NotFoundException, UseGuards, Patch, Body, Post } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
 import { TokenRegistryService } from './token-registry.service';
 import { RedisService } from '../redis/redis.service';
-import { Post, Body, ConflictException } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { Roles } from '../decorators/roles.decorator';
 import { RegisterTokenDto } from './dto/register-token.dto';
+import { UpdateTokenDto } from './dto/update-token.dto';
 
 const CACHE_KEY = 'token_registry:list';
 const CACHE_TTL = 300; // 5 minutes
@@ -66,5 +66,16 @@ export class AdminTokenRegistryController {
   @ApiResponse({ status: 409, description: 'Address already registered' })
   async registerToken(@Body() dto: RegisterTokenDto) {
     return this.tokenRegistry.registerToken(dto);
+  }
+
+  @Patch(':address')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: '[Admin] Update an existing supported payment token' })
+  @ApiResponse({ status: 200, description: 'Token updated' })
+  @ApiResponse({ status: 403, description: 'Admin access required' })
+  @ApiResponse({ status: 404, description: 'Token not found' })
+  @ApiResponse({ status: 409, description: 'Decimls cannot change after shipment usage' })
+  async updateToken(@Param('address') address: string, @Body() dto: UpdateTokenDto) {
+    return this.tokenRegistry.updateToken(address, dto);
   }
 }

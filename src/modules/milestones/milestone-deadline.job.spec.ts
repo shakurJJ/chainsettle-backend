@@ -87,7 +87,9 @@ describe('MilestoneDeadlineJob', () => {
 
       const prismaMock = prisma.milestone.findMany as jest.Mock;
       const prismaUpdateMock = prisma.milestone.update as jest.Mock;
-      prismaMock.mockResolvedValue([overdueMilestone]);
+      prismaMock
+        .mockResolvedValueOnce([overdueMilestone])
+        .mockResolvedValueOnce([]);
       prismaUpdateMock.mockResolvedValue(overdueMilestone);
 
       const notificationsSpy = jest.spyOn(notifications, 'notifyUser');
@@ -133,7 +135,9 @@ describe('MilestoneDeadlineJob', () => {
 
       const prismaMock = prisma.milestone.findMany as jest.Mock;
       const prismaUpdateMock = prisma.milestone.update as jest.Mock;
-      prismaMock.mockResolvedValue([overdueMilestone]);
+      prismaMock
+        .mockResolvedValueOnce([overdueMilestone])
+        .mockResolvedValueOnce([]);
       prismaUpdateMock.mockResolvedValue({
         ...overdueMilestone,
         overdueNotifiedAt: new Date(),
@@ -197,7 +201,9 @@ describe('MilestoneDeadlineJob', () => {
 
       const prismaMock = prisma.milestone.findMany as jest.Mock;
       const prismaUpdateMock = prisma.milestone.update as jest.Mock;
-      prismaMock.mockResolvedValue([milestone1, milestone2]);
+      prismaMock
+        .mockResolvedValueOnce([milestone1, milestone2])
+        .mockResolvedValueOnce([]);
       prismaUpdateMock.mockResolvedValue({ overdueNotifiedAt: new Date() });
 
       const notificationsSpy = jest.spyOn(notifications, 'notifyUser');
@@ -271,6 +277,8 @@ describe('MilestoneDeadlineJob', () => {
           shipmentId: 'shipment-abc',
           milestoneIndex: 2,
           dueAt: expect.any(String),
+          threshold: expect.any(Number),
+          recipient: expect.any(String),
         }),
       );
     });

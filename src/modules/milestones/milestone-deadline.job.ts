@@ -133,7 +133,14 @@ export class MilestoneDeadlineJob {
         NotificationType.MILESTONE_OVERDUE,
         title,
         message,
-        { shipmentId, milestoneIndex, dueAt: dueAt.toISOString() },
+        {
+          shipmentId,
+          milestoneIndex,
+          dueAt: dueAt.toISOString(),
+          threshold: this.reminder1Days,
+          recipient: shipment.buyerAddress,
+          escalation: false,
+        },
       );
 
       await this.notifications.notifyUser(
@@ -141,7 +148,14 @@ export class MilestoneDeadlineJob {
         NotificationType.MILESTONE_OVERDUE,
         title,
         message,
-        { shipmentId, milestoneIndex, dueAt: dueAt.toISOString() },
+        {
+          shipmentId,
+          milestoneIndex,
+          dueAt: dueAt.toISOString(),
+          threshold: this.reminder1Days,
+          recipient: shipment.supplierAddress,
+          escalation: false,
+        },
       );
 
       await this.prisma.milestone.update({
@@ -176,7 +190,14 @@ export class MilestoneDeadlineJob {
         NotificationType.MILESTONE_OVERDUE,
         title,
         message,
-        { shipmentId, milestoneIndex, dueAt: dueAt.toISOString(), escalation: true },
+        {
+          shipmentId,
+          milestoneIndex,
+          dueAt: dueAt.toISOString(),
+          threshold: this.reminder3Days,
+          recipient: shipment.buyerAddress,
+          escalation: true,
+        },
       );
 
       await this.notifications.notifyUser(
@@ -184,7 +205,14 @@ export class MilestoneDeadlineJob {
         NotificationType.MILESTONE_OVERDUE,
         title,
         message,
-        { shipmentId, milestoneIndex, dueAt: dueAt.toISOString(), escalation: true },
+        {
+          shipmentId,
+          milestoneIndex,
+          dueAt: dueAt.toISOString(),
+          threshold: this.reminder3Days,
+          recipient: shipment.supplierAddress,
+          escalation: true,
+        },
       );
 
       await this.prisma.milestone.update({

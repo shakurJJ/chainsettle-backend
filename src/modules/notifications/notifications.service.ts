@@ -11,7 +11,7 @@ import { WebhooksService } from '../webhooks/webhooks.service';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 import { DEFAULT_LOCALE, I18nService } from '../../i18n/i18n.service';
 
-type ChannelPrefs = { inApp: boolean; email: boolean; slack: boolean };
+type ChannelPrefs = { inApp: boolean; email: boolean; slack?: boolean };
 type PreferenceMap = Record<NotificationType, ChannelPrefs>;
 export type DigestFrequency = 'instant' | 'daily' | 'weekly';
 type StoredPreferences = PreferenceMap & {

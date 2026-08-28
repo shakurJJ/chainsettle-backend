@@ -141,6 +141,9 @@ export class ShipmentsService {
     }
 
     const token = this.tokenRegistry.getToken(tokenAddress);
+    if (!token.enabled) {
+      throw new BadRequestException(`Token ${tokenAddress} is disabled and cannot be used for new shipments`);
+    }
 
     const shipment = await this.prisma.shipment.create({
       data: {
