@@ -102,6 +102,9 @@ npm run test:cov   # Unit tests with coverage
 npm run format     # Prettier
 ```
 
+> For a full breakdown of every test category (unit, e2e, load tests, Pact, and shell
+> scripts), required local services, and CI setup, see [docs/testing.md](docs/testing.md).
+
 If your change touches an endpoint used by the frontend or event polling, also run:
 
 ```bash
