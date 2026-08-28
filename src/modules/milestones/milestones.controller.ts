@@ -14,6 +14,7 @@ import {
   HttpCode,
   HttpStatus,
   Res,
+  Header,
   NotFoundException,
 } from '@nestjs/common';
 
@@ -39,6 +40,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ShipmentParticipantGuard } from '../shipments/guards/shipment-participant.guard';
 import { StellarAddressThrottlerGuard } from '../../common/guards/stellar-address-throttler.guard';
 import { Throttle } from '@nestjs/throttler';
+import { CalendarService } from './calendar.service';
 
 /** Maximum allowed proof file size: 50 MB */
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -59,7 +61,35 @@ const ALLOWED_MIME_TYPES = [
 @UseGuards(JwtAuthGuard)
 @Controller('shipments/:shipmentId/milestones')
 export class MilestonesController {
-  constructor(private readonly milestonesService: MilestonesService) {}
+  constructor(
+    private readonly milestonesService: MilestonesService,
+    private readonly calendar: CalendarService,
+  ) {}
+
+  /**
+   * GET /api/v1/shipments/:shipmentId/milestones/calendar.ics
+   * iCalendar feed of this shipment's milestone due dates.
+   *
+   * Declared before the ':milestoneIndex' routes so the param route does not
+   * swallow "calendar.ics".
+   */
+  @Get('calendar.ics')
+  @UseGuards(ShipmentParticipantGuard)
+  @Header('Content-Type', 'text/calendar; charset=utf-8')
+  @ApiOperation({ summary: "Export a shipment's milestone due dates as an iCalendar file" })
+  @ApiResponse({ status: 200, description: 'iCalendar document' })
+  @ApiResponse({ status: 403, description: 'Not a shipment participant' })
+  async getCalendar(
+    @Param('shipmentId') shipmentId: string,
+    @Res() res: Response,
+  ) {
+    const body = await this.calendar.renderShipmentCalendar(shipmentId);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${shipmentId}-milestones.ics"`,
+    );
+    res.send(body);
+  }
 
   @Get()
   @UseGuards(ShipmentParticipantGuard)
