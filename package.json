@@ -45,7 +45,7 @@
     "csv-parse": "^5.6.0",
     "form-data": "^4.0.5",
     "handlebars": "^4.7.9",
-    "helmet": "^7.1.0",
+    "helmet": "^8.3.0",
     "ioredis": "^5.11.0",
     "ipfs-http-client": "^60.0.1",
     "joi": "^18.2.3",
