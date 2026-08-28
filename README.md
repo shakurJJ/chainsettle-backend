@@ -30,6 +30,8 @@ The backend is the **bridge between the Stellar blockchain and the frontend**. I
 ## Architecture
 
 > For a deep-dive into module interactions, the event pipeline, shipment lifecycle, and cross-cutting concerns see [ARCHITECTURE.md](./ARCHITECTURE.md).
+>
+> For definitions of domain terms used throughout the codebase (shipment, milestone, arbiter, proof, dispute, escalation, reconciliation, reputation) see [docs/glossary.md](./docs/glossary.md).
 
 ```
 ┌─────────────────────────────────────────────────────┐
