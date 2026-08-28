@@ -482,6 +482,20 @@ model AppConfig {
   @@map("app_config")
 }
 
+model ShipmentFavorite {
+  id         String   @id @default(uuid())
+  shipmentId String
+  userId     String
+  createdAt  DateTime @default(now())
+
+  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  user     User     @relation("ShipmentFavorites", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([shipmentId, userId])
+  @@index([userId])
+  @@map("shipment_favorites")
+}
+
 model ShipmentWatcher {
   id         String   @id @default(uuid())
   shipmentId String
