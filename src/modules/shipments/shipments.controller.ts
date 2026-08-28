@@ -35,6 +35,8 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { ShipmentsService } from './shipments.service';
 import { ShipmentApprovalsService } from './shipment-approvals.service';
+import { SavedFiltersService } from './saved-filters.service';
+import { CreateSavedFilterDto, UpdateSavedFilterDto } from './dto/saved-filter.dto';
 import { CreateShipmentDto, UpdateShipmentDto, CancelShipmentDto, CloneShipmentDto, BulkStatusDto, ApproveShipmentDto } from './dto/create-shipment.dto';
 import { CreateTrackingDto } from './dto/tracking.dto';
 import { FindAllShipmentsDto } from './dto/find-all-shipments.dto';
@@ -56,6 +58,7 @@ export class ShipmentsController {
   constructor(
     private readonly shipmentsService: ShipmentsService,
     private readonly shipmentApprovals: ShipmentApprovalsService,
+    private readonly savedFilters: SavedFiltersService,
     private readonly redis: RedisService,
   ) { }
 
@@ -117,9 +120,16 @@ export class ShipmentsController {
   @Get()
   @ApiOperation({ summary: 'List shipments with chronological filters and pagination' })
   @ApiResponse({ status: 200, description: 'Filtered list of shipments' })
-  findAll(@CurrentUser() user: any, @Query() query: FindAllShipmentsDto) {
+  async findAll(@CurrentUser() user: any, @Query() query: FindAllShipmentsDto) {
     if (query.cursor && query.page) {
       throw new BadRequestException('cursor and page are mutually exclusive');
+    }
+
+    // A saved preset supplies the base criteria (#239); anything explicitly
+    // passed on this request overrides the stored value, so a saved view can
+    // be narrowed without being re-saved.
+    if (query.savedFilterId) {
+      query = await this.savedFilters.applyTo(user.id, query.savedFilterId, query);
     }
 
     if (query.createdAfter && query.createdBefore && new Date(query.createdAfter) > new Date(query.createdBefore)) {
@@ -402,6 +412,76 @@ export class ShipmentsController {
   @ApiResponse({ status: 404, description: 'Shipment not found or no metadata set' })
   validateMetadata(@Param('id') id: string, @Body() dto: ValidateMetadataDto) {
     return this.shipmentsService.validateMetadata(id, dto.schema);
+  }
+
+  /**
+   * POST /api/v1/shipments/filters
+   * Save a named filter preset for the caller.
+   */
+  @Post('filters')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Save a named GET /shipments filter preset' })
+  @ApiResponse({ status: 201, description: 'Saved filter created' })
+  @ApiResponse({ status: 400, description: 'Unsupported filter field' })
+  @ApiResponse({ status: 409, description: 'A preset of that name already exists' })
+  createSavedFilter(@Body() dto: CreateSavedFilterDto, @CurrentUser() user: any) {
+    return this.savedFilters.create(user.id, dto.name, dto.filter);
+  }
+
+  /**
+   * GET /api/v1/shipments/filters
+   * List the caller's saved filter presets.
+   */
+  @Get('filters')
+  @ApiOperation({ summary: "List the caller's saved filter presets" })
+  @ApiResponse({ status: 200, description: 'Saved filters' })
+  listSavedFilters(@CurrentUser() user: any) {
+    return this.savedFilters.findAll(user.id);
+  }
+
+  /**
+   * GET /api/v1/shipments/filters/:filterId
+   * Read one of the caller's saved filter presets.
+   */
+  @Get('filters/:filterId')
+  @ApiOperation({ summary: 'Get a saved filter preset' })
+  @ApiResponse({ status: 200, description: 'Saved filter' })
+  @ApiResponse({ status: 404, description: 'Not found, or not yours' })
+  getSavedFilter(@Param('filterId') filterId: string, @CurrentUser() user: any) {
+    return this.savedFilters.findOne(user.id, filterId);
+  }
+
+  /**
+   * PATCH /api/v1/shipments/filters/:filterId
+   * Rename a preset, replace its criteria, or both.
+   */
+  @Patch('filters/:filterId')
+  @ApiOperation({ summary: 'Update a saved filter preset' })
+  @ApiResponse({ status: 200, description: 'Saved filter updated' })
+  @ApiResponse({ status: 404, description: 'Not found, or not yours' })
+  @ApiResponse({ status: 409, description: 'A preset of that name already exists' })
+  updateSavedFilter(
+    @Param('filterId') filterId: string,
+    @Body() dto: UpdateSavedFilterDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.savedFilters.update(user.id, filterId, dto);
+  }
+
+  /**
+   * DELETE /api/v1/shipments/filters/:filterId
+   * Delete one of the caller's saved filter presets.
+   */
+  @Delete('filters/:filterId')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Delete a saved filter preset' })
+  @ApiResponse({ status: 200, description: 'Saved filter deleted' })
+  @ApiResponse({ status: 404, description: 'Not found, or not yours' })
+  deleteSavedFilter(
+    @Param('filterId') filterId: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.savedFilters.remove(user.id, filterId);
   }
 
   /**

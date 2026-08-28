@@ -116,6 +116,7 @@ model User {
   notificationPreference NotificationPreference?
   shipmentWatchers ShipmentWatcher[] @relation("ShipmentWatchers")
   shipmentFavorites ShipmentFavorite[] @relation("ShipmentFavorites")
+  savedFilters      SavedFilter[]      @relation("SavedFilters")
 
   @@map("users")
 }
@@ -490,6 +491,24 @@ model AppConfig {
 /// A single co-approver signing off on a high-value shipment. Milestone
 /// confirmation is blocked until the shipment has `requiredApprovals` rows
 /// here. One row per approver address, enforced by the unique constraint.
+/// A named, reusable set of GET /shipments filter criteria, private to the
+/// user who created it. `filter` holds only filter fields; pagination is a
+/// per-request concern and is never stored.
+model SavedFilter {
+  id        String   @id @default(uuid())
+  userId    String
+  name      String
+  filter    Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation("SavedFilters", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, name])
+  @@index([userId])
+  @@map("saved_filters")
+}
+
 model ShipmentApproval {
   id              String   @id @default(uuid())
   shipmentId      String

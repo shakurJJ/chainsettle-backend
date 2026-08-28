@@ -6,6 +6,7 @@ import { ShipmentsController } from './shipments.controller';
 import { ShipmentsService } from './shipments.service';
 import { RedisService } from '../../common/redis/redis.service';
 import { ShipmentApprovalsService } from './shipment-approvals.service';
+import { SavedFiltersService } from './saved-filters.service';
 
 const mockRedis: Partial<RedisService> = {
     getJson: jest.fn().mockResolvedValue(null),
@@ -17,6 +18,11 @@ const mockApprovals: Partial<ShipmentApprovalsService> = {
     getApprovalStatus: jest.fn(),
 };
 
+const mockSavedFilters: Partial<SavedFiltersService> = {
+    applyTo: jest.fn(),
+    findAll: jest.fn(),
+};
+
 describe('ShipmentsController (RBAC)', () => {
     it('rejects POST /shipments when buyerAddress does not match caller (non-admin)', async () => {
         const mockService: Partial<ShipmentsService> = {
@@ -26,6 +32,7 @@ describe('ShipmentsController (RBAC)', () => {
         const controller = new ShipmentsController(
             mockService as ShipmentsService,
             mockApprovals as ShipmentApprovalsService,
+            mockSavedFilters as SavedFiltersService,
             mockRedis as RedisService,
         );
 
@@ -53,6 +60,7 @@ describe('ShipmentsController (RBAC)', () => {
         const controller = new ShipmentsController(
             mockService as ShipmentsService,
             mockApprovals as ShipmentApprovalsService,
+            mockSavedFilters as SavedFiltersService,
             mockRedis as RedisService,
         );
 
@@ -85,6 +93,7 @@ describe('ShipmentsController (RBAC)', () => {
         const controller = new ShipmentsController(
             mockService as ShipmentsService,
             mockApprovals as ShipmentApprovalsService,
+            mockSavedFilters as SavedFiltersService,
             redisMock as RedisService,
         );
 

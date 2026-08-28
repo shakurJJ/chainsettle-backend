@@ -97,6 +97,15 @@ export class FindAllShipmentsDto {
   isDraft?: boolean;
 
   @ApiPropertyOptional({
+    description:
+      'Apply a saved filter preset. Its criteria are used as the base; any ' +
+      'other query param on the same request overrides the stored value.',
+  })
+  @IsOptional()
+  @IsString()
+  savedFilterId?: string;
+
+  @ApiPropertyOptional({
     description: 'When true, return only shipments favorited by the authenticated user',
   })
   @IsOptional()
