@@ -1,0 +1,118 @@
+# .github/dependabot.yml
+#
+# Dependabot configuration for chainsettle-backend
+#
+# Design decisions:
+#   - npm ecosystem: weekly, Mondays 09:00 UTC
+#   - github-actions ecosystem: weekly, same window
+#   - minor + patch updates are grouped into a single PR per ecosystem
+#     to reduce noise (one PR per week instead of dozens)
+#   - Security-relevant updates are intentionally NOT grouped — they arrive
+#     as individual PRs so they can be reviewed and merged fast without
+#     waiting for the broader batch (see CONTRIBUTING.md § Dependabot)
+#   - Major version bumps are also ungrouped — they require manual review
+#     of breaking changes and should not be auto-merged
+#   - open-pull-requests-limit is capped at 10 per ecosystem to keep the
+#     PR queue manageable
+
+version: 2
+
+updates:
+  # ── npm ───────────────────────────────────────────────────────────────────
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    # Target branch for dependency update PRs
+    target-branch: "main"
+    # Prefix all Dependabot commit messages for easy filtering in git log
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+      include: "scope"
+    # Labels applied to all npm Dependabot PRs
+    labels:
+      - "dependencies"
+      - "npm"
+    # Reviewers automatically requested on every PR
+    reviewers:
+      - "chainsettle-backend-maintainers"
+    # ── Grouping ─────────────────────────────────────────────────────────────
+    # Minor and patch updates are batched into one weekly PR.
+    # Major version bumps and security updates are excluded from the group
+    # so they are reviewed individually (see CONTRIBUTING.md).
+    groups:
+      # All non-major, non-security production dependency updates in one PR
+      npm-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        exclude-patterns:
+          # Stellar SDK — any version bump can have breaking RPC contract changes;
+          # keep ungrouped so the team can review carefully
+          - "@stellar/stellar-sdk"
+          - "@prisma/client"
+          - "prisma"
+        update-types:
+          - "minor"
+          - "patch"
+      # Dev-dependency minor/patch updates in a separate PR so they don't
+      # get entangled with prod dependency reviews
+      npm-dev-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+    # Security-only: always individual PRs — do NOT add to a group.
+    # Dependabot automatically opens ungrouped security PRs for any
+    # vulnerability regardless of the groups configuration above.
+    # (No extra config needed — ungrouped security PRs are the default.)
+
+    # ── Per-package overrides ─────────────────────────────────────────────
+    ignore:
+      # Pin major version bumps of framework packages — handle these manually
+      # to avoid accidental breaking changes in NestJS, Prisma, etc.
+      - dependency-name: "@nestjs/*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "prisma"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@prisma/client"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+
+  # ── GitHub Actions ────────────────────────────────────────────────────────
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    target-branch: "main"
+    commit-message:
+      prefix: "chore(ci)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    reviewers:
+      - "chainsettle-backend-maintainers"
+    groups:
+      # All action patch/minor updates in one PR — keeps CI configuration
+      # tidy without hiding security fixes (those arrive ungrouped)
+      actions-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

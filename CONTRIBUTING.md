@@ -142,6 +142,48 @@ pattern (see `src/modules/shipments/shipments.controller.ts` and
 
 ---
 
+## Dependabot PRs
+
+Dependabot is configured in [`.github/dependabot.yml`](.github/dependabot.yml) to open
+dependency-update PRs weekly (Mondays, 09:00 UTC) for both the `npm` and
+`github-actions` ecosystems.
+
+### How updates are batched
+
+| Update type | Arrives as | Review SLA |
+|---|---|---|
+| **Security fix** (any severity) | Individual PR, ungrouped | Merge within **24 h** of opening; no grouping so it never waits for the weekly batch |
+| Minor / patch — production deps | One grouped PR (`npm-minor-patch`) | Review and merge within **7 days** |
+| Minor / patch — dev deps | One grouped PR (`npm-dev-minor-patch`) | Review and merge within **7 days** |
+| Minor / patch — GitHub Actions | One grouped PR (`actions-minor-patch`) | Review and merge within **7 days** |
+| **Major version bump** | Individual PR, ungrouped | Manual review required; no auto-merge |
+
+Security PRs are **never** placed inside a group, so a critical CVE fix
+always lands as its own PR and can be fast-tracked without touching anything else.
+
+### Review checklist for Dependabot PRs
+
+1. **Check the changelog / release notes** linked in the PR description.
+2. **Run the test suite** — Dependabot PRs trigger CI automatically; do not
+   merge a red PR.
+3. For **major bumps**: read the migration guide, update any affected code,
+   and open a follow-up PR if the Dependabot PR only bumps the version without
+   handling breaking changes.
+4. For **Prisma major bumps**: run `npx prisma generate` and check for schema
+   warnings before merging.
+5. For **`@stellar/stellar-sdk` any bump**: verify that the RPC response shapes
+   consumed by `StellarService` haven't changed — the SDK does not follow strict
+   semver for XDR / RPC schema changes.
+6. After merging, confirm the deployment pipeline passes end-to-end.
+
+### Auto-merge policy
+
+Auto-merge is **not** enabled by default.  A human must approve every Dependabot PR.
+If the team decides to enable auto-merge for patch-level updates in future, restrict
+it to dev-dependency patches only, and require that all CI checks pass first.
+
+---
+
 ## Getting Help
 
 For architecture, module responsibilities, and the full API reference, see

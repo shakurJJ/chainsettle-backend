@@ -12,6 +12,8 @@ import {
   scValToNative,
   xdr,
 } from '@stellar/stellar-sdk';
+import { SpanKind } from '@opentelemetry/api';
+import { withSpan } from '../tracing/trace.helper';
 
 /**
  * StellarService
@@ -88,28 +90,43 @@ onModuleInit() {
     startLedger: number,
     filters: string[] = [],
   ): Promise<SorobanRpc.Api.EventResponse[]> {
-    try {
-      const topicFilters = filters.length > 0
-        ? filters.map((f) => [f])
-        : undefined;
+    return withSpan(
+      'stellar.fetchContractEvents',
+      async (span) => {
+        span.setAttribute('stellar.start_ledger', startLedger);
+        span.setAttribute('stellar.contract_id', this.contractId);
+        if (filters.length > 0) {
+          span.setAttribute('stellar.event_filters', filters.join(','));
+        }
 
-      const result = await this.rpcClient.getEvents({
-        startLedger,
-        filters: [
-          {
-            type: 'contract',
-            contractIds: [this.contractId],
-            ...(topicFilters && { topics: topicFilters }),
-          },
-        ],
-        limit: 100,
-      });
+        try {
+          const topicFilters = filters.length > 0
+            ? filters.map((f) => [f])
+            : undefined;
 
-      return result.events ?? [];
-    } catch (error) {
-      this.logger.error(`Failed to fetch events from ledger ${startLedger}`, error.message);
-      return [];
-    }
+          const result = await this.rpcClient.getEvents({
+            startLedger,
+            filters: [
+              {
+                type: 'contract',
+                contractIds: [this.contractId],
+                ...(topicFilters && { topics: topicFilters }),
+              },
+            ],
+            limit: 100,
+          });
+
+          const events = result.events ?? [];
+          span.setAttribute('stellar.event_count', events.length);
+          return events;
+        } catch (error) {
+          this.logger.error(`Failed to fetch events from ledger ${startLedger}`, error.message);
+          return [];
+        }
+      },
+      { 'stellar.rpc_url': this.config.get<string>('STELLAR_RPC_URL', '') },
+      SpanKind.CLIENT,
+    );
   }
 
   // ----------------------------------------------------------
@@ -125,40 +142,49 @@ onModuleInit() {
    * @returns Decoded native JS value from the contract
    */
   async simulateContractCall(method: string, args: xdr.ScVal[]): Promise<any> {
-    try {
-      const contract = new Contract(this.contractId);
+    return withSpan(
+      'stellar.simulateContractCall',
+      async (span) => {
+        span.setAttribute('stellar.contract_method', method);
+        span.setAttribute('stellar.contract_id', this.contractId);
 
-      // Use a dummy keypair for simulation (no funds needed)
-      const dummyKeypair = Keypair.random();
-      const dummyAccount = await this.rpcClient.getAccount(dummyKeypair.publicKey()).catch(() => ({
-        accountId: () => dummyKeypair.publicKey(),
-        sequenceNumber: () => '0',
-        incrementSequenceNumber: () => {},
-      }));
+        try {
+          const contract = new Contract(this.contractId);
 
-      const tx = new TransactionBuilder(dummyAccount as any, {
-        fee: BASE_FEE,
-        networkPassphrase: this.networkPassphrase,
-      })
-        .addOperation(contract.call(method, ...args))
-        .setTimeout(30)
-        .build();
+          const dummyKeypair = Keypair.random();
+          const dummyAccount = await this.rpcClient.getAccount(dummyKeypair.publicKey()).catch(() => ({
+            accountId: () => dummyKeypair.publicKey(),
+            sequenceNumber: () => '0',
+            incrementSequenceNumber: () => {},
+          }));
 
-      const simulation = await this.rpcClient.simulateTransaction(tx);
+          const tx = new TransactionBuilder(dummyAccount as any, {
+            fee: BASE_FEE,
+            networkPassphrase: this.networkPassphrase,
+          })
+            .addOperation(contract.call(method, ...args))
+            .setTimeout(30)
+            .build();
 
-      if (SorobanRpc.Api.isSimulationError(simulation)) {
-        throw new Error(`Contract simulation error: ${simulation.error}`);
-      }
+          const simulation = await this.rpcClient.simulateTransaction(tx);
 
-      if (SorobanRpc.Api.isSimulationSuccess(simulation) && simulation.result) {
-        return scValToNative(simulation.result.retval);
-      }
+          if (SorobanRpc.Api.isSimulationError(simulation)) {
+            throw new Error(`Contract simulation error: ${simulation.error}`);
+          }
 
-      return null;
-    } catch (error) {
-      this.logger.error(`simulateContractCall(${method}) failed`, error.message);
-      throw error;
-    }
+          if (SorobanRpc.Api.isSimulationSuccess(simulation) && simulation.result) {
+            return scValToNative(simulation.result.retval);
+          }
+
+          return null;
+        } catch (error) {
+          this.logger.error(`simulateContractCall(${method}) failed`, error.message);
+          throw error;
+        }
+      },
+      { 'stellar.rpc_url': this.config.get<string>('STELLAR_RPC_URL', '') },
+      SpanKind.CLIENT,
+    );
   }
 
   // ----------------------------------------------------------
