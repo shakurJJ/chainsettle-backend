@@ -37,7 +37,7 @@ jobs:
           node -e "const s=require('./sbom.cdx.json'); if(!s.bomFormat && !s.\$schema) process.exit(1); console.log('SBOM OK:', s.bomFormat || 'CycloneDX', s.specVersion || '');"
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom-cyclonedx
           path: sbom.cdx.json
