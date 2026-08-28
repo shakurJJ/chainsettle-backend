@@ -10,6 +10,8 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { IpfsService } from '../../common/ipfs/ipfs.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ShipmentsService } from '../shipments/shipments.service';
+import { ShipmentApprovalsService } from '../shipments/shipment-approvals.service';
+import { AuditLogService } from '../audit-logs/audit-log.service';
 import { StellarService } from '../../common/stellar/stellar.service';
 import { FxRateService } from '../../common/fx/fx-rate.service';
 import { AppendMilestoneDto } from './dto/append-milestone.dto';
@@ -24,6 +26,7 @@ export class MilestonesService {
     private readonly ipfs: IpfsService,
     private readonly notifications: NotificationsService,
     private readonly shipments: ShipmentsService,
+    private readonly approvals: ShipmentApprovalsService,
     private readonly auditLog: AuditLogService,
     private readonly stellar: StellarService,
     private readonly fxRate: FxRateService,
@@ -200,6 +203,11 @@ export class MilestonesService {
       throw new ForbiddenException('Only the shipment buyer may confirm milestones');
     }
 
+    // Multi-signature gate (#234): a shipment carrying requiredApprovals cannot
+    // have any milestone confirmed until that many co-approvers have signed
+    // off. No-op for shipments on the single-approver flow.
+    await this.approvals.assertQuorum(shipmentId);
+
     const milestone = await this.findOne(shipmentId, milestoneIndex);
 
     if (milestone.status !== MilestoneStatus.PROOF_SUBMITTED) {
@@ -250,6 +258,10 @@ export class MilestonesService {
     if (shipment.status === 'CANCELLED') {
       throw new ConflictException('Cannot confirm a milestone for a cancelled shipment');
     }
+
+    // Same multi-signature gate as the single confirm (#234), so a quorum
+    // cannot be bypassed by going through the batch endpoint.
+    await this.approvals.assertQuorum(shipmentId);
 
     const byIndex = new Map(shipment.milestones.map((m) => [m.milestoneIndex, m]));
     const results: Array<{
@@ -917,10 +929,10 @@ export class MilestonesService {
     });
 
     this.logger.log(
-      `Milestone ${milestoneIndex} ("${milestone.name}") removed from ${shipmentId} by buyer ${callerAddress}`,
+      `Milestone ${nextIndex} ("${milestone.name}") appended to ${shipmentId} by buyer ${callerAddress}`,
     );
 
-    return { removed: true, milestone: milestoneData };
+    return milestone;
   }
 
   // ----------------------------------------------------------

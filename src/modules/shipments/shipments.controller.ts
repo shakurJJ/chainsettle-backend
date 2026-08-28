@@ -34,7 +34,8 @@ import { Throttle } from '@nestjs/throttler';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { ShipmentsService } from './shipments.service';
-import { CreateShipmentDto, UpdateShipmentDto, CancelShipmentDto, CloneShipmentDto, BulkStatusDto } from './dto/create-shipment.dto';
+import { ShipmentApprovalsService } from './shipment-approvals.service';
+import { CreateShipmentDto, UpdateShipmentDto, CancelShipmentDto, CloneShipmentDto, BulkStatusDto, ApproveShipmentDto } from './dto/create-shipment.dto';
 import { CreateTrackingDto } from './dto/tracking.dto';
 import { FindAllShipmentsDto } from './dto/find-all-shipments.dto';
 import { AddTagDto } from './dto/tag.dto';
@@ -54,6 +55,7 @@ import { RedisService } from '../../common/redis/redis.service';
 export class ShipmentsController {
   constructor(
     private readonly shipmentsService: ShipmentsService,
+    private readonly shipmentApprovals: ShipmentApprovalsService,
     private readonly redis: RedisService,
   ) { }
 
@@ -400,6 +402,45 @@ export class ShipmentsController {
   @ApiResponse({ status: 404, description: 'Shipment not found or no metadata set' })
   validateMetadata(@Param('id') id: string, @Body() dto: ValidateMetadataDto) {
     return this.shipmentsService.validateMetadata(id, dto.schema);
+  }
+
+  /**
+   * POST /api/v1/shipments/:id/approve
+   * Record a co-approver's sign-off on a high-value shipment. Milestone
+   * confirmation stays blocked until the approval quorum is met.
+   */
+  @Post(':id/approve')
+  @UseGuards(ShipmentParticipantGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Record a co-approver sign-off on a shipment' })
+  @ApiResponse({ status: 200, description: 'Approval recorded' })
+  @ApiResponse({ status: 400, description: 'Shipment does not require multi-signature approval' })
+  @ApiResponse({ status: 403, description: 'Not a shipment participant' })
+  @ApiResponse({ status: 404, description: 'Shipment not found' })
+  @ApiResponse({ status: 409, description: 'This address has already approved' })
+  approveShipment(
+    @Param('id') id: string,
+    @Body() dto: ApproveShipmentDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.shipmentApprovals.approve(id, user.stellarAddress, dto?.note);
+  }
+
+  /**
+   * GET /api/v1/shipments/:id/approvals
+   * Approval progress for a shipment.
+   */
+  @Get(':id/approvals')
+  @UseGuards(ShipmentParticipantGuard)
+  @ApiOperation({ summary: 'List approvals recorded against a shipment' })
+  @ApiResponse({ status: 200, description: 'Approval progress' })
+  @ApiResponse({ status: 403, description: 'Not a shipment participant' })
+  async getShipmentApprovals(@Param('id') id: string) {
+    const shipment = await this.shipmentsService.findOne(id);
+    return this.shipmentApprovals.getApprovalStatus(
+      id,
+      (shipment as any).requiredApprovals ?? null,
+    );
   }
 
   /**

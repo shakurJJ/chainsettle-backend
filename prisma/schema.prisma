@@ -145,6 +145,10 @@ model Shipment {
   metadata         Json?           // arbitrary key-value pairs (incoterms, port, etc)
   tags             String[]        @default([]) // searchable tags
 
+  /// Co-approvals required before any milestone on this shipment may be
+  /// confirmed. Null means the default single-approver flow.
+  requiredApprovals Int?
+
   cancelledAt      DateTime?       // set when shipment is cancelled
   refundTxHash     String?         // on-chain tx hash of the cancel/refund transaction
   archivedAt       DateTime?       // set when buyer archives a completed/cancelled shipment
@@ -164,6 +168,7 @@ model Shipment {
   trackingUpdates TrackingUpdate[]
   watchers  ShipmentWatcher[]
   favorites ShipmentFavorite[]
+  approvals ShipmentApproval[]
 
   isDraft          Boolean         @default(false) // true when created via CSV bulk import; no on-chain backing yet
 
@@ -480,6 +485,23 @@ model AppConfig {
   updatedAt DateTime @updatedAt
 
   @@map("app_config")
+}
+
+/// A single co-approver signing off on a high-value shipment. Milestone
+/// confirmation is blocked until the shipment has `requiredApprovals` rows
+/// here. One row per approver address, enforced by the unique constraint.
+model ShipmentApproval {
+  id              String   @id @default(uuid())
+  shipmentId      String
+  approverAddress String
+  note            String?
+  createdAt       DateTime @default(now())
+
+  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  @@unique([shipmentId, approverAddress])
+  @@index([shipmentId])
+  @@map("shipment_approvals")
 }
 
 model ShipmentFavorite {
