@@ -108,6 +108,12 @@ If your change touches an endpoint used by the frontend or event polling, also r
 npm run test:e2e
 ```
 
+**Update the changelog.** If your change affects the public API (new/changed/removed
+endpoints, response shapes, or behavior visible to consumers), add an entry under the
+`[Unreleased]` section of [CHANGELOG.md](CHANGELOG.md) in the relevant
+`Added` / `Changed` / `Fixed` / `Removed` category. This is required in every PR — include
+it in the PR checklist below so consumers can track what changed between deployments.
+
 ---
 
 ## Adding or Changing Endpoints
@@ -136,6 +142,8 @@ pattern (see `src/modules/shipments/shipments.controller.ts` and
 - PRs use [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md),
   which is applied automatically when you open a PR on GitHub. Fill it out fully,
   including the "Type of Change," testing, and migration sections.
+- Add an entry to [CHANGELOG.md](CHANGELOG.md) under `[Unreleased]` for any API-facing
+  change (see [updating the changelog](#before-opening-a-pr)).
 - Link the issue you're closing with `Closes #<issue-number>`.
 - For bug reports or feature proposals, use the templates in
   [.github/ISSUE_TEMPLATE/](.github/ISSUE_TEMPLATE/).
