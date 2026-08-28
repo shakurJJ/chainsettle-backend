@@ -17,6 +17,7 @@ import { RedisService } from '../../common/redis/redis.service';
 import { MetricsService } from '../../common/metrics/metrics.service';
 import { AuditLogService } from '../audit-logs/audit-log.service';
 import { KycService } from '../kyc/kyc.service';
+import { ShipmentApprovalsService } from './shipment-approvals.service';
 import { FxRateService } from '../../common/fx/fx-rate.service';
 import { CreateShipmentDto, CloneShipmentDto } from './dto/create-shipment.dto';
 import { CreateTrackingDto } from './dto/tracking.dto';
@@ -42,6 +43,7 @@ export class ShipmentsService {
     private readonly metrics: MetricsService,
     private readonly auditLog: AuditLogService,
     private readonly kyc: KycService,
+    private readonly approvals: ShipmentApprovalsService,
     private readonly fxRate: FxRateService,
   ) {
     this.cacheTtl = this.config.get<number>('SHIPMENTS_CACHE_TTL_SECONDS', 30);
@@ -142,9 +144,18 @@ export class ShipmentsService {
 
     const token = this.tokenRegistry.getToken(tokenAddress);
 
+    // Multi-signature approval gate (#234). Rejects the field outright on
+    // shipments below the configured value threshold rather than dropping it
+    // silently, so a caller is never wrong about having gated a shipment.
+    const requiredApprovals = this.approvals.resolveRequiredApprovals(
+      dto.requiredApprovals,
+      totalAmountBigInt,
+    );
+
     const shipment = await this.prisma.shipment.create({
       data: {
         id: dto.shipmentId,
+        ...(requiredApprovals !== null ? { requiredApprovals } : {}),
         buyerAddress: dto.buyerAddress,
         supplierAddress,
         logisticsAddress,
@@ -399,7 +410,9 @@ export class ShipmentsService {
     }
 
     return {
-      data: shipments.map((s) => this.serialize(s, callerUserId)),
+      data: await Promise.all(
+        shipments.map((s) => this.serialize(s, callerUserId)),
+      ),
       meta: cursor
         ? { nextCursor, limit }
         : {
@@ -412,7 +425,7 @@ export class ShipmentsService {
     };
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, callerUserId?: string) {
     const db = this.prisma.read;
     const shipment = await db.shipment.findUnique({
       where: { id },
@@ -420,6 +433,7 @@ export class ShipmentsService {
         milestones: { orderBy: { milestoneIndex: 'asc' } },
         events: { orderBy: { ledger: 'desc' }, take: 20 },
         trackingUpdates: { orderBy: { createdAt: 'asc' } },
+        approvals: { orderBy: { createdAt: 'asc' } },
         ...(callerUserId
           ? { favorites: { where: { userId: callerUserId }, select: { id: true } } }
           : {}),
@@ -1990,6 +2004,7 @@ export class ShipmentsService {
       actorAddress: buyerAddress,
       action: 'shipment.csv_import',
       resourceType: 'Shipment',
+      resourceId: 'csv-import',
       metadata: {
         totalRows: records.length,
         created: results.filter((r) => r.status === 'created').length,
@@ -2022,7 +2037,7 @@ export class ShipmentsService {
     await this.redis.delByPrefix(`shipments:${callerStellarAddress}:`);
   }
 
-  private serialize(shipment: any, callerUserId?: string) {
+  private async serialize(shipment: any, callerUserId?: string) {
     const now = new Date();
     const decimals: number = shipment.tokenDecimals ?? 7;
     const symbol: string = shipment.tokenSymbol ?? 'USDC';
@@ -2059,13 +2074,26 @@ export class ShipmentsService {
       ? trackingUpdates[trackingUpdates.length - 1]
       : null;
 
-    const { favorites, ...rest } = shipment;
+    const { favorites, approvals, ...rest } = shipment;
     const isFavorited = callerUserId
       ? Array.isArray(favorites) && favorites.length > 0
       : false;
 
+    // Multi-signature progress (#234). requiredApprovals is null on the default
+    // single-approver flow, in which case quorum is trivially met.
+    const requiredApprovals: number | null = shipment.requiredApprovals ?? null;
+    const recordedApprovals = Array.isArray(approvals) ? approvals : [];
+    const approvalStatus = {
+      required: requiredApprovals,
+      count: recordedApprovals.length,
+      quorumMet:
+        requiredApprovals === null || recordedApprovals.length >= requiredApprovals,
+      approvals: recordedApprovals,
+    };
+
     return {
       ...rest,
+      approvalStatus,
       tokenSymbol: symbol,
       tokenDecimals: decimals,
       totalAmount: shipment.totalAmount?.toString(),

@@ -5,10 +5,22 @@ import { ForbiddenException } from '@nestjs/common';
 import { ShipmentsController } from './shipments.controller';
 import { ShipmentsService } from './shipments.service';
 import { RedisService } from '../../common/redis/redis.service';
+import { ShipmentApprovalsService } from './shipment-approvals.service';
+import { SavedFiltersService } from './saved-filters.service';
 
 const mockRedis: Partial<RedisService> = {
     getJson: jest.fn().mockResolvedValue(null),
     setJson: jest.fn().mockResolvedValue(undefined),
+};
+
+const mockApprovals: Partial<ShipmentApprovalsService> = {
+    approve: jest.fn(),
+    getApprovalStatus: jest.fn(),
+};
+
+const mockSavedFilters: Partial<SavedFiltersService> = {
+    applyTo: jest.fn(),
+    findAll: jest.fn(),
 };
 
 describe('ShipmentsController (RBAC)', () => {
@@ -17,7 +29,12 @@ describe('ShipmentsController (RBAC)', () => {
             create: jest.fn().mockResolvedValue({}),
         };
 
-        const controller = new ShipmentsController(mockService as ShipmentsService, mockRedis as RedisService);
+        const controller = new ShipmentsController(
+            mockService as ShipmentsService,
+            mockApprovals as ShipmentApprovalsService,
+            mockSavedFilters as SavedFiltersService,
+            mockRedis as RedisService,
+        );
 
         const dto: any = {
             shipmentId: 'SHIP-1',
@@ -40,7 +57,12 @@ describe('ShipmentsController (RBAC)', () => {
             create: jest.fn().mockResolvedValue({ id: 'SHIP-1' }),
         };
 
-        const controller = new ShipmentsController(mockService as ShipmentsService, mockRedis as RedisService);
+        const controller = new ShipmentsController(
+            mockService as ShipmentsService,
+            mockApprovals as ShipmentApprovalsService,
+            mockSavedFilters as SavedFiltersService,
+            mockRedis as RedisService,
+        );
 
         const dto: any = {
             shipmentId: 'SHIP-1',
@@ -68,7 +90,12 @@ describe('ShipmentsController (RBAC)', () => {
             create: jest.fn().mockResolvedValue({ id: 'SHIP-2' }),
         };
 
-        const controller = new ShipmentsController(mockService as ShipmentsService, redisMock as RedisService);
+        const controller = new ShipmentsController(
+            mockService as ShipmentsService,
+            mockApprovals as ShipmentApprovalsService,
+            mockSavedFilters as SavedFiltersService,
+            redisMock as RedisService,
+        );
 
         const dto: any = {
             shipmentId: 'SHIP-1',

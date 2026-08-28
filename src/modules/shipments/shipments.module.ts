@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { ShipmentsController } from './shipments.controller';
 import { AdminShipmentsController } from './admin-shipments.controller';
 import { ShipmentsService } from './shipments.service';
+import { ShipmentApprovalsService } from './shipment-approvals.service';
+import { SavedFiltersService } from './saved-filters.service';
 import { ShipmentArchivalJob } from './shipment-archival.job';
 import { CommentsController } from './comments.controller';
 import { CommentsService } from './comments.service';
@@ -12,8 +14,8 @@ import { RedisModule } from '../../common/redis/redis.module';
 @Module({
   imports: [NotificationsModule, RedisModule, AuditLogsModule],
   controllers: [ShipmentsController, AdminShipmentsController, CommentsController],
-  providers: [ShipmentsService, CommentsService, ShipmentArchivalJob],
-  exports: [ShipmentsService],
+  providers: [ShipmentsService, ShipmentApprovalsService, SavedFiltersService, CommentsService, ShipmentArchivalJob],
+  exports: [ShipmentsService, ShipmentApprovalsService, SavedFiltersService],
 })
 export class ShipmentsModule { }
 

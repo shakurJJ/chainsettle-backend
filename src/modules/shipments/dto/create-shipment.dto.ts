@@ -111,6 +111,31 @@ export class CreateShipmentDto {
   @IsArray()
   @IsString({ each: true })
   tags?: string[];
+
+  @ApiProperty({
+    required: false,
+    example: 2,
+    description:
+      'Co-approvals required before any milestone may be confirmed. Only accepted ' +
+      'for shipments at or above MULTISIG_VALUE_THRESHOLD_STROOPS; omit for smaller ' +
+      'shipments, which use the single-approver flow.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  requiredApprovals?: number;
+}
+
+export class ApproveShipmentDto {
+  @ApiProperty({
+    required: false,
+    example: 'Reviewed against PO-2026-001 and approved by finance.',
+    description: 'Optional note recorded alongside the approval',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
 }
 
 export class CancelShipmentDto {

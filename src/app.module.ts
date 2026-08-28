@@ -32,6 +32,7 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { ChainModule } from './modules/chain/chain.module';
 import { KycModule } from './modules/kyc/kyc.module';
 import { ArbitersModule } from './modules/arbiters/arbiters.module';
+import { FeatureFlagsModule } from './modules/feature-flags/feature-flags.module';
 
 @Module({
   imports: [
@@ -87,6 +88,7 @@ import { ArbitersModule } from './modules/arbiters/arbiters.module';
     ChainModule,
     KycModule,
     ArbitersModule,
+    FeatureFlagsModule,
   ],
   providers: [
     // Apply global throttler guard (sets X-RateLimit-* on success and 429)
