@@ -2,6 +2,7 @@
 
 > Deep-dive into module interactions, data flows, and cross-cutting concerns.
 > For setup and API reference see [README.md](./README.md).
+> For architectural decisions see [docs/adr/](./docs/adr/).
 
 ---
 
