@@ -10,6 +10,8 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { IpfsService } from '../../common/ipfs/ipfs.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ShipmentsService } from '../shipments/shipments.service';
+import { StellarService } from '../../common/stellar/stellar.service';
+import { FxRateService } from '../../common/fx/fx-rate.service';
 import { AppendMilestoneDto } from './dto/append-milestone.dto';
 import { MilestoneStatus, NotificationType, DisputeRole, ArbiterStatus } from '@prisma/client';
 
@@ -23,6 +25,8 @@ export class MilestonesService {
     private readonly notifications: NotificationsService,
     private readonly shipments: ShipmentsService,
     private readonly auditLog: AuditLogService,
+    private readonly stellar: StellarService,
+    private readonly fxRate: FxRateService,
   ) {}
 
   async findByShipment(shipmentId: string, status?: string, overdueOnly = false) {
@@ -37,15 +41,40 @@ export class MilestonesService {
       where.status = { notIn: [MilestoneStatus.CONFIRMED, MilestoneStatus.RESOLVED] };
     }
 
-    const milestones = await this.prisma.milestone.findMany({
-      where,
-      orderBy: { milestoneIndex: 'asc' },
-    });
+    const [shipment, milestones] = await Promise.all([
+      this.prisma.shipment.findUnique({
+        where: { id: shipmentId },
+        select: { totalAmount: true, tokenDecimals: true, tokenSymbol: true },
+      }),
+      this.prisma.milestone.findMany({
+        where,
+        orderBy: { milestoneIndex: 'asc' },
+      }),
+    ]);
 
-    return milestones.map((m) => ({
-      ...m,
-      isOverdue: m.dueAt ? m.dueAt < new Date() && m.status !== MilestoneStatus.CONFIRMED && m.status !== MilestoneStatus.RESOLVED : false,
-    }));
+    // Estimated USD value (#231) — omitted per-milestone when no rate is
+    // cached for the shipment's token, never causes the endpoint to fail.
+    const decimals = shipment?.tokenDecimals ?? 7;
+    const totalAmount = shipment?.totalAmount ?? 0n;
+    const fxRate = shipment ? await this.fxRate.getUsdRate(shipment.tokenSymbol ?? 'USDC') : null;
+
+    return milestones.map((m) => {
+      const amountRaw = m.paymentReleased ?? (totalAmount * BigInt(m.paymentPercent)) / 100n;
+      const estimatedUsdValue = fxRate
+        ? {
+            amountUsd: (Number(this.stellar.toHumanAmount(amountRaw, decimals)) * fxRate.rate).toFixed(2),
+            rate: fxRate.rate,
+            asOf: fxRate.asOf,
+            estimate: true,
+          }
+        : undefined;
+
+      return {
+        ...m,
+        isOverdue: m.dueAt ? m.dueAt < new Date() && m.status !== MilestoneStatus.CONFIRMED && m.status !== MilestoneStatus.RESOLVED : false,
+        ...(estimatedUsdValue ? { estimatedUsdValue } : {}),
+      };
+    });
   }
 
   async findOne(shipmentId: string, milestoneIndex: number) {
@@ -192,6 +221,137 @@ export class MilestonesService {
     );
 
     return updated;
+  }
+
+  /**
+   * Batch-confirm multiple milestones in one request.
+   * Validates each index independently, applies successful confirms in a single
+   * Prisma transaction, and returns per-index success/failure so partial
+   * failures are visible without silently rolling back the whole batch.
+   */
+  async bulkConfirmFromApi(
+    shipmentId: string,
+    callerAddress: string,
+    items: Array<{ milestoneIndex: number; txHash: string; paymentReleased: string }>,
+  ) {
+    const shipment = await this.prisma.shipment.findUnique({
+      where: { id: shipmentId },
+      include: { milestones: true },
+    });
+
+    if (!shipment) {
+      throw new NotFoundException(`Shipment ${shipmentId} not found`);
+    }
+
+    if (shipment.buyerAddress !== callerAddress) {
+      throw new ForbiddenException('Only the shipment buyer may confirm milestones');
+    }
+
+    if (shipment.status === 'CANCELLED') {
+      throw new ConflictException('Cannot confirm a milestone for a cancelled shipment');
+    }
+
+    const byIndex = new Map(shipment.milestones.map((m) => [m.milestoneIndex, m]));
+    const results: Array<{
+      milestoneIndex: number;
+      success: boolean;
+      milestone?: unknown;
+      error?: string;
+    }> = [];
+    const toConfirm: Array<{
+      milestoneIndex: number;
+      txHash: string;
+      paymentReleased: string;
+    }> = [];
+
+    for (const item of items) {
+      const milestone = byIndex.get(item.milestoneIndex);
+      if (!milestone) {
+        results.push({
+          milestoneIndex: item.milestoneIndex,
+          success: false,
+          error: `Milestone ${item.milestoneIndex} not found on shipment ${shipmentId}`,
+        });
+        continue;
+      }
+      if (milestone.status !== MilestoneStatus.PROOF_SUBMITTED) {
+        results.push({
+          milestoneIndex: item.milestoneIndex,
+          success: false,
+          error: `Milestone ${item.milestoneIndex} must be in PROOF_SUBMITTED status to confirm (currently ${milestone.status})`,
+        });
+        continue;
+      }
+      toConfirm.push(item);
+    }
+
+    const confirmedAt = new Date();
+    const updatedByIndex = new Map<number, unknown>();
+
+    if (toConfirm.length > 0) {
+      const updated = await this.prisma.$transaction(
+        toConfirm.map((item) =>
+          this.prisma.milestone.update({
+            where: {
+              shipmentId_milestoneIndex: {
+                shipmentId,
+                milestoneIndex: item.milestoneIndex,
+              },
+            },
+            data: {
+              status: MilestoneStatus.CONFIRMED,
+              paymentReleased: BigInt(item.paymentReleased),
+              confirmedAt,
+            },
+          }),
+        ),
+      );
+
+      updated.forEach((m, i) => {
+        updatedByIndex.set(toConfirm[i].milestoneIndex, m);
+      });
+
+      await this.shipments.syncStatusFromChain(shipmentId);
+
+      for (const item of toConfirm) {
+        await this.notifications.notifyUser(
+          shipment.supplierAddress,
+          NotificationType.PAYMENT_RELEASED,
+          'Payment released',
+          `Payment has been released for milestone ${item.milestoneIndex} on shipment ${shipmentId}. Tx: ${item.txHash}`,
+          {
+            shipmentId,
+            milestoneIndex: item.milestoneIndex,
+            paymentReleased: item.paymentReleased,
+            txHash: item.txHash,
+          },
+        );
+        results.push({
+          milestoneIndex: item.milestoneIndex,
+          success: true,
+          milestone: updatedByIndex.get(item.milestoneIndex),
+        });
+      }
+    }
+
+    // Preserve request order in the response
+    const resultByIndex = new Map(results.map((r) => [r.milestoneIndex, r]));
+    return {
+      shipmentId,
+      results: items.map(
+        (item) =>
+          resultByIndex.get(item.milestoneIndex) ?? {
+            milestoneIndex: item.milestoneIndex,
+            success: false,
+            error: 'Unknown error',
+          },
+      ),
+      summary: {
+        total: items.length,
+        succeeded: toConfirm.length,
+        failed: items.length - toConfirm.length,
+      },
+    };
   }
 
   // ----------------------------------------------------------

@@ -1,11 +1,12 @@
 import { Module, MiddlewareConsumer } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TerminusModule } from '@nestjs/terminus';
-import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { envValidationSchema } from './config/env.validation';
 import { RolesGuard } from './common/guards/roles.guard';
+import { RateLimitThrottlerGuard } from './common/guards/rate-limit-throttler.guard';
 
 import { PrismaModule } from './common/prisma/prisma.module';
 import { StellarModule } from './common/stellar/stellar.module';
@@ -15,8 +16,7 @@ import { TokenRegistryModule } from './common/token-registry/token-registry.modu
 import { RedisThrottlerStorageService } from './common/throttler/redis-throttler-storage.service';
 import { MetricsModule } from './common/metrics/metrics.module';
 import { HttpMetricsInterceptor } from './common/interceptors/http-metrics.interceptor';
-import { TracingModule } from './common/tracing/tracing.module';
-import { TracingInterceptor } from './common/tracing/tracing.interceptor';
+import { FxModule } from './common/fx/fx.module';
 
 import { AuthModule } from './modules/auth/auth.module';
 import { ShipmentsModule } from './modules/shipments/shipments.module';
@@ -30,6 +30,8 @@ import { AuditLogInterceptor } from './modules/audit-logs/audit-log.interceptor'
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { ChainModule } from './modules/chain/chain.module';
+import { KycModule } from './modules/kyc/kyc.module';
+import { ArbitersModule } from './modules/arbiters/arbiters.module';
 
 @Module({
   imports: [
@@ -70,7 +72,7 @@ import { ChainModule } from './modules/chain/chain.module';
     IpfsModule,
     TokenRegistryModule,
     MetricsModule,
-    TracingModule,
+    FxModule,
 
     // Feature modules
     AuthModule,
@@ -83,19 +85,31 @@ import { ChainModule } from './modules/chain/chain.module';
     AuditLogsModule,
     WebhooksModule,
     ChainModule,
+    KycModule,
+    ArbitersModule,
   ],
   providers: [
-    // Apply global throttler guard (can be overridden per route)
+    // Apply global throttler guard (sets X-RateLimit-* on success and 429)
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: RateLimitThrottlerGuard,
     },
     // Apply global roles guard — enforces @Roles() decorator across all routes
     {
       provide: APP_GUARD,
       useClass: RolesGuard,
     },
-    // Apply global audit logging interceptor (logs all mutations)
+    // Block sensitive routes when using an impersonation token
+    {
+      provide: APP_GUARD,
+      useClass: ImpersonationGuard,
+    },
+    // Emit Deprecation / Sunset headers for @DeprecatedRoute handlers
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: DeprecationInterceptor,
+    },
+    // Apply global audit logging interceptor (logs all mutations + impersonated requests)
     {
       provide: APP_INTERCEPTOR,
       useClass: AuditLogInterceptor,
@@ -105,17 +119,19 @@ import { ChainModule } from './modules/chain/chain.module';
       provide: APP_INTERCEPTOR,
       useClass: HttpMetricsInterceptor,
     },
-    // Enrich active OTel span with route name, X-Request-ID, and user identity.
-    // No-op when OTEL_EXPORTER_OTLP_ENDPOINT is not configured.
     {
-      provide: APP_INTERCEPTOR,
-      useClass: TracingInterceptor,
+      provide: APP_FILTER,
+      useClass: HttpExceptionFilter,
+    },
+    {
+      provide: APP_FILTER,
+      useClass: ThrottlerExceptionFilter,
     },
   ],
 })
 export class AppModule {
   configure(consumer: MiddlewareConsumer) {
-    // Runs before JWT guard — attaches X-Request-ID to every request
-    consumer.apply(RequestIdMiddleware).forRoutes('*');
+    // Runs before JWT guard — attaches X-Request-ID and locale to every request
+    consumer.apply(RequestIdMiddleware, LocaleMiddleware).forRoutes('*');
   }
 }

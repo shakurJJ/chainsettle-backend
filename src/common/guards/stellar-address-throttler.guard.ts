@@ -1,13 +1,14 @@
-import { Injectable, ExecutionContext } from '@nestjs/common';
-import { ThrottlerGuard } from '@nestjs/throttler';
+import { Injectable } from '@nestjs/common';
+import { RateLimitThrottlerGuard } from './rate-limit-throttler.guard';
 
 /**
  * Custom throttler guard that uses Stellar address as the throttle key
  * instead of IP address. This prevents shared NAT/proxy users from
  * blocking each other while still rate-limiting per address.
+ * Inherits X-RateLimit-* header behavior from RateLimitThrottlerGuard.
  */
 @Injectable()
-export class StellarAddressThrottlerGuard extends ThrottlerGuard {
+export class StellarAddressThrottlerGuard extends RateLimitThrottlerGuard {
   protected async getTracker(req: Record<string, any>): Promise<string> {
     // For GET /auth/nonce, use the address query parameter
     if (req.query?.address) {

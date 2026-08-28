@@ -149,7 +149,50 @@ export class ShipmentsController {
       includeArchived: query.includeArchived,
       search: query.search,
       isDraft: query.isDraft,
+      favorite: query.favorite,
+      callerUserId: user?.id,
     });
+  }
+
+  /**
+   * GET /api/v1/shipments/archived
+   * List shipments moved to cold storage by the scheduled archival job.
+   */
+  @Get('archived')
+  @ApiOperation({
+    summary: 'List cold-archived shipments',
+    description:
+      'Returns shipments that were moved out of the hot path after the retention threshold. ' +
+      'Full milestone/event/audit history is preserved in each record payload.',
+  })
+  @ApiResponse({ status: 200, description: 'Paginated cold-archived shipments' })
+  findArchived(
+    @CurrentUser() user: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('status') status?: string,
+  ) {
+    const isAdmin = user?.role === UserRole.ADMIN;
+    return this.shipmentsService.findArchived({
+      page: page ? parseInt(page, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : undefined,
+      callerStellarAddress: user?.stellarAddress,
+      isAdmin,
+      status: status as any,
+    });
+  }
+
+  /**
+   * GET /api/v1/shipments/archived/:id
+   * Retrieve a single cold-archived shipment with full history snapshot.
+   */
+  @Get('archived/:id')
+  @ApiOperation({ summary: 'Get a cold-archived shipment by id' })
+  @ApiResponse({ status: 200, description: 'Archived shipment with full history' })
+  @ApiResponse({ status: 404, description: 'Archived shipment not found' })
+  findArchivedOne(@Param('id') id: string, @CurrentUser() user: any) {
+    const isAdmin = user?.role === UserRole.ADMIN;
+    return this.shipmentsService.findArchivedOne(id, user?.stellarAddress, isAdmin);
   }
 
   /**
@@ -319,8 +362,8 @@ export class ShipmentsController {
   @ApiOperation({ summary: 'Get full shipment details including milestones and events' })
   @ApiResponse({ status: 200, description: 'Shipment found' })
   @ApiResponse({ status: 404, description: 'Shipment not found' })
-  findOne(@Param('id') id: string) {
-    return this.shipmentsService.findOne(id);
+  findOne(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.shipmentsService.findOne(id, user?.id);
   }
 
   /**
@@ -357,6 +400,35 @@ export class ShipmentsController {
   @ApiResponse({ status: 404, description: 'Shipment not found or no metadata set' })
   validateMetadata(@Param('id') id: string, @Body() dto: ValidateMetadataDto) {
     return this.shipmentsService.validateMetadata(id, dto.schema);
+  }
+
+  /**
+   * POST /api/v1/shipments/:id/favorite
+   * Star a shipment for quick access (private to the caller).
+   */
+  @Post(':id/favorite')
+  @UseGuards(ShipmentParticipantGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Favorite (star) a shipment for quick access' })
+  @ApiResponse({ status: 200, description: 'Shipment favorited' })
+  @ApiResponse({ status: 403, description: 'Not a shipment participant' })
+  @ApiResponse({ status: 404, description: 'Shipment not found' })
+  favoriteShipment(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.shipmentsService.favoriteShipment(id, user.id);
+  }
+
+  /**
+   * DELETE /api/v1/shipments/:id/favorite
+   * Remove a shipment from the caller's favorites.
+   */
+  @Delete(':id/favorite')
+  @UseGuards(ShipmentParticipantGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Unfavorite a shipment' })
+  @ApiResponse({ status: 200, description: 'Shipment unfavorited' })
+  @ApiResponse({ status: 403, description: 'Not a shipment participant' })
+  unfavoriteShipment(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.shipmentsService.unfavoriteShipment(id, user.id);
   }
 
   /**

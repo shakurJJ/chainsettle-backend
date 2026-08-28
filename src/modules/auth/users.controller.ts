@@ -14,6 +14,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { UserRole } from '@prisma/client';
 import { AuthService } from './auth.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -21,6 +22,7 @@ import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { BlockImpersonation } from '../../common/decorators/block-impersonation.decorator';
 
 @ApiTags('users')
 @Controller('users')
@@ -38,15 +40,34 @@ export class UsersController {
   }
 
   @Patch('me')
+  @BlockImpersonation()
   @ApiOperation({ summary: 'Update user profile (name, email)' })
   @ApiResponse({ status: 200, description: 'Profile updated successfully' })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 403, description: 'Blocked during impersonation' })
   @ApiResponse({ status: 409, description: 'Email already in use' })
   updateProfile(@CurrentUser() user: any, @Body() dto: UpdateProfileDto) {
     return this.authService.updateProfile(user.id, dto);
   }
 
+  @Get('me/export')
+  @Throttle({ default: { limit: 3, ttl: 60 * 60 * 1000 } })
+  @ApiOperation({
+    summary: "Export the authenticated user's personal data (GDPR/CCPA)",
+    description:
+      'Returns a complete JSON bundle of the caller\'s own profile, shipments they are party to, ' +
+      'comments, notifications, and audit log entries. Other participants on shared records are only ' +
+      'ever identified by their public Stellar address — never their name or email.',
+  })
+  @ApiResponse({ status: 200, description: 'Full data export for the authenticated user' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
+  exportMyData(@CurrentUser('id') userId: string) {
+    return this.authService.exportUserData(userId);
+  }
+
   @Delete('me')
+  @BlockImpersonation()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Deactivate the authenticated user account',
@@ -55,6 +76,7 @@ export class UsersController {
   })
   @ApiResponse({ status: 200, description: 'Account deactivated successfully' })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 403, description: 'Blocked during impersonation' })
   @ApiResponse({
     status: 409,
     description: 'User has active shipments that must be resolved or transferred first',

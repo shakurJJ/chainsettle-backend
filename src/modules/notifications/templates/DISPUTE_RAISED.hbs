@@ -1,14 +1,14 @@
 <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-  <h2 style="color: #1a1a2e;">ChainSettle — Dispute Raised</h2>
-  <p>A dispute has been raised for milestone <strong>{{milestoneIndex}}</strong> on shipment <strong>{{shipmentId}}</strong>.</p>
-  <p>Please submit your evidence promptly so the arbiter can review the case.</p>
+  <h2 style="color: #1a1a2e;">{{t.heading}}</h2>
+  <p>{{{t.body}}}</p>
+  <p>{{t.action}}</p>
   {{#if evidenceUrl}}
   <p>
     <a href="{{evidenceUrl}}" style="display:inline-block;background:#1a1a2e;color:#fff;padding:10px 20px;text-decoration:none;border-radius:4px;">
-      Submit Evidence
+      {{t.cta}}
     </a>
   </p>
   {{/if}}
   <hr />
-  <small style="color: #888;">You're receiving this because you're a participant on ChainSettle.</small>
+  <small style="color: #888;">{{t.footer}}</small>
 </div>

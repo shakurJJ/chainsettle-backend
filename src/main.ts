@@ -5,17 +5,17 @@ import { initTracing } from './common/tracing/tracing';
 initTracing();
 
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe, Logger, RequestMethod } from '@nestjs/common';
+import { ValidationPipe, Logger, RequestMethod, VersioningType } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import * as compression from 'compression';
 import { IoAdapter } from '@nestjs/platform-socket.io';
 import { AppModule } from './app.module';
-import { HttpExceptionFilter } from './common/filters/http-exception.filter';
-import { ThrottlerExceptionFilter } from './common/filters/throttler-exception.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 import { createWinstonLogger } from './common/logger/winston.logger';
+import * as fs from 'fs';
+import * as path from 'path';
 
 async function bootstrap() {
   const winstonLogger = createWinstonLogger();
@@ -39,7 +39,10 @@ async function bootstrap() {
 
   const configService = app.get(ConfigService);
   const port = configService.get<number>('PORT', 3000);
-  const apiPrefix = configService.get<string>('API_PREFIX', 'api/v1');
+  // Prefix is "api"; URI versioning appends /v1, /v2, etc.
+  // Legacy API_PREFIX=api/v1 is normalized to "api" so existing .env files keep working.
+  const rawPrefix = configService.get<string>('API_PREFIX', 'api');
+  const apiPrefix = rawPrefix.replace(/\/v\d+$/, '') || 'api';
   const allowedOrigins = configService
     .get<string>('ALLOWED_ORIGINS')
     ?.split(',')
@@ -87,14 +90,26 @@ async function bootstrap() {
         : [fallbackOrigin],
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
-    exposedHeaders: ['X-Request-ID'],
+    exposedHeaders: [
+      'X-Request-ID',
+      'X-RateLimit-Limit',
+      'X-RateLimit-Remaining',
+      'X-RateLimit-Reset',
+      'Retry-After',
+    ],
     credentials: true,
   });
-
 
   // Global prefix for all routes — /metrics is excluded so Prometheus can scrape it without the prefix
   app.setGlobalPrefix(apiPrefix, {
     exclude: [{ path: 'metrics', method: RequestMethod.GET }],
+  });
+
+  // URI versioning: /api/v1/..., /api/v2/...  Controllers default to v1.
+  // Add a v2 controller with @Controller({ path: '...', version: '2' }) without touching v1.
+  app.enableVersioning({
+    type: VersioningType.URI,
+    defaultVersion: '1',
   });
 
   // Global validation pipe
@@ -107,11 +122,7 @@ async function bootstrap() {
     }),
   );
 
-  // Global exception filter — standardised error responses
-  app.useGlobalFilters(
-    new HttpExceptionFilter(),
-    new ThrottlerExceptionFilter(),
-  );
+  // Exception filters are registered via APP_FILTER in AppModule (i18n-aware)
 
   // Global response transform — wraps all responses in { success, data, timestamp }
   app.useGlobalInterceptors(new TransformInterceptor());
@@ -137,8 +148,19 @@ async function bootstrap() {
     swaggerOptions: { persistAuthorization: true },
   });
 
+  // When SDK_GENERATE=1, write OpenAPI JSON and exit (used by npm run generate:sdk).
+  if (process.env.SDK_GENERATE === '1') {
+    const outDir = path.resolve(process.cwd(), 'sdk');
+    fs.mkdirSync(outDir, { recursive: true });
+    const outFile = path.join(outDir, 'openapi.json');
+    fs.writeFileSync(outFile, JSON.stringify(document, null, 2));
+    logger.log(`OpenAPI schema written to ${outFile}`);
+    await app.close();
+    process.exit(0);
+  }
+
   await app.listen(port);
-  logger.log(`ChainSettle API running on http://localhost:${port}/${apiPrefix}`);
+  logger.log(`ChainSettle API running on http://localhost:${port}/${apiPrefix}/v1`);
   logger.log(`Swagger docs at http://localhost:${port}/docs`);
 }
 

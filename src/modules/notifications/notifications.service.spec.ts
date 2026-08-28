@@ -3,17 +3,18 @@ import { ConfigService } from '@nestjs/config';
 import { NotificationsService } from './notifications.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationType } from '@prisma/client';
+import { I18nService } from '../../i18n/i18n.service';
 
 const ALL_TYPES = Object.values(NotificationType);
 
 function allEnabled() {
-  return ALL_TYPES.reduce((acc, t) => ({ ...acc, [t]: { inApp: true, email: true } }), {});
+  return ALL_TYPES.reduce((acc, t) => ({ ...acc, [t]: { inApp: true, email: true, slack: true } }), {});
 }
 
 const mockUser = { id: 'user-1', stellarAddress: 'GABC', email: 'user@example.com' };
 const mockNotification = { id: 'notif-1', userId: 'user-1', type: NotificationType.PROOF_SUBMITTED };
 
-function buildPrisma(prefOverride?: object) {
+function buildPrisma(prefOverride?: object, slackWebhookUrl: string | null = null) {
   return {
     user: { findUnique: jest.fn().mockResolvedValue(mockUser) },
     notification: {
@@ -24,8 +25,14 @@ function buildPrisma(prefOverride?: object) {
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     notificationPreference: {
-      upsert: jest.fn().mockResolvedValue({ preferences: prefOverride ?? allEnabled() }),
-      update: jest.fn().mockResolvedValue({ preferences: prefOverride ?? allEnabled() }),
+      upsert: jest.fn().mockResolvedValue({
+        preferences: prefOverride ?? allEnabled(),
+        slackWebhookUrl,
+      }),
+      update: jest.fn().mockResolvedValue({
+        preferences: prefOverride ?? allEnabled(),
+        slackWebhookUrl,
+      }),
     },
     $transaction: jest.fn().mockResolvedValue([[], 0]),
   };
@@ -37,6 +44,13 @@ async function buildService(prisma: any) {
       NotificationsService,
       { provide: PrismaService, useValue: prisma },
       { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(undefined) } },
+      {
+        provide: I18nService,
+        useValue: {
+          getEmailCopy: jest.fn().mockReturnValue(null),
+          t: jest.fn((key: string) => key),
+        },
+      },
     ],
   }).compile();
   return module.get(NotificationsService);
@@ -57,14 +71,14 @@ describe('NotificationsService — preferences', () => {
       );
     });
 
-    it('all types default to inApp: true, email: true', async () => {
+    it('all types default to inApp: true, email: true, slack: true', async () => {
       const prisma = buildPrisma();
       const service = await buildService(prisma);
 
       const prefs = await service.getOrCreatePreferences('user-1');
 
       ALL_TYPES.forEach((type) => {
-        expect(prefs[type]).toEqual({ inApp: true, email: true });
+        expect(prefs[type]).toEqual({ inApp: true, email: true, slack: true });
       });
     });
   });
@@ -144,6 +158,42 @@ describe('NotificationsService — preferences', () => {
           }),
         }),
       );
+    });
+  });
+
+  describe('Slack channel', () => {
+    const originalFetch = global.fetch;
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+      jest.clearAllMocks();
+    });
+
+    it('posts to Slack when webhook URL is configured and slack is enabled', async () => {
+      const prisma = buildPrisma(undefined, 'https://hooks.slack.com/services/T/B/X');
+      const service = await buildService(prisma);
+      global.fetch = jest.fn().mockResolvedValue({ ok: true, text: async () => 'ok' }) as any;
+
+      await service.notifyUser('GABC', NotificationType.PROOF_SUBMITTED, 'Proof in', 'msg', {
+        shipmentId: 'ship-1',
+        milestoneIndex: 0,
+      });
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://hooks.slack.com/services/T/B/X',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+
+    it('skips Slack when webhook URL is removed', async () => {
+      const prisma = buildPrisma(undefined, null);
+      const service = await buildService(prisma);
+      global.fetch = jest.fn() as any;
+
+      await service.notifyUser('GABC', NotificationType.PROOF_SUBMITTED, 'Proof in', 'msg');
+
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(prisma.notification.create).toHaveBeenCalledTimes(1);
     });
   });
 });

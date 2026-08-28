@@ -1,0 +1,40 @@
+{
+  "errors": {
+    "ONLY_BUYER_MAY_CONFIRM": "Only the shipment buyer may confirm milestones",
+    "SHIPMENT_NOT_FOUND": "Shipment {id} not found",
+    "MILESTONE_NOT_FOUND": "Milestone {index} not found on shipment {id}",
+    "MILESTONE_CONFIRM_STATUS": "Milestone {index} must be in PROOF_SUBMITTED status to confirm (currently {status})",
+    "INTERNAL_SERVER_ERROR": "Internal server error",
+    "TOO_MANY_REQUESTS": "Too Many Requests",
+    "NOTIFICATION_NOT_FOUND": "Notification not found",
+    "PROOF_FILE_REQUIRED": "A proof file must be provided in the \"file\" field",
+    "UNSUPPORTED_FILE_TYPE": "Unsupported file type: {mime}. Allowed: PDF, images, MP4.",
+    "CANCELLED_SHIPMENT_CONFIRM": "Cannot confirm a milestone for a cancelled shipment"
+  },
+  "email": {
+    "PROOF_SUBMITTED": {
+      "subject": "Proof Submitted",
+      "heading": "ChainSettle — Proof Submitted",
+      "body": "A proof has been submitted for milestone <strong>{{milestoneName}}</strong> on shipment <strong>{{shipmentId}}</strong>.",
+      "cta": "View Proof on IPFS",
+      "footer_action": "Please review and confirm or dispute the submitted proof.",
+      "footer": "You're receiving this because you're a participant on ChainSettle."
+    },
+    "PAYMENT_RELEASED": {
+      "subject": "Payment Released",
+      "heading": "ChainSettle — Payment Released",
+      "body": "A payment of <strong>{{amount}} {{tokenSymbol}}</strong> has been released for milestone <strong>{{milestoneIndex}}</strong> on shipment <strong>{{shipmentId}}</strong>.",
+      "cta": "View Shipment",
+      "footer": "You're receiving this because you're a participant on ChainSettle."
+    },
+    "DISPUTE_RAISED": {
+      "subject": "Dispute Raised",
+      "heading": "ChainSettle — Dispute Raised",
+      "body": "A dispute has been raised for milestone <strong>{{milestoneIndex}}</strong> on shipment <strong>{{shipmentId}}</strong>.",
+      "action": "Please submit your evidence promptly so the arbiter can review the case.",
+      "cta": "Submit Evidence",
+      "footer": "You're receiving this because you're a participant on ChainSettle."
+    },
+    "GENERIC_FOOTER": "You're receiving this because you're a participant on ChainSettle."
+  }
+}

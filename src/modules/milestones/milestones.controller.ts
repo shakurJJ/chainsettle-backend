@@ -32,6 +32,7 @@ import { Response } from 'express';
 import { MilestonesService } from './milestones.service';
 import { AppendMilestoneDto } from './dto/append-milestone.dto';
 import { ConfirmMilestoneDto } from './dto/confirm-milestone.dto';
+import { BulkConfirmMilestonesDto } from './dto/bulk-confirm-milestones.dto';
 import { RebalanceMilestonesDto } from './dto/rebalance-milestones.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -244,6 +245,34 @@ export class MilestonesController {
   ) {
     const callerAddress: string = user?.stellarAddress ?? user?.sub;
     return this.milestonesService.rebalance(shipmentId, callerAddress, dto.milestones);
+  }
+
+  /**
+   * POST /api/v1/shipments/:shipmentId/milestones/:index/confirm
+   * Buyer registers an on-chain milestone confirmation so the DB reflects it immediately.
+   */
+  @Post(':index/confirm')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(ShipmentParticipantGuard)
+  @ApiOperation({ summary: 'Confirm a milestone (buyer only)' })
+  @ApiResponse({ status: 200, description: 'Milestone confirmed' })
+  @ApiResponse({ status: 403, description: 'Only the buyer may confirm' })
+  @ApiResponse({ status: 404, description: 'Shipment or milestone not found' })
+  @ApiResponse({ status: 409, description: 'Milestone not in PROOF_SUBMITTED status' })
+  confirm(
+    @Param('shipmentId') shipmentId: string,
+    @Param('index', ParseIntPipe) index: number,
+    @Body() dto: ConfirmMilestoneDto,
+    @CurrentUser() user: any,
+  ) {
+    const callerAddress: string = user?.stellarAddress ?? user?.sub;
+    return this.milestonesService.confirmFromApi(
+      shipmentId,
+      index,
+      callerAddress,
+      dto.txHash,
+      dto.paymentReleased,
+    );
   }
 
   /**

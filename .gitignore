@@ -4,3 +4,4 @@ dist/
 *.log
 coverage/
 .DS_Store
+sbom.cdx.json
