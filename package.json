@@ -50,7 +50,7 @@
     "ipfs-http-client": "^60.0.1",
     "joi": "^18.2.3",
     "nest-winston": "^1.10.2",
-    "nodemailer": "^6.9.0",
+    "nodemailer": "^9.0.5",
     "passport": "^0.6.0",
     "passport-custom": "^1.1.1",
     "passport-jwt": "^4.0.1",
