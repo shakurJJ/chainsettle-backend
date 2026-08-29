@@ -860,6 +860,118 @@ export class MilestonesService {
     return updated;
   }
 
+  /**
+   * Batch-reject multiple submitted proofs in one request.
+   * Validates each index independently (same rule as rejectProof: must be
+   * PROOF_SUBMITTED) and returns per-index success/failure so partial
+   * failures are visible instead of failing the whole batch.
+   */
+  async bulkRejectFromApi(
+    shipmentId: string,
+    buyerAddress: string,
+    indices: number[],
+    reason: string,
+  ) {
+    const shipment = await this.prisma.shipment.findUnique({
+      where: { id: shipmentId },
+      include: { milestones: true },
+    });
+
+    if (!shipment) {
+      throw new NotFoundException(`Shipment ${shipmentId} not found`);
+    }
+
+    if (shipment.buyerAddress !== buyerAddress) {
+      throw new ForbiddenException('Only the shipment buyer may reject a proof');
+    }
+
+    const byIndex = new Map(shipment.milestones.map((m) => [m.milestoneIndex, m]));
+    const results: Array<{
+      milestoneIndex: number;
+      success: boolean;
+      milestone?: unknown;
+      error?: string;
+    }> = [];
+    const toReject: number[] = [];
+
+    for (const milestoneIndex of indices) {
+      const milestone = byIndex.get(milestoneIndex);
+      if (!milestone) {
+        results.push({
+          milestoneIndex,
+          success: false,
+          error: `Milestone ${milestoneIndex} not found on shipment ${shipmentId}`,
+        });
+        continue;
+      }
+      if (milestone.status !== MilestoneStatus.PROOF_SUBMITTED) {
+        results.push({
+          milestoneIndex,
+          success: false,
+          error: `Milestone ${milestoneIndex} must be in PROOF_SUBMITTED status to reject (currently ${milestone.status})`,
+        });
+        continue;
+      }
+      toReject.push(milestoneIndex);
+    }
+
+    const updatedByIndex = new Map<number, unknown>();
+
+    if (toReject.length > 0) {
+      const updated = await this.prisma.$transaction(
+        toReject.map((milestoneIndex) =>
+          this.prisma.milestone.update({
+            where: { shipmentId_milestoneIndex: { shipmentId, milestoneIndex } },
+            data: { status: MilestoneStatus.PENDING, proofHash: null },
+          }),
+        ),
+      );
+
+      updated.forEach((m, i) => {
+        updatedByIndex.set(toReject[i], m);
+      });
+
+      for (const milestoneIndex of toReject) {
+        const milestone = byIndex.get(milestoneIndex)!;
+        await this.notifications.notifyUser(
+          shipment.supplierAddress,
+          NotificationType.PROOF_REJECTED,
+          'Proof rejected — resubmission requested',
+          `Your proof for milestone ${milestoneIndex} ("${milestone.name}") on shipment ${shipmentId} was rejected. Reason: ${reason}`,
+          { shipmentId, milestoneIndex, reason },
+        );
+        results.push({
+          milestoneIndex,
+          success: true,
+          milestone: updatedByIndex.get(milestoneIndex),
+        });
+      }
+
+      this.logger.log(
+        `Bulk proof rejection on ${shipmentId} by buyer ${buyerAddress}: indices [${toReject.join(', ')}]`,
+      );
+    }
+
+    // Preserve request order in the response
+    const resultByIndex = new Map(results.map((r) => [r.milestoneIndex, r]));
+    return {
+      shipmentId,
+      results: indices.map(
+        (milestoneIndex) =>
+          resultByIndex.get(milestoneIndex) ?? {
+            milestoneIndex,
+            success: false,
+            error: 'Unknown error',
+          },
+      ),
+      summary: {
+        total: indices.length,
+        succeeded: toReject.length,
+        failed: indices.length - toReject.length,
+      },
+    };
+  }
+
   // ----------------------------------------------------------
   // PROOF HISTORY — immutable audit trail of all proof submissions
   // ----------------------------------------------------------

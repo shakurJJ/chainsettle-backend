@@ -445,6 +445,7 @@ npm run sbom
 - [ ] Persist `lastProcessedLedger` in DB (not memory) for crash recovery
 - [ ] Enable HTTPS (reverse proxy — nginx or Caddy)
 - [ ] Set up Prisma connection pooling (PgBouncer)
+- [ ] Configure `BACKUP_S3_BUCKET` + related secrets for automated encrypted DB backups (`.github/workflows/db-backup.yml` — see `docs/deployment.md`)
 - [ ] Optionally set `DATABASE_REPLICA_URL` for read-heavy GET offload (see `docs/deployment.md`)
 - [ ] Wire up real Stellar `Keypair.verify()` in `auth.service.ts`
 - [ ] Set `CORS_ORIGIN` to your production frontend URL

@@ -43,6 +43,52 @@ export class ArbitersService {
     return reputation;
   }
 
+  /**
+   * Paginated list of the individual disputes underlying an arbiter's
+   * reputation summary (see computeReputation) — no aggregation, sorted by
+   * most recently resolved/escalated first. An arbiter with no history
+   * returns an empty page rather than an error.
+   */
+  async getHistory(arbiterAddress: string, page = 1, limit = 20) {
+    const where = {
+      shipment: { arbiterAddress },
+      status: { in: [MilestoneStatus.DISPUTED, MilestoneStatus.RESOLVED] },
+    };
+
+    const [milestones, total] = await this.prisma.$transaction([
+      this.prisma.milestone.findMany({
+        where,
+        select: {
+          shipmentId: true,
+          milestoneIndex: true,
+          status: true,
+          disputeEscalatedAt: true,
+          confirmedAt: true,
+        },
+        orderBy: { updatedAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.milestone.count({ where }),
+    ]);
+
+    return {
+      data: milestones.map((m) => ({
+        shipmentId: m.shipmentId,
+        milestoneIndex: m.milestoneIndex,
+        status: m.status,
+        escalatedAt: m.disputeEscalatedAt,
+        resolvedAt: m.status === MilestoneStatus.RESOLVED ? m.confirmedAt : null,
+      })),
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
   /** All distinct arbiter addresses that have ever been assigned to a shipment. */
   async listKnownArbiterAddresses(): Promise<string[]> {
     const rows = await this.prisma.shipment.findMany({

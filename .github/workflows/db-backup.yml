@@ -1,0 +1,53 @@
+name: Database backup
+
+# Scheduled encrypted pg_dump of the production database to S3-compatible
+# object storage, with automatic pruning per the retention policy documented
+# in docs/deployment.md. See scripts/db-backup.sh / db-prune-backups.sh.
+
+on:
+  schedule:
+    # Daily at 03:30 UTC (after the shipment-archival job at 03:00, see
+    # ShipmentArchivalJob), so the backup captures the post-archival state.
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        if: ${{ secrets.BACKUP_S3_BUCKET != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.BACKUP_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.BACKUP_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.BACKUP_AWS_REGION || 'us-east-1' }}
+
+      - name: Install postgresql-client and gnupg
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client gnupg
+
+      - name: Run backup
+        if: ${{ secrets.BACKUP_S3_BUCKET != '' }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          BACKUP_S3_ENDPOINT_URL: ${{ secrets.BACKUP_S3_ENDPOINT_URL }}
+          BACKUP_GPG_PASSPHRASE: ${{ secrets.BACKUP_GPG_PASSPHRASE }}
+        run: ./scripts/db-backup.sh
+
+      - name: Prune old backups
+        if: ${{ secrets.BACKUP_S3_BUCKET != '' }}
+        env:
+          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          BACKUP_S3_ENDPOINT_URL: ${{ secrets.BACKUP_S3_ENDPOINT_URL }}
+          BACKUP_RETENTION_DAILY_DAYS: ${{ vars.BACKUP_RETENTION_DAILY_DAYS }}
+          BACKUP_RETENTION_WEEKLY_DAYS: ${{ vars.BACKUP_RETENTION_WEEKLY_DAYS }}
+        run: ./scripts/db-prune-backups.sh
+
+      - name: Skip (secrets not configured)
+        if: ${{ secrets.BACKUP_S3_BUCKET == '' }}
+        run: echo "BACKUP_S3_BUCKET secret not set — skipping backup"
