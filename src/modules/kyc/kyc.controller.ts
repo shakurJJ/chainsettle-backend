@@ -1,7 +1,8 @@
-import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Delete, Get, Headers, HttpCode, HttpStatus, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { KycService } from './kyc.service';
 import { KycWebhookDto } from './dto/kyc-webhook.dto';
+import { KycRequirementsQueryDto } from './dto/kyc-requirements-query.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
@@ -10,6 +11,14 @@ import { Public } from '../../common/decorators/public.decorator';
 @Controller('kyc')
 export class KycController {
   constructor(private readonly kycService: KycService) {}
+
+  @Get('requirements')
+  @Public()
+  @ApiOperation({ summary: 'Get the required KYC tier/documents for a given estimated shipment value' })
+  @ApiResponse({ status: 200, description: 'Required tier ("none" | "basic" | "enhanced") and document list' })
+  getRequirements(@Query() query: KycRequirementsQueryDto) {
+    return this.kycService.getRequirements(BigInt(query.value));
+  }
 
   @Post('initiate')
   @UseGuards(JwtAuthGuard)
@@ -42,5 +51,17 @@ export class KycController {
     @Headers('x-kyc-signature') signature?: string,
   ) {
     return this.kycService.handleWebhook(dto, signature);
+  }
+
+  @Delete(':id')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Withdraw a still-pending KYC submission belonging to the authenticated user' })
+  @ApiParam({ name: 'id', description: 'The verification reference returned by POST /kyc/initiate' })
+  @ApiResponse({ status: 200, description: 'Submission withdrawn' })
+  @ApiResponse({ status: 404, description: 'No matching pending submission for this user' })
+  @ApiResponse({ status: 409, description: 'Submission has already been approved or rejected' })
+  withdraw(@Param('id') id: string, @CurrentUser('id') userId: string) {
+    return this.kycService.withdraw(userId, id);
   }
 }
