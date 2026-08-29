@@ -76,6 +76,10 @@ export const envValidationSchema = Joi.object({
   // both buyer and supplier to have a VERIFIED kycStatus.
   KYC_VALUE_THRESHOLD_STROOPS: Joi.string().default('1000000000000'), // 100,000 USDC at 7 decimals
 
+  // Shipments with totalAmount at or above this (higher) threshold require the
+  // "enhanced" KYC tier (additional documents) rather than the "basic" tier. See #285.
+  KYC_ENHANCED_VALUE_THRESHOLD_STROOPS: Joi.string().default('10000000000000'), // 1,000,000 USDC at 7 decimals
+
   // Signing key for calendar subscription tokens (#236). Rotating it revokes
   // every issued feed URL.
   CALENDAR_FEED_SECRET: Joi.string().allow('').default(''),
