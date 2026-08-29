@@ -156,6 +156,19 @@ export class MilestonesController {
     return this.milestonesService.findOne(shipmentId, index);
   }
 
+  @Get(':index/reminders')
+  @UseGuards(ShipmentParticipantGuard)
+  @ApiOperation({ summary: 'Get reminder history for a milestone' })
+  @ApiResponse({ status: 200, description: 'Reminder history records for this milestone' })
+  @ApiResponse({ status: 403, description: 'Not a shipment participant' })
+  @ApiResponse({ status: 404, description: 'Milestone or shipment not found' })
+  getReminderHistory(
+    @Param('shipmentId') shipmentId: string,
+    @Param('index', ParseIntPipe) index: number,
+  ) {
+    return this.milestonesService.getReminderHistory(shipmentId, index);
+  }
+
   /**
    * POST /api/v1/shipments/:shipmentId/milestones/:index/proof
    *

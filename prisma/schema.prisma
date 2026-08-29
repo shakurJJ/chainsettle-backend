@@ -551,6 +551,20 @@ model ShipmentWatcher {
   @@map("shipment_watchers")
 }
 
+model ShipmentFavorite {
+  id         String   @id @default(uuid())
+  shipmentId String
+  userId     String
+  createdAt  DateTime @default(now())
+
+  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  user     User     @relation("ShipmentFavorites", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([shipmentId, userId])
+  @@index([userId])
+  @@map("shipment_favorites")
+}
+
 /// Cold-storage copy of a COMPLETED/CANCELLED shipment moved out of the hot
 /// `shipments` table by the scheduled archival job. `payload` retains the full
 /// relational snapshot (milestones, events, comments, tracking, notes, evidence).

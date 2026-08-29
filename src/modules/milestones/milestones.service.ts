@@ -6,6 +6,7 @@ import {
   ConflictException,
   BadRequestException
 } from '@nestjs/common';
+import { AuditLogService } from '../audit-logs/audit-log.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { IpfsService } from '../../common/ipfs/ipfs.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -90,6 +91,45 @@ export class MilestonesService {
       );
     }
     return milestone;
+  }
+
+  async getReminderHistory(shipmentId: string, milestoneIndex: number) {
+    const shipment = await this.prisma.shipment.findUnique({
+      where: { id: shipmentId },
+      select: { id: true },
+    });
+
+    if (!shipment) {
+      throw new NotFoundException(`Shipment ${shipmentId} not found`);
+    }
+
+    const milestone = await this.prisma.milestone.findUnique({
+      where: { shipmentId_milestoneIndex: { shipmentId, milestoneIndex } },
+      select: { id: true },
+    });
+
+    if (!milestone) {
+      throw new NotFoundException(`Milestone ${milestoneIndex} not found on shipment ${shipmentId}`);
+    }
+
+    const rows = await this.prisma.$queryRaw<any[]>(`
+      SELECT id, type, title, message, data, "createdAt"
+      FROM notifications
+      WHERE type = 'MILESTONE_OVERDUE'
+        AND data->>'shipmentId' = ${shipmentId}
+        AND CAST(data->>'milestoneIndex' AS integer) = ${milestoneIndex}
+      ORDER BY "createdAt" ASC
+    `);
+
+    return rows.map((row) => ({
+      id: row.id,
+      threshold: row.data?.threshold ?? null,
+      recipient: row.data?.recipient ?? null,
+      sentAt: row.createdAt,
+      title: row.title,
+      message: row.message,
+      escalation: row.data?.escalation ?? false,
+    }));
   }
 
   // ----------------------------------------------------------

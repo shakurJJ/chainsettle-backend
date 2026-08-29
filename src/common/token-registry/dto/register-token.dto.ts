@@ -16,6 +16,9 @@ export class RegisterTokenDto {
   })
   symbol: string;
 
+  @ApiProperty({ description: 'Friendly display label for the token', example: 'Tether USD', required: false })
+  displayName?: string;
+
   @ApiProperty({ description: 'Token decimal places (0-18)', example: 7 })
   @IsInt()
   @Min(0)
