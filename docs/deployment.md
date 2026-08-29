@@ -66,6 +66,45 @@ shipments older than `SHIPMENT_ARCHIVAL_DAYS` (default 90) into
 - Cold archive retrieval: `GET /api/v1/shipments/archived` and
   `GET /api/v1/shipments/archived/:id` (full history snapshot in `payload`)
 
+## Automated database backups
+
+`.github/workflows/db-backup.yml` runs daily at 03:30 UTC (after the shipment
+archival job) via `scripts/db-backup.sh`:
+
+1. `pg_dump` the database (`DATABASE_URL`), gzip it.
+2. Encrypt the dump with GPG (AES256 symmetric, `BACKUP_GPG_PASSPHRASE`).
+3. Upload to `s3://<BACKUP_S3_BUCKET>/backups/daily/chainsettle-<UTC timestamp>.sql.gz.gpg`.
+4. On Sundays, also upload the same file under `backups/weekly/`.
+
+**Retention policy** (enforced by `scripts/db-prune-backups.sh`, run right
+after the backup step):
+
+| Prefix | Retention | Env var |
+|--------|-----------|---------|
+| `backups/daily/` | 30 days (default) | `BACKUP_RETENTION_DAILY_DAYS` |
+| `backups/weekly/` | 182 days / ~6 months (default) | `BACKUP_RETENTION_WEEKLY_DAYS` |
+
+Objects older than their prefix's retention window are deleted based on the
+timestamp encoded in the object key.
+
+### Restoring from a backup
+
+```bash
+# 1. Download the encrypted dump
+aws s3 cp s3://<BACKUP_S3_BUCKET>/backups/daily/chainsettle-<timestamp>.sql.gz.gpg .
+
+# 2. Decrypt
+gpg --batch --yes --passphrase "$BACKUP_GPG_PASSPHRASE" \
+  --output chainsettle-<timestamp>.sql.gz \
+  --decrypt chainsettle-<timestamp>.sql.gz.gpg
+
+# 3. Decompress and restore into a target database
+gunzip -c chainsettle-<timestamp>.sql.gz | psql "$TARGET_DATABASE_URL"
+```
+
+Restore into a scratch database first and verify row counts / spot-check
+recent rows before pointing production traffic at it.
+
 ## Required secrets / variables
 
 | Name | Purpose |
@@ -76,6 +115,10 @@ shipments older than `SHIPMENT_ARCHIVAL_DAYS` (default 90) into
 | `DEPLOY_PATH` | App root on the host (contains `docker-compose.yml` or process manager config) |
 | `HEALTHCHECK_URL` | e.g. `https://staging.example.com/api/v1/health/ready` |
 | `ACTIVE_SLOT_URL` / `PREVIEW_SLOT_URL` | Optional per-slot health URLs during cutover |
+| `BACKUP_S3_BUCKET` | Destination bucket for `db-backup.yml`, e.g. `s3://my-backups` (unset = job skips) |
+| `BACKUP_S3_ENDPOINT_URL` | Optional, for S3-compatible providers (R2, MinIO, Spaces) |
+| `BACKUP_AWS_ACCESS_KEY_ID` / `BACKUP_AWS_SECRET_ACCESS_KEY` / `BACKUP_AWS_REGION` | Credentials for the backup bucket |
+| `BACKUP_GPG_PASSPHRASE` | Symmetric encryption passphrase for backup dumps |
 
 ## Manual cutover checklist
 

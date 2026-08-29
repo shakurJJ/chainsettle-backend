@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Param,
   Query,
   Res,
   UseGuards,
@@ -11,6 +12,7 @@ import {
   ApiResponse,
   ApiBearerAuth,
   ApiQuery,
+  ApiParam,
 } from '@nestjs/swagger';
 import { Response } from 'express';
 import { UserRole } from '@prisma/client';
@@ -106,5 +108,22 @@ export class AuditLogsController {
   @ApiResponse({ status: 403, description: 'Not authorized (admin only)' })
   async findByResource() {
     return { message: 'Use GET /admin/audit-logs with filters instead' };
+  }
+
+  /**
+   * GET /api/v1/admin/audit-logs/:id
+   * Fetch a single audit log entry by its own ID.
+   * Declared last so it doesn't swallow the more specific 'export' and
+   * 'resource/:resourceType/:resourceId' routes above.
+   */
+  @Get(':id')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: 'Get a single audit log entry by ID (admin only)' })
+  @ApiParam({ name: 'id', description: 'Audit log entry ID' })
+  @ApiResponse({ status: 200, description: 'Audit log entry retrieved' })
+  @ApiResponse({ status: 403, description: 'Not authorized (admin only)' })
+  @ApiResponse({ status: 404, description: 'Audit log entry not found' })
+  async findOne(@Param('id') id: string) {
+    return this.auditLogService.findOne(id);
   }
 }

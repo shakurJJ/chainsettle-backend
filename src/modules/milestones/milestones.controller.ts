@@ -34,6 +34,7 @@ import { MilestonesService } from './milestones.service';
 import { AppendMilestoneDto } from './dto/append-milestone.dto';
 import { ConfirmMilestoneDto } from './dto/confirm-milestone.dto';
 import { BulkConfirmMilestonesDto } from './dto/bulk-confirm-milestones.dto';
+import { BulkRejectMilestonesDto } from './dto/bulk-reject-milestones.dto';
 import { RebalanceMilestonesDto } from './dto/rebalance-milestones.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -303,6 +304,29 @@ export class MilestonesController {
       dto.txHash,
       dto.paymentReleased,
     );
+  }
+
+  /**
+   * POST /api/v1/shipments/:shipmentId/milestones/bulk-reject
+   * Batch-reject multiple submitted proofs in one request (buyer only).
+   * Validates each index independently and returns a per-index result so
+   * partial failures (e.g. one milestone not in PROOF_SUBMITTED) don't fail
+   * the whole batch.
+   */
+  @Post('bulk-reject')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(ShipmentParticipantGuard)
+  @ApiOperation({ summary: 'Batch-reject multiple submitted proofs (buyer only)' })
+  @ApiResponse({ status: 200, description: 'Per-index results for the batch' })
+  @ApiResponse({ status: 403, description: 'Only the buyer may reject proofs' })
+  @ApiResponse({ status: 404, description: 'Shipment not found' })
+  bulkReject(
+    @Param('shipmentId') shipmentId: string,
+    @Body() dto: BulkRejectMilestonesDto,
+    @CurrentUser() user: any,
+  ) {
+    const callerAddress: string = user?.stellarAddress ?? user?.sub;
+    return this.milestonesService.bulkRejectFromApi(shipmentId, callerAddress, dto.indices, dto.reason);
   }
 
   /**

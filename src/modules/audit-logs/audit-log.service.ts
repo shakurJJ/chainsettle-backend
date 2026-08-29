@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { buildCsvFromRows } from '../../common/utils/csv.util';
 
@@ -190,6 +190,32 @@ export class AuditLogService {
         createdAt: row.createdAt?.toISOString?.() ?? '',
       })),
     );
+  }
+
+  /**
+   * Fetch a single audit log entry by its own ID.
+   * Throws NotFoundException when the ID does not exist.
+   */
+  async findOne(id: string) {
+    const entry = await this.prisma.auditLog.findUnique({
+      where: { id },
+      include: {
+        user: {
+          select: {
+            id: true,
+            stellarAddress: true,
+            name: true,
+            role: true,
+          },
+        },
+      },
+    });
+
+    if (!entry) {
+      throw new NotFoundException(`Audit log entry ${id} not found`);
+    }
+
+    return entry;
   }
 
   /**
