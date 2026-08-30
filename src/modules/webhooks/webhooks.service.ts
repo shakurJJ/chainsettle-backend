@@ -305,6 +305,40 @@ export class WebhooksService {
     return { message: 'Webhook delivery retried' };
   }
 
+  /**
+   * Admin bulk replay — re-enqueues every failed delivery for an endpoint
+   * within a date range, reusing retryDelivery() per delivery so behaviour
+   * (signature, permanentlyFailedAt reset, etc.) stays identical to a single
+   * manual retry. "Failed" here matches getFailedDeliveries(): not yet
+   * delivered, regardless of whether it's still pending its own auto-retry
+   * or already permanently failed.
+   */
+  async replayFailedDeliveries(endpointId: string, from: Date, to: Date) {
+    const endpoint = await this.prisma.webhookEndpoint.findUnique({
+      where: { id: endpointId },
+    });
+    if (!endpoint) throw new NotFoundException('Webhook endpoint not found');
+
+    const deliveries = await this.prisma.webhookDelivery.findMany({
+      where: {
+        endpointId,
+        deliveredAt: null,
+        createdAt: { gte: from, lte: to },
+      },
+      select: { id: true },
+    });
+
+    await Promise.allSettled(
+      deliveries.map((d) => this.retryDelivery(endpointId, d.id, endpoint.userId)),
+    );
+
+    this.logger.log(
+      `[admin-replay] Queued ${deliveries.length} failed delivery(ies) for endpoint ${endpointId} (${from.toISOString()} – ${to.toISOString()})`,
+    );
+
+    return { endpointId, from: from.toISOString(), to: to.toISOString(), deliveriesQueued: deliveries.length };
+  }
+
   /** Sends a test ping to a single endpoint. Not persisted as a delivery record. */
   private async sendTestPing(endpoint: { id: string; url: string; secret: string }) {
     const body = buildBody('WEBHOOK_TEST', { message: 'This is a test ping from ChainSettle' });
