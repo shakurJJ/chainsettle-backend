@@ -2,10 +2,12 @@ import { UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtStrategy } from './jwt.strategy';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { SessionService } from './session.service';
 
 describe('JwtStrategy', () => {
   let strategy: JwtStrategy;
   let mockPrisma: { user: { findUnique: jest.Mock } };
+  let mockSessions: jest.Mocked<SessionService>;
 
   beforeEach(() => {
     mockPrisma = {
@@ -18,7 +20,11 @@ describe('JwtStrategy', () => {
       get: jest.fn().mockReturnValue('test-secret'),
     } as unknown as ConfigService;
 
-    strategy = new JwtStrategy(mockConfig, mockPrisma as unknown as PrismaService);
+    mockSessions = {
+      isBlocked: jest.fn().mockResolvedValue(false),
+    } as unknown as jest.Mocked<SessionService>;
+
+    strategy = new JwtStrategy(mockConfig, mockPrisma as unknown as PrismaService, mockSessions);
   });
 
   it('returns user identity when account is active', async () => {
@@ -38,6 +44,8 @@ describe('JwtStrategy', () => {
       isImpersonation: false,
       impersonatorAdminId: undefined,
       impersonatorAddress: undefined,
+      jti: undefined,
+      exp: undefined,
     });
   });
 
@@ -70,6 +78,8 @@ describe('JwtStrategy', () => {
       isImpersonation: true,
       impersonatorAdminId: 'admin-1',
       impersonatorAddress: 'GADMIN',
+      jti: undefined,
+      exp: undefined,
     });
   });
 
@@ -91,5 +101,16 @@ describe('JwtStrategy', () => {
     mockPrisma.user.findUnique.mockResolvedValue(null);
 
     await expect(strategy.validate({ sub: 'missing' })).rejects.toThrow(UnauthorizedException);
+  });
+
+  it('rejects blocked (logged-out) tokens', async () => {
+    mockSessions.isBlocked.mockResolvedValue(true);
+
+    await expect(strategy.validate({ sub: 'user-1', jti: 'revoked-session' })).rejects.toThrow(
+      UnauthorizedException,
+    );
+    await expect(strategy.validate({ sub: 'user-1', jti: 'revoked-session' })).rejects.toThrow(
+      'Token has been revoked',
+    );
   });
 });

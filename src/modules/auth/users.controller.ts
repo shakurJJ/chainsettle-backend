@@ -44,6 +44,19 @@ export class UsersController {
     return this.authService.getProfile(user.id);
   }
 
+  @Get('me/sessions')
+  @ApiOperation({
+    summary: 'List active sessions for the authenticated user',
+    description:
+      'Returns metadata for every device/session currently authenticated against this account. ' +
+      'Raw token values are never included — only opaque session IDs and request metadata.',
+  })
+  @ApiResponse({ status: 200, description: 'Array of active session records' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  getSessions(@CurrentUser('id') userId: string) {
+    return this.authService.getSessions(userId);
+  }
+
   @Patch('me')
   @BlockImpersonation()
   @ApiOperation({ summary: 'Update user profile (name, email)' })

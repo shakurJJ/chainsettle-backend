@@ -11,6 +11,7 @@ import { UsersController } from './users.controller';
 import { AdminUsersController } from './admin-users.controller';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { AuditLogsModule } from '../audit-logs/audit-logs.module';
+import { SessionService } from './session.service';
 
 @Module({
   imports: [
@@ -27,7 +28,7 @@ import { AuditLogsModule } from '../audit-logs/audit-logs.module';
     AuditLogsModule,
   ],
   controllers: [AuthController, UsersController, ApiKeysController, AdminUsersController],
-  providers: [AuthService, JwtStrategy, ApiKeyStrategy],
-  exports: [AuthService],
+  providers: [AuthService, JwtStrategy, ApiKeyStrategy, SessionService],
+  exports: [AuthService, SessionService],
 })
 export class AuthModule {}

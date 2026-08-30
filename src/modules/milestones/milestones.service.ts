@@ -33,7 +33,7 @@ export class MilestonesService {
     private readonly fxRate: FxRateService,
   ) {}
 
-  async findByShipment(shipmentId: string, status?: string, overdueOnly = false) {
+  async findByShipment(shipmentId: string, status?: string, overdueOnly = false, precisionOverride?: number) {
     const where: any = { shipmentId };
 
     if (status) {
@@ -61,12 +61,21 @@ export class MilestonesService {
     const decimals = shipment?.tokenDecimals ?? 7;
     const totalAmount = shipment?.totalAmount ?? 0n;
     const fxRate = shipment ? await this.fxRate.getUsdRate(shipment.tokenSymbol ?? 'USDC') : null;
+    // Default display currency is USD (the rate is always token → USD).
+    const displayCurrency = 'USD';
 
     return milestones.map((m) => {
       const amountRaw = m.paymentReleased ?? (totalAmount * BigInt(m.paymentPercent)) / 100n;
       const estimatedUsdValue = fxRate
         ? {
-            amountUsd: (Number(this.stellar.toHumanAmount(amountRaw, decimals)) * fxRate.rate).toFixed(2),
+            amountUsd: this.fxRate.formatValue(
+              Number(this.stellar.toHumanAmount(amountRaw, decimals)),
+              fxRate.rate,
+              displayCurrency,
+              precisionOverride,
+            ),
+            precision: precisionOverride ?? this.fxRate.getDisplayPrecision(displayCurrency),
+            currency: displayCurrency,
             rate: fxRate.rate,
             asOf: fxRate.asOf,
             estimate: true,

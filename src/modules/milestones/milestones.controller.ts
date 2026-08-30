@@ -97,6 +97,7 @@ export class MilestonesController {
   @ApiOperation({ summary: 'List all milestones for a shipment with optional filters' })
   @ApiQuery({ name: 'status', required: false, enum: ['PENDING', 'PROOF_SUBMITTED', 'CONFIRMED', 'DISPUTED', 'RESOLVED'] })
   @ApiQuery({ name: 'overdue', required: false, type: Boolean })
+  @ApiQuery({ name: 'precision', required: false, type: Number, description: 'Override decimal places for FX-converted values (e.g. 0 for JPY, 2 for USD, 4 for KWD). Defaults to currency-appropriate value.' })
   @ApiResponse({ status: 200, description: 'List of milestones with isOverdue computed' })
   @ApiResponse({ status: 403, description: 'Not a shipment participant' })
   @ApiResponse({ status: 404, description: 'Shipment not found' })
@@ -104,9 +105,11 @@ export class MilestonesController {
     @Param('shipmentId') shipmentId: string,
     @Query('status') status?: string,
     @Query('overdue') overdue?: string,
+    @Query('precision') precision?: string,
   ) {
     const isOverdueFilter = overdue === 'true';
-    return this.milestonesService.findByShipment(shipmentId, status, isOverdueFilter);
+    const precisionOverride = precision !== undefined ? parseInt(precision, 10) : undefined;
+    return this.milestonesService.findByShipment(shipmentId, status, isOverdueFilter, precisionOverride);
   }
 
   /**

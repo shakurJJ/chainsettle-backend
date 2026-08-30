@@ -4,12 +4,14 @@ import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { SessionService } from './session.service';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(
     config: ConfigService,
     private readonly prisma: PrismaService,
+    private readonly sessions: SessionService,
   ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
@@ -21,6 +23,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   async validate(payload: any) {
     if (!payload?.sub) {
       throw new UnauthorizedException('Invalid token');
+    }
+
+    // Check blocklist — tokens invalidated via logout are rejected immediately
+    if (payload.jti && await this.sessions.isBlocked(payload.jti)) {
+      throw new UnauthorizedException('Token has been revoked');
     }
 
     const user = await this.prisma.user.findUnique({
@@ -66,6 +73,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       isImpersonation,
       impersonatorAdminId: isImpersonation ? payload.impersonatorAdminId : undefined,
       impersonatorAddress: isImpersonation ? payload.impersonatorAddress : undefined,
+      jti: payload.jti as string | undefined,
+      exp: payload.exp as number | undefined,
     };
   }
 }

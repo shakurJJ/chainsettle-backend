@@ -374,8 +374,10 @@ export class ShipmentsController {
   @ApiOperation({ summary: 'Get full shipment details including milestones and events' })
   @ApiResponse({ status: 200, description: 'Shipment found' })
   @ApiResponse({ status: 404, description: 'Shipment not found' })
-  findOne(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.shipmentsService.findOne(id, user?.id);
+  @ApiQuery({ name: 'precision', required: false, type: Number, description: 'Override decimal places for FX-converted values (e.g. 0 for JPY, 2 for USD). Defaults to currency-appropriate value.' })
+  findOne(@Param('id') id: string, @CurrentUser() user: any, @Query('precision') precision?: string) {
+    const precisionOverride = precision !== undefined ? parseInt(precision, 10) : undefined;
+    return this.shipmentsService.findOne(id, user?.id, precisionOverride);
   }
 
   /**
