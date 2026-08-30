@@ -450,8 +450,9 @@ npm run sbom
 - [ ] Wire up real Stellar `Keypair.verify()` in `auth.service.ts`
 - [ ] Set `CORS_ORIGIN` to your production frontend URL
 - [ ] Add rate limiting tuning for production traffic
-- [ ] Deploy via blue/green workflow (`.github/workflows/deploy-blue-green.yml` — see `docs/deployment.md`)
+- [ ] Deploy via blue/green workflow (`.github/workflows/deploy-blue-green.yml` — see [docs/deployment.md](./docs/deployment.md))
 - [ ] Run `npm run loadtest` against staging before scale-up (see `docs/load-testing.md`)
+- [ ] Review [docs/webhooks.md](./docs/webhooks.md) if external systems subscribe to webhook events
 
 ---
 

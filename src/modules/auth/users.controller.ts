@@ -23,13 +23,18 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { BlockImpersonation } from '../../common/decorators/block-impersonation.decorator';
+import { PushNotificationService } from '../notifications/push-notification.service';
+import { RegisterDeviceTokenDto } from '../notifications/dto/register-device-token.dto';
 
 @ApiTags('users')
 @Controller('users')
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth()
 export class UsersController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly push: PushNotificationService,
+  ) {}
 
   @Get('me')
   @ApiOperation({ summary: 'Get the authenticated user profile' })
@@ -163,6 +168,33 @@ export class UsersController {
   @ApiResponse({ status: 404, description: 'User not found' })
   getAdminUserDetail(@Param('id') id: string) {
     return this.authService.getAdminUserDetail(id);
+  }
+
+  @Post('me/devices')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Register a device token for push notifications (FCM/APNs via FCM)' })
+  @ApiResponse({ status: 201, description: 'Token registered' })
+  registerDeviceToken(
+    @CurrentUser('id') userId: string,
+    @Body() dto: RegisterDeviceTokenDto,
+  ) {
+    return this.push.registerToken(userId, dto.token, dto.platform);
+  }
+
+  @Get('me/devices')
+  @ApiOperation({ summary: 'List registered device tokens for the authenticated user' })
+  listDeviceTokens(@CurrentUser('id') userId: string) {
+    return this.push.listTokens(userId);
+  }
+
+  @Delete('me/devices/:token')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Remove a device token' })
+  removeDeviceToken(
+    @CurrentUser('id') userId: string,
+    @Param('token') token: string,
+  ) {
+    return this.push.removeToken(userId, token);
   }
 
   @Get(':stellarAddress')

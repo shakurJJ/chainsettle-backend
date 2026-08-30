@@ -6,6 +6,7 @@ import { NotificationsController } from './notifications.controller';
 import { NotificationsGateway } from './notifications.gateway';
 import { NotificationDigestJob } from './notification-digest.job';
 import { WebhooksModule } from '../webhooks/webhooks.module';
+import { PushNotificationService } from './push-notification.service';
 
 @Module({
   imports: [
@@ -19,8 +20,8 @@ import { WebhooksModule } from '../webhooks/webhooks.module';
     }),
     WebhooksModule,
   ],
-  providers: [NotificationsService, NotificationsGateway, NotificationDigestJob],
+  providers: [NotificationsService, NotificationsGateway, NotificationDigestJob, PushNotificationService],
   controllers: [NotificationsController],
-  exports: [NotificationsService, NotificationsGateway],
+  exports: [NotificationsService, NotificationsGateway, PushNotificationService],
 })
 export class NotificationsModule {}
