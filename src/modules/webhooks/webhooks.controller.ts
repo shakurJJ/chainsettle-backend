@@ -5,6 +5,7 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   UseGuards,
   HttpCode,
   HttpStatus,
@@ -15,6 +16,7 @@ import {
   ApiBearerAuth,
   ApiResponse,
   ApiProperty,
+  ApiQuery,
 } from '@nestjs/swagger';
 import { NotificationType } from '@prisma/client';
 import { WebhooksService } from './webhooks.service';
@@ -107,6 +109,20 @@ export class WebhooksController {
     return this.webhooksService.findForUser(userId);
   }
 
+  @Post('bulk-test')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Send a test ping to every active webhook owned by the caller",
+    description:
+      'Fans out a test ping to all active endpoints. Returns a per-endpoint ' +
+      'result (success/failure + latency) — an unreachable endpoint does not ' +
+      'prevent the others from being tested. Inactive endpoints are skipped.',
+  })
+  @ApiResponse({ status: 200, description: 'Per-endpoint test results' })
+  bulkTest(@CurrentUser('id') userId: string) {
+    return this.webhooksService.bulkTest(userId);
+  }
+
   @Get('event-types')
   @ApiOperation({ summary: 'List all subscribable webhook event types' })
   @ApiResponse({ status: 200, type: [String] })
@@ -128,6 +144,21 @@ export class WebhooksController {
   @ApiResponse({ status: 404, description: 'Webhook endpoint not found' })
   remove(@Param('id') id: string, @CurrentUser('id') userId: string) {
     return this.webhooksService.remove(id, userId);
+  }
+
+  @Get(':id/deliveries/failed')
+  @ApiOperation({ summary: 'List only the failed deliveries for a webhook endpoint' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiResponse({ status: 200, description: 'Paginated list of failed deliveries' })
+  @ApiResponse({ status: 404, description: 'Webhook endpoint not found' })
+  getFailedDeliveries(
+    @Param('id') id: string,
+    @CurrentUser('id') userId: string,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ) {
+    return this.webhooksService.getFailedDeliveries(userId, id, page, limit);
   }
 
   @Get(':id/deliveries/:deliveryId')

@@ -19,7 +19,11 @@ import {
   ApiQuery,
 } from '@nestjs/swagger';
 import { ShipmentTemplatesService } from './shipment-templates.service';
-import { CreateShipmentTemplateDto, UpdateShipmentTemplateDto } from './dto/create-shipment-template.dto';
+import {
+  CreateShipmentTemplateDto,
+  UpdateShipmentTemplateDto,
+  UpdateTemplateVisibilityDto,
+} from './dto/create-shipment-template.dto';
 import { CreateTemplateFromShipmentDto } from './dto/create-template-from-shipment.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -70,6 +74,18 @@ export class ShipmentTemplatesController {
     return this.templatesService.findAll(user.id, page, limit);
   }
 
+  @Get('mine')
+  @ApiOperation({ summary: "List the authenticated user's own templates (public + private)" })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  findMine(
+    @CurrentUser() user: any,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ) {
+    return this.templatesService.findMine(user.id, page, limit);
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Get a template by ID' })
   @ApiResponse({ status: 200, description: 'Template found' })
@@ -99,6 +115,20 @@ export class ShipmentTemplatesController {
     @CurrentUser() user: any,
   ) {
     return this.templatesService.update(id, user.id, dto);
+  }
+
+  @Patch(':id/visibility')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Toggle a template public/private (owner only)' })
+  @ApiResponse({ status: 200, description: 'Visibility updated successfully' })
+  @ApiResponse({ status: 403, description: 'Only owner can change visibility' })
+  @ApiResponse({ status: 404, description: 'Template not found' })
+  updateVisibility(
+    @Param('id') id: string,
+    @Body() dto: UpdateTemplateVisibilityDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.templatesService.updateVisibility(id, user.id, user.stellarAddress, dto);
   }
 
   @Delete(':id')
