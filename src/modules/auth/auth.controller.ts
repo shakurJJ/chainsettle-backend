@@ -1,6 +1,7 @@
-import { Controller, Post, Get, Body, Query, HttpCode, HttpStatus, UseGuards, BadRequestException } from '@nestjs/common';
+import { Controller, Post, Get, Body, Query, HttpCode, HttpStatus, UseGuards, BadRequestException, Req } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import { Request } from 'express';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { StellarAddressThrottlerGuard } from '../../common/guards/stellar-address-throttler.guard';
@@ -30,8 +31,27 @@ export class AuthController {
   @ApiOperation({ summary: 'Verify signed nonce and receive a JWT' })
   @ApiResponse({ status: 200, description: 'Returns JWT access token' })
   @ApiResponse({ status: 429, description: 'Too many requests - rate limit exceeded' })
-  login(@Body() dto: LoginDto) {
-    return this.authService.login(dto);
+  login(@Body() dto: LoginDto, @Req() req: Request) {
+    const userAgent = req.headers['user-agent'] ?? 'unknown';
+    const ipAddress =
+      (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim() ??
+      req.socket?.remoteAddress ??
+      'unknown';
+    return this.authService.login(dto, userAgent, ipAddress);
+  }
+
+  @Post('logout')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Invalidate the current JWT session' })
+  @ApiResponse({ status: 200, description: 'Logged out successfully' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  logout(@CurrentUser() user: any) {
+    if (!user?.jti || !user?.exp) {
+      // Token was issued before session tracking was added — nothing to invalidate
+      return { message: 'Logged out successfully' };
+    }
+    return this.authService.logout(user.id, user.jti, user.exp);
   }
 
   @Get('verify-email')

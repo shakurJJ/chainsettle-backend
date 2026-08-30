@@ -164,41 +164,74 @@ export class IpfsService implements OnModuleInit {
       throw new ServiceUnavailableException('IPFS service is currently unavailable');
     }
 
-    try {
-      const form = new FormData();
-      form.append('file', fileBuffer, {
-        filename: originalName,
-        contentType: mimeType,
-      });
+    // ----------------------------------------------------------
+    // Upload with retry-with-exponential-backoff
+    // Only transient errors (network/timeout) are retried. Validation
+    // failures (bad status codes like 400/401/413) are non-retryable.
+    // ----------------------------------------------------------
+    const MAX_ATTEMPTS = 3;
+    const BASE_DELAY_MS = 200;
 
-      const pinataMetadata = JSON.stringify({ name: originalName });
-      form.append('pinataMetadata', pinataMetadata);
+    let lastError: Error | undefined;
 
-      const response = await axios.post<{ IpfsHash: string }>(
-        this.pinataUrl,
-        form,
-        {
-          headers: {
-            Authorization: `Bearer ${this.apiKey}`,
-            ...form.getHeaders(),
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const form = new FormData();
+        form.append('file', fileBuffer, {
+          filename: originalName,
+          contentType: mimeType,
+        });
+
+        const pinataMetadata = JSON.stringify({ name: originalName });
+        form.append('pinataMetadata', pinataMetadata);
+
+        const response = await axios.post<{ IpfsHash: string }>(
+          this.pinataUrl,
+          form,
+          {
+            headers: {
+              Authorization: `Bearer ${this.apiKey}`,
+              ...form.getHeaders(),
+            },
+            maxBodyLength: Infinity,
+            timeout: 60_000,
           },
-          maxBodyLength: Infinity,
-          timeout: 60_000,
-        },
-      );
+        );
 
-      const cid = response.data.IpfsHash;
-      this.logger.log(`File pinned to IPFS: ${cid} (${originalName})`);
-      const ttlDays = this.config.get<number>('IPFS_DEDUP_TTL_DAYS', 30);
-      await this.redis.set(dedupKey, cid, ttlDays * 86400);
-      return cid;
-    } catch (error) {
-      const detail = error.response?.data?.error?.details ?? error.message;
-      this.logger.error(`Failed to pin file to IPFS`, detail);
-      throw new InternalServerErrorException(
-        `IPFS upload failed: ${detail}`,
-      );
+        const cid = response.data.IpfsHash;
+        this.logger.log(`File pinned to IPFS: ${cid} (${originalName})`);
+        const ttlDays = this.config.get<number>('IPFS_DEDUP_TTL_DAYS', 30);
+        await this.redis.set(dedupKey, cid, ttlDays * 86400);
+        return cid;
+      } catch (error) {
+        const statusCode: number | undefined = error.response?.status;
+
+        // Non-transient errors (4xx client errors) are not retried
+        if (statusCode !== undefined && statusCode >= 400 && statusCode < 500) {
+          const detail = error.response?.data?.error?.details ?? error.message;
+          this.logger.error(`IPFS upload rejected (non-retryable ${statusCode}): ${detail}`);
+          throw new InternalServerErrorException(`IPFS upload failed: ${detail}`);
+        }
+
+        lastError = error as Error;
+        const detail = error.response?.data?.error?.details ?? error.message;
+
+        if (attempt < MAX_ATTEMPTS) {
+          const delay = BASE_DELAY_MS * 2 ** (attempt - 1);
+          this.logger.warn(
+            `IPFS upload attempt ${attempt}/${MAX_ATTEMPTS} failed (will retry in ${delay}ms): ${detail}`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        } else {
+          this.logger.error(
+            `IPFS upload failed after ${MAX_ATTEMPTS} attempts: ${detail}`,
+          );
+        }
+      }
     }
+
+    const finalDetail = (lastError as any)?.response?.data?.error?.details ?? lastError?.message ?? 'unknown error';
+    throw new InternalServerErrorException(`IPFS upload failed: ${finalDetail}`);
   }
 
   /**

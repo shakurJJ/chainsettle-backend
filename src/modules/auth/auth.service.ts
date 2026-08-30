@@ -9,6 +9,7 @@ import { LoginDto } from './dto/login.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { AuditLogService } from '../audit-logs/audit-log.service';
+import { SessionService } from './session.service';
 
 
 
@@ -41,6 +42,7 @@ export class AuthService {
     private readonly config: ConfigService,
     private readonly notifications: NotificationsService,
     private readonly auditLog: AuditLogService,
+    private readonly sessions: SessionService,
   ) { }
 
   // ----------------------------------------------------------
@@ -62,7 +64,11 @@ export class AuthService {
   // STEP 2: Verify signed nonce and issue JWT
   // ----------------------------------------------------------
 
-  async login(dto: LoginDto): Promise<{ accessToken: string; user: any }> {
+  async login(
+    dto: LoginDto,
+    userAgent = 'unknown',
+    ipAddress = 'unknown',
+  ): Promise<{ accessToken: string; user: any }> {
     const { stellarAddress, signedNonce, signature } = dto;
 
     // Retrieve the stored nonce from Redis
@@ -103,11 +109,15 @@ export class AuthService {
       throw new UnauthorizedException('Account has been deactivated');
     }
 
-    // Sign JWT
+    // Create a session record and use its ID as the JWT `jti` (token identifier)
+    const sessionId = await this.sessions.createSession(user.id, userAgent, ipAddress);
+
+    // Sign JWT — embed sessionId as `jti` so logout can target this exact token
     const accessToken = this.jwt.sign({
       sub: user.id,
       stellarAddress: user.stellarAddress,
       role: user.role,
+      jti: sessionId,
     });
 
     this.logger.log(`User authenticated: ${stellarAddress}`);
@@ -138,6 +148,28 @@ export class AuthService {
 
     const { deactivatedAt: _deactivatedAt, ...profile } = user;
     return profile;
+  }
+
+  /**
+   * Invalidate the current session so the token is immediately rejected.
+   * `jti` is the sessionId embedded in the JWT at login time.
+   * `exp` is the JWT expiry epoch (seconds) so we can compute remaining TTL.
+   */
+  async logout(userId: string, jti: string, exp: number): Promise<{ message: string }> {
+    const nowMs = Date.now();
+    const expiryMs = exp * 1000;
+    const remainingMs = Math.max(0, expiryMs - nowMs);
+
+    await this.sessions.invalidateSession(userId, jti, remainingMs);
+    return { message: 'Logged out successfully' };
+  }
+
+  /**
+   * Return all active sessions for the authenticated user.
+   * Raw token values are never returned — only opaque metadata.
+   */
+  async getSessions(userId: string) {
+    return this.sessions.listSessions(userId);
   }
 
   /**

@@ -428,7 +428,7 @@ export class ShipmentsService {
     };
   }
 
-  async findOne(id: string, callerUserId?: string) {
+  async findOne(id: string, callerUserId?: string, precisionOverride?: number) {
     const db = this.prisma.read;
     const shipment = await db.shipment.findUnique({
       where: { id },
@@ -443,7 +443,7 @@ export class ShipmentsService {
       },
     });
     if (!shipment) throw new NotFoundException(`Shipment ${id} not found`);
-    return this.serialize(shipment, callerUserId);
+    return this.serialize(shipment, callerUserId, precisionOverride);
   }
 
   /**
@@ -2040,7 +2040,7 @@ export class ShipmentsService {
     await this.redis.delByPrefix(`shipments:${callerStellarAddress}:`);
   }
 
-  private async serialize(shipment: any, callerUserId?: string) {
+  private async serialize(shipment: any, callerUserId?: string, precisionOverride?: number) {
     const now = new Date();
     const decimals: number = shipment.tokenDecimals ?? 7;
     const symbol: string = shipment.tokenSymbol ?? 'USDC';
@@ -2048,14 +2048,24 @@ export class ShipmentsService {
     // Estimated USD value (#231) — omitted entirely when no rate is cached,
     // never causes the response to fail.
     const fxRate = await this.fxRate.getUsdRate(symbol);
+    // Default display currency is USD (the rate is always token → USD).
+    const displayCurrency = 'USD';
     const estimatedUsdValue = fxRate
       ? {
-          totalAmountUsd: (
-            Number(this.stellar.toHumanAmount(shipment.totalAmount ?? 0n, decimals)) * fxRate.rate
-          ).toFixed(2),
-          releasedAmountUsd: (
-            Number(this.stellar.toHumanAmount(shipment.releasedAmount ?? 0n, decimals)) * fxRate.rate
-          ).toFixed(2),
+          totalAmountUsd: this.fxRate.formatValue(
+            Number(this.stellar.toHumanAmount(shipment.totalAmount ?? 0n, decimals)),
+            fxRate.rate,
+            displayCurrency,
+            precisionOverride,
+          ),
+          releasedAmountUsd: this.fxRate.formatValue(
+            Number(this.stellar.toHumanAmount(shipment.releasedAmount ?? 0n, decimals)),
+            fxRate.rate,
+            displayCurrency,
+            precisionOverride,
+          ),
+          precision: precisionOverride ?? this.fxRate.getDisplayPrecision(displayCurrency),
+          currency: displayCurrency,
           rate: fxRate.rate,
           asOf: fxRate.asOf,
           estimate: true,

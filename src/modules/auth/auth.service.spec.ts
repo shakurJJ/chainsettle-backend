@@ -4,12 +4,14 @@ import { Keypair } from '@stellar/stellar-sdk';
 import { AuthService } from './auth.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisService } from '../../common/redis/redis.service';
+import { SessionService } from './session.service';
 
 describe('AuthService', () => {
     let authService: AuthService;
     let mockRedis: jest.Mocked<RedisService>;
     let mockPrisma: Partial<PrismaService>;
     let mockJwt: jest.Mocked<JwtService>;
+    let mockSessions: jest.Mocked<SessionService>;
 
     beforeEach(() => {
         mockRedis = {
@@ -30,10 +32,18 @@ describe('AuthService', () => {
             sign: jest.fn().mockReturnValue('mock-access-token'),
         } as unknown as jest.Mocked<JwtService>;
 
+        mockSessions = {
+            createSession: jest.fn().mockResolvedValue('mock-session-id'),
+        } as unknown as jest.Mocked<SessionService>;
+
         authService = new AuthService(
             mockPrisma as PrismaService,
             mockJwt as JwtService,
             mockRedis as RedisService,
+            undefined as any,
+            undefined as any,
+            undefined as any,
+            mockSessions,
         );
     });
 
@@ -63,12 +73,7 @@ describe('AuthService', () => {
             user: { id: 1, stellarAddress, role: 'user' },
         });
         expect(mockRedis.del).toHaveBeenCalledWith(`chainsettle:nonce:${stellarAddress}`);
-
-        expect(mockJwt.sign).toHaveBeenCalledWith({
-            sub: 1,
-            stellarAddress,
-            role: 'user',
-        });
+        expect(mockSessions.createSession).toHaveBeenCalledWith(1, expect.any(String), expect.any(String));
     });
 
     it('rejects invalid signatures with 401', async () => {
