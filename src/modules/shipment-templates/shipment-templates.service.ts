@@ -5,12 +5,20 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { CreateShipmentTemplateDto, UpdateShipmentTemplateDto } from './dto/create-shipment-template.dto';
+import { AuditLogService } from '../audit-logs/audit-log.service';
+import {
+  CreateShipmentTemplateDto,
+  UpdateShipmentTemplateDto,
+  UpdateTemplateVisibilityDto,
+} from './dto/create-shipment-template.dto';
 import { CreateTemplateFromShipmentDto } from './dto/create-template-from-shipment.dto';
 
 @Injectable()
 export class ShipmentTemplatesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly auditLog: AuditLogService,
+  ) {}
 
   async create(dto: CreateShipmentTemplateDto, ownerId: string) {
     this.validateMilestonePercentages(dto.milestoneTemplates);
@@ -57,6 +65,34 @@ export class ShipmentTemplatesService {
           ],
         },
       }),
+    ]);
+
+    return {
+      data: templates,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  async findMine(
+    ownerId: string,
+    page: number = 1,
+    limit: number = 20,
+  ) {
+    const skip = (page - 1) * limit;
+
+    const [templates, total] = await Promise.all([
+      this.prisma.shipmentTemplate.findMany({
+        where: { ownerId },
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.shipmentTemplate.count({ where: { ownerId } }),
     ]);
 
     return {
@@ -190,6 +226,35 @@ export class ShipmentTemplatesService {
         isPublic: dto.isPublic,
       },
     });
+  }
+
+  async updateVisibility(
+    id: string,
+    ownerId: string,
+    actorAddress: string,
+    dto: UpdateTemplateVisibilityDto,
+  ) {
+    const template = await this.findOne(id);
+
+    if (template.ownerId !== ownerId) {
+      throw new ForbiddenException('Only the template owner can change its visibility');
+    }
+
+    const updated = await this.prisma.shipmentTemplate.update({
+      where: { id },
+      data: { isPublic: dto.isPublic },
+    });
+
+    await this.auditLog.record({
+      actorId: ownerId,
+      actorAddress: actorAddress ?? 'unknown',
+      action: 'SHIPMENT_TEMPLATE_VISIBILITY_CHANGED',
+      resourceType: 'ShipmentTemplate',
+      resourceId: id,
+      metadata: { isPublic: dto.isPublic },
+    });
+
+    return updated;
   }
 
   async delete(id: string, ownerId: string) {

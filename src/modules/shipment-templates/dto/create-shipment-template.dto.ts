@@ -118,3 +118,9 @@ export class UpdateShipmentTemplateDto {
   @IsBoolean()
   isPublic?: boolean;
 }
+
+export class UpdateTemplateVisibilityDto {
+  @ApiProperty({ example: true, description: 'Whether the template should be visible to all users' })
+  @IsBoolean()
+  isPublic: boolean;
+}

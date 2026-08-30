@@ -204,6 +204,49 @@ export class WebhooksService {
     };
   }
 
+  /**
+   * Paginated list of deliveries for an endpoint whose last attempt did not
+   * succeed (still pending retry, permanently failed, or in-flight).
+   */
+  async getFailedDeliveries(
+    userId: string,
+    endpointId: string,
+    page: number = 1,
+    limit: number = 20,
+  ) {
+    const endpoint = await this.prisma.webhookEndpoint.findFirst({
+      where: { id: endpointId, userId },
+    });
+    if (!endpoint) throw new NotFoundException('Webhook endpoint not found');
+
+    const skip = (page - 1) * limit;
+    const where = { endpointId, deliveredAt: null } as const;
+
+    const [deliveries, total] = await Promise.all([
+      this.prisma.webhookDelivery.findMany({
+        where,
+        orderBy: { id: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.webhookDelivery.count({ where }),
+    ]);
+
+    return {
+      data: deliveries.map((delivery) => ({
+        ...delivery,
+        responseBody: delivery.responseBody?.slice(0, DELIVERY_RESPONSE_BODY_MAX) ?? null,
+        retryStatus: this.describeRetryStatus(delivery),
+      })),
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
+    };
+  }
+
   /** Manual retry — resets permanentlyFailedAt so the delivery gets another chance. */
   async retryDelivery(endpointId: string, deliveryId: string, userId: string) {
     const endpoint = await this.prisma.webhookEndpoint.findFirst({
@@ -260,6 +303,56 @@ export class WebhooksService {
     }
 
     return { message: 'Webhook delivery retried' };
+  }
+
+  /** Sends a test ping to a single endpoint. Not persisted as a delivery record. */
+  private async sendTestPing(endpoint: { id: string; url: string; secret: string }) {
+    const body = buildBody('WEBHOOK_TEST', { message: 'This is a test ping from ChainSettle' });
+    const signature = signBody(endpoint.secret, body);
+    const startedAt = Date.now();
+
+    try {
+      const res = await axios.post(endpoint.url, body, {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-ChainSettle-Signature': signature,
+        },
+        timeout: 10_000,
+      });
+
+      return {
+        endpointId: endpoint.id,
+        success: true,
+        statusCode: res.status,
+        latencyMs: Date.now() - startedAt,
+      };
+    } catch (err) {
+      const statusCode: number | null = (err as AxiosError).response?.status ?? null;
+      const errorMessage = String(
+        (err as AxiosError).response?.data ?? (err as Error).message ?? 'Unknown error',
+      ).slice(0, 1_000);
+
+      return {
+        endpointId: endpoint.id,
+        success: false,
+        statusCode,
+        latencyMs: Date.now() - startedAt,
+        error: errorMessage,
+      };
+    }
+  }
+
+  /** Fans a test ping out to every active webhook owned by the caller. */
+  async bulkTest(userId: string) {
+    const endpoints = await this.prisma.webhookEndpoint.findMany({
+      where: { userId, active: true },
+    });
+
+    const results = await Promise.all(
+      endpoints.map((ep) => this.sendTestPing(ep)),
+    );
+
+    return { tested: results.length, results };
   }
 
   // ── Auto-retry scheduler ───────────────────────────────────────────────────
