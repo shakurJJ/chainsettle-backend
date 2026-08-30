@@ -68,6 +68,8 @@ The backend is the **bridge between the Stellar blockchain and the frontend**. I
 | `PrismaModule` | Shared global DB client (PostgreSQL) |
 | `StellarModule` | Shared global Stellar RPC client + utilities |
 
+> Role/permission matrix (buyer, supplier, logistics, arbiter, admin — endpoint by endpoint): [docs/rbac.md](./docs/rbac.md)
+
 ---
 
 ## API Endpoints
