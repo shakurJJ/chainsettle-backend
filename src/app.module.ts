@@ -33,6 +33,7 @@ import { ChainModule } from './modules/chain/chain.module';
 import { KycModule } from './modules/kyc/kyc.module';
 import { ArbitersModule } from './modules/arbiters/arbiters.module';
 import { FeatureFlagsModule } from './modules/feature-flags/feature-flags.module';
+import { GraphqlModule } from './modules/graphql/graphql.module';
 
 @Module({
   imports: [
@@ -89,6 +90,7 @@ import { FeatureFlagsModule } from './modules/feature-flags/feature-flags.module
     KycModule,
     ArbitersModule,
     FeatureFlagsModule,
+    GraphqlModule,
   ],
   providers: [
     // Apply global throttler guard (sets X-RateLimit-* on success and 429)

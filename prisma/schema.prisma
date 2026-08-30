@@ -113,6 +113,7 @@ model User {
   shipmentTemplates  ShipmentTemplate[] @relation("ShipmentTemplates")
   webhookEndpoints      WebhookEndpoint[]
   apiKeys     ApiKey[]
+  deviceTokens DeviceToken[]
   notificationPreference NotificationPreference?
   shipmentWatchers ShipmentWatcher[] @relation("ShipmentWatchers")
   shipmentFavorites ShipmentFavorite[] @relation("ShipmentFavorites")
@@ -478,6 +479,19 @@ model ApiKey {
   @@index([keyHash])
   @@index([userId])
   @@map("api_keys")
+}
+
+model DeviceToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique // FCM registration token
+  platform  String   @default("fcm") // "fcm" (covers Android + iOS via FCM)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("device_tokens")
 }
 
 model AppConfig {
