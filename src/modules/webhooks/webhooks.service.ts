@@ -4,6 +4,7 @@ import {
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import * as crypto from 'crypto';
 import axios, { AxiosError } from 'axios';
@@ -82,11 +83,42 @@ function signBody(secret: string, body: string): string {
 @Injectable()
 export class WebhooksService {
   private readonly logger = new Logger(WebhooksService.name);
+  private readonly deliveryTimeoutMs: number;
+  private readonly maxPayloadBytes: number;
 
   constructor(
+    private readonly config: ConfigService,
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
-  ) {}
+  ) {
+    this.deliveryTimeoutMs = this.normalizePositiveInteger(
+      this.config.get<number | string>('WEBHOOK_DELIVERY_TIMEOUT_MS', 10_000),
+      10_000,
+    );
+    this.maxPayloadBytes = this.normalizePositiveInteger(
+      this.config.get<number | string>('WEBHOOK_MAX_PAYLOAD_BYTES', 256 * 1024),
+      256 * 1024,
+    );
+  }
+
+  private normalizePositiveInteger(value: number | string | undefined, fallback: number): number {
+    const parsed = Number(value ?? fallback);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  }
+
+  private preparePayloadForDelivery(eventType: string, payload: Record<string, unknown>) {
+    const body = buildBody(eventType, payload);
+    const bytes = Buffer.byteLength(body, 'utf8');
+    const exceedsLimit = bytes > this.maxPayloadBytes;
+
+    if (exceedsLimit) {
+      this.logger.warn(
+        `[webhook] Skipping delivery for event ${eventType}: payload is ${bytes} bytes, exceeding configured max of ${this.maxPayloadBytes} bytes`,
+      );
+    }
+
+    return { body, bytes, exceedsLimit };
+  }
 
   // ── Registration ───────────────────────────────────────────────────────────
 
@@ -261,8 +293,30 @@ export class WebhooksService {
     });
     if (!delivery) throw new NotFoundException('Webhook delivery not found');
 
-    const body = buildBody(delivery.eventType, delivery.payload as Record<string, unknown>);
+    const payloadCheck = this.preparePayloadForDelivery(
+      delivery.eventType,
+      delivery.payload as Record<string, unknown>,
+    );
+    const body = payloadCheck.body;
     const signature = signBody(endpoint.secret, body);
+
+    if (payloadCheck.exceedsLimit) {
+      await this.prisma.webhookDelivery.update({
+        where: { id: deliveryId },
+        data: {
+          statusCode: null,
+          responseBody: `Payload exceeds max size (${payloadCheck.bytes}/${this.maxPayloadBytes} bytes)`,
+          attemptCount: delivery.attemptCount + 1,
+          nextRetryAt: null,
+          permanentlyFailedAt: new Date(),
+        },
+      });
+
+      this.logger.warn(
+        `[webhook] Manual retry ${deliveryId} skipped for endpoint ${endpointId}: payload exceeds configured max of ${this.maxPayloadBytes} bytes`,
+      );
+      return { message: 'Webhook delivery retried' };
+    }
 
     try {
       const res = await axios.post(endpoint.url, body, {
@@ -270,7 +324,7 @@ export class WebhooksService {
           'Content-Type': 'application/json',
           'X-ChainSettle-Signature': signature,
         },
-        timeout: 10_000,
+        timeout: this.deliveryTimeoutMs,
       });
 
       await this.prisma.webhookDelivery.update({
@@ -341,17 +395,29 @@ export class WebhooksService {
 
   /** Sends a test ping to a single endpoint. Not persisted as a delivery record. */
   private async sendTestPing(endpoint: { id: string; url: string; secret: string }) {
-    const body = buildBody('WEBHOOK_TEST', { message: 'This is a test ping from ChainSettle' });
-    const signature = signBody(endpoint.secret, body);
+    const bodyObj = { message: 'This is a test ping from ChainSettle' };
+    const payloadCheck = this.preparePayloadForDelivery('WEBHOOK_TEST', bodyObj);
     const startedAt = Date.now();
 
+    if (payloadCheck.exceedsLimit) {
+      return {
+        endpointId: endpoint.id,
+        success: false,
+        statusCode: null,
+        latencyMs: Date.now() - startedAt,
+        error: `Payload exceeds max size (${payloadCheck.bytes}/${this.maxPayloadBytes} bytes)`,
+      };
+    }
+
+    const signature = signBody(endpoint.secret, payloadCheck.body);
+
     try {
-      const res = await axios.post(endpoint.url, body, {
+      const res = await axios.post(endpoint.url, payloadCheck.body, {
         headers: {
           'Content-Type': 'application/json',
           'X-ChainSettle-Signature': signature,
         },
-        timeout: 10_000,
+        timeout: this.deliveryTimeoutMs,
       });
 
       return {
@@ -426,7 +492,8 @@ export class WebhooksService {
     eventType: string,
     payload: Record<string, unknown>,
   ) {
-    const body = buildBody(eventType, payload);
+    const payloadCheck = this.preparePayloadForDelivery(eventType, payload);
+    const body = payloadCheck.body;
     const signature = signBody(ep.secret, body);
 
     const delivery = await this.prisma.webhookDelivery.create({
@@ -438,13 +505,30 @@ export class WebhooksService {
       },
     });
 
+    if (payloadCheck.exceedsLimit) {
+      await this.prisma.webhookDelivery.update({
+        where: { id: delivery.id },
+        data: {
+          statusCode: null,
+          responseBody: `Payload exceeds max size (${payloadCheck.bytes}/${this.maxPayloadBytes} bytes)`,
+          nextRetryAt: null,
+          permanentlyFailedAt: new Date(),
+        },
+      });
+
+      this.logger.warn(
+        `[webhook] Delivery ${delivery.id} not sent for endpoint ${ep.id}: payload exceeds configured max of ${this.maxPayloadBytes} bytes`,
+      );
+      return;
+    }
+
     try {
       const res = await axios.post(ep.url, body, {
         headers: {
           'Content-Type': 'application/json',
           'X-ChainSettle-Signature': signature,
         },
-        timeout: 10_000,
+        timeout: this.deliveryTimeoutMs,
       });
 
       await this.prisma.webhookDelivery.update({
@@ -471,10 +555,11 @@ export class WebhooksService {
       attemptCount: number;
     },
   ) {
-    const body = buildBody(
+    const payloadCheck = this.preparePayloadForDelivery(
       delivery.eventType,
       delivery.payload as Record<string, unknown>,
     );
+    const body = payloadCheck.body;
     const signature = signBody(ep.secret, body);
 
     // Bump attempt count immediately to avoid duplicate concurrent retries
@@ -486,13 +571,30 @@ export class WebhooksService {
       },
     });
 
+    if (payloadCheck.exceedsLimit) {
+      await this.prisma.webhookDelivery.update({
+        where: { id: delivery.id },
+        data: {
+          statusCode: null,
+          responseBody: `Payload exceeds max size (${payloadCheck.bytes}/${this.maxPayloadBytes} bytes)`,
+          nextRetryAt: null,
+          permanentlyFailedAt: new Date(),
+        },
+      });
+
+      this.logger.warn(
+        `[webhook] Retry ${delivery.id} skipped for endpoint ${ep.id}: payload exceeds configured max of ${this.maxPayloadBytes} bytes`,
+      );
+      return;
+    }
+
     try {
       const res = await axios.post(ep.url, body, {
         headers: {
           'Content-Type': 'application/json',
           'X-ChainSettle-Signature': signature,
         },
-        timeout: 10_000,
+        timeout: this.deliveryTimeoutMs,
       });
 
       await this.prisma.webhookDelivery.update({

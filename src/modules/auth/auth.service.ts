@@ -173,6 +173,21 @@ export class AuthService {
   }
 
   /**
+   * Revoke a single active session owned by the authenticated user.
+   * The session record is deleted and its JWT is added to the blocklist
+   * so future requests with that token are rejected.
+   */
+  async revokeSession(userId: string, sessionId: string): Promise<{ message: string }> {
+    const revoked = await this.sessions.revokeSession(userId, sessionId);
+
+    if (!revoked) {
+      throw new NotFoundException('Session not found');
+    }
+
+    return { message: 'Session revoked successfully' };
+  }
+
+  /**
    * Soft-deactivate the authenticated user's account.
    * Preserves the User row and all historical relations (shipments, comments, audit logs).
    * Rejects with 409 if the user is still party to any ACTIVE shipment.

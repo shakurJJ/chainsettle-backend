@@ -13,11 +13,18 @@ The global throttler guard (`RateLimitThrottlerGuard`,
 
 ## Default limit (all routes not listed below)
 
-| Setting | Value | Environment variable |
-|---------|-------|----------------------|
+| Tier | Value | Environment variable |
+|------|-------|----------------------|
+| Default / anonymous | 100 per window | `THROTTLE_LIMIT` (default `100`) |
+| KYC-verified user | 250 per window | `THROTTLE_LIMIT_VERIFIED` (default `250`) |
+| Admin user | 500 per window | `THROTTLE_LIMIT_ADMIN` (default `500`) |
 | Window | 60 seconds | `THROTTLE_TTL` (in seconds; default `60`) |
-| Max requests | 100 per key | `THROTTLE_LIMIT` (default `100`) |
 | Key | IP address | — |
+
+The effective limit is chosen from the authenticated user's record when one is present:
+- admin users receive the admin tier
+- verified users receive the verified tier
+- everyone else remains on the default tier
 
 ---
 
