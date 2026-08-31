@@ -53,6 +53,15 @@ export class ChainController {
     return info;
   }
 
+  @Get('contract/events/:txHash')
+  @ApiOperation({ summary: 'Decode events emitted by a specific transaction' })
+  async getTransactionEvents(@Param('txHash') txHash: string) {
+    if (!/^[0-9a-fA-F]{64}$/.test(txHash)) {
+      throw new BadRequestException('Transaction hash must be a 64-character hex string');
+    }
+    return this.stellar.getTransactionEvents(txHash);
+  }
+
   @Get('status')
   @Public()
   @ApiOperation({ summary: 'Current Stellar network / RPC health snapshot' })

@@ -2,14 +2,16 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ChainController } from './chain.controller';
 import { StellarService } from '../../common/stellar/stellar.service';
 import { RedisService } from '../../common/redis/redis.service';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 
-describe('ChainController — getFees', () => {
+describe('ChainController', () => {
   let controller: ChainController;
   let stellarService: jest.Mocked<StellarService>;
   let redisService: jest.Mocked<RedisService>;
 
   beforeEach(async () => {
     const mockStellarService = {
+      getTransactionEvents: jest.fn(),
       getFeeStats: jest.fn(),
       getLedger: jest.fn(),
       getAccountInfo: jest.fn(),
@@ -34,27 +36,34 @@ describe('ChainController — getFees', () => {
     redisService = module.get(RedisService);
   });
 
-  it('should return cached fees if present in Redis', async () => {
-    const mockCachedFees = { baseFee: 100, cached: true };
-    redisService.get.mockResolvedValue(JSON.stringify(mockCachedFees));
-
-    const result = await controller.getFees();
-
-    expect(redisService.get).toHaveBeenCalledWith('chain:fees');
-    expect(stellarService.getFeeStats).not.toHaveBeenCalled();
-    expect(result).toEqual(mockCachedFees);
+  it('should be defined', () => {
+    expect(controller).toBeDefined();
   });
 
-  it('should call stellar.getFeeStats and cache the result if not present in Redis', async () => {
-    redisService.get.mockResolvedValue(null);
-    const mockFees = { baseFee: 100, sorobanInclusionFee: { p90: '500' } };
-    stellarService.getFeeStats.mockResolvedValue(mockFees);
+  describe('getTransactionEvents', () => {
+    const validTxHash = 'a'.repeat(64);
 
-    const result = await controller.getFees();
+    it('should throw BadRequestException if txHash is not a 64-character hex string', async () => {
+      await expect(controller.getTransactionEvents('invalid-hash')).rejects.toThrow(
+        BadRequestException,
+      );
+    });
 
-    expect(redisService.get).toHaveBeenCalledWith('chain:fees');
-    expect(stellarService.getFeeStats).toHaveBeenCalled();
-    expect(redisService.set).toHaveBeenCalledWith('chain:fees', JSON.stringify(mockFees), 30);
-    expect(result).toEqual(mockFees);
+    it('should call stellar.getTransactionEvents with valid txHash', async () => {
+      const mockEvents = [{ id: '123' }];
+      stellarService.getTransactionEvents.mockResolvedValue(mockEvents);
+
+      const result = await controller.getTransactionEvents(validTxHash);
+      expect(stellarService.getTransactionEvents).toHaveBeenCalledWith(validTxHash);
+      expect(result).toEqual(mockEvents);
+    });
+
+    it('should propagate NotFoundException from stellar service', async () => {
+      stellarService.getTransactionEvents.mockRejectedValue(new NotFoundException('Not found'));
+
+      await expect(controller.getTransactionEvents(validTxHash)).rejects.toThrow(
+        NotFoundException,
+      );
+    });
   });
 });

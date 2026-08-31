@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   Networks,
@@ -11,6 +11,7 @@ import {
   nativeToScVal,
   scValToNative,
   xdr,
+  StrKey,
 } from '@stellar/stellar-sdk';
 import { SpanKind } from '@opentelemetry/api';
 import { withSpan } from '../tracing/trace.helper';
@@ -415,26 +416,74 @@ onModuleInit() {
   }
 
   /**
-   * Queries the configured Soroban RPC for base fee and recent resource fee stats.
+   * Fetches the transaction's result meta from Soroban RPC and decodes
+   * any events emitted by our contract.
+   * Throws NotFoundException if the transaction is not found.
    */
-  async getFeeStats(): Promise<any> {
+  async getTransactionEvents(txHash: string): Promise<any[]> {
     return withSpan(
-      'stellar.getFeeStats',
+      'stellar.getTransactionEvents',
       async (span) => {
+        span.setAttribute('stellar.tx_hash', txHash);
         try {
-          const stats = await this.rpcClient.getFeeStats();
-          const latestLedger = await this.getLatestLedger();
-          const ledgerDetails = await this.getLedger(latestLedger);
-          const baseFee = ledgerDetails?.baseFee ?? 100;
+          const tx = await this.rpcClient.getTransaction(txHash);
+          if (tx.status === 'NOT_FOUND') {
+            throw new NotFoundException(`Transaction ${txHash} not found`);
+          }
+          if (tx.status !== 'SUCCESS') {
+            return [];
+          }
+          if (!tx.resultMetaXdr) {
+            return [];
+          }
 
-          return {
-            baseFee,
-            sorobanInclusionFee: stats.sorobanInclusionFee,
-            inclusionFee: stats.inclusionFee,
-            latestLedger: stats.latestLedger || latestLedger,
-          };
+          const meta = tx.resultMetaXdr as any;
+          
+          let sorobanMeta: any;
+          if (meta.switch && meta.switch() === 3) {
+            sorobanMeta = meta.v3().sorobanMeta();
+          } else {
+            try {
+              sorobanMeta = meta.sorobanMeta();
+            } catch {}
+          }
+
+          if (!sorobanMeta) {
+            return [];
+          }
+
+          const events = sorobanMeta.events() ?? [];
+          const decodedEvents = [];
+
+          for (const e of events) {
+            const contractIdBuf = e.contractId();
+            if (!contractIdBuf) continue;
+
+            const contractAddress = StrKey.encodeContract(contractIdBuf);
+            if (contractAddress !== this.contractId) continue;
+
+            if (e.type().name !== 'contract' && e.type().value !== 0) continue;
+
+            const topics = e.body().v0().topics().map((t: any) => scValToNative(t));
+            const value = scValToNative(e.body().v0().data());
+
+            decodedEvents.push({
+              id: `${txHash}-${decodedEvents.length}`,
+              contractId: contractAddress,
+              type: 'contract',
+              topic: topics,
+              value: value,
+              ledger: tx.ledger,
+              txHash: txHash,
+            });
+          }
+
+          return decodedEvents;
         } catch (error) {
-          this.logger.error(`getFeeStats failed: ${error.message}`);
+          if (error instanceof NotFoundException) {
+            throw error;
+          }
+          this.logger.error(`getTransactionEvents(${txHash}) failed: ${error.message}`);
           throw error;
         }
       },

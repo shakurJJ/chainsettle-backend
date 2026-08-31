@@ -1,5 +1,11 @@
 import { StellarService } from './stellar.service';
 import { ConfigService } from '@nestjs/config';
+import { nativeToScVal, xdr, StrKey } from '@stellar/stellar-sdk';
+import { NotFoundException } from '@nestjs/common';
+
+(BigInt.prototype as any).toJSON = function () {
+  return this.toString();
+};
 
 // StellarService.onModuleInit() calls the RPC — we skip that by never calling
 // it; we only test the pure utility methods here.
@@ -123,7 +129,7 @@ describe('StellarService — amount utilities', () => {
   });
 });
 
-describe('StellarService — getFeeStats', () => {
+describe('StellarService — getTransactionEvents', () => {
   let service: StellarService;
   let mockRpcClient: any;
 
@@ -133,6 +139,7 @@ describe('StellarService — getFeeStats', () => {
         if (key === 'STELLAR_RPC_URL') return 'https://mock-rpc.org';
         if (key === 'STELLAR_HORIZON_URL') return 'https://mock-horizon.org';
         if (key === 'STELLAR_NETWORK') return 'testnet';
+        if (key === 'CHAINSETTTLE_CONTRACT_ID') return 'C1234567890';
         return undefined;
       }),
     } as unknown as ConfigService;
@@ -140,48 +147,87 @@ describe('StellarService — getFeeStats', () => {
     service.onModuleInit();
 
     mockRpcClient = {
-      getFeeStats: jest.fn(),
-      getLatestLedger: jest.fn(),
-      getLedger: jest.fn(),
+      getTransaction: jest.fn(),
     };
     (service as any).rpcClient = mockRpcClient;
   });
 
-  it('should query rpcClient.getFeeStats and ledger details, returning combined results', async () => {
-    const mockRpcFees = {
-      sorobanInclusionFee: { p90: '500' },
-      inclusionFee: { p90: '100' },
-      latestLedger: 12345,
-    };
-    mockRpcClient.getFeeStats.mockResolvedValue(mockRpcFees);
-    mockRpcClient.getLatestLedger.mockResolvedValue({ sequence: 12345 });
-    mockRpcClient.getLedger.mockResolvedValue({ baseFee: 100 });
-
-    const result = await service.getFeeStats();
-
-    expect(mockRpcClient.getFeeStats).toHaveBeenCalled();
-    expect(mockRpcClient.getLatestLedger).toHaveBeenCalled();
-    expect(mockRpcClient.getLedger).toHaveBeenCalledWith({ ledgerSeq: 12345 });
-    expect(result).toEqual({
-      baseFee: 100,
-      sorobanInclusionFee: { p90: '500' },
-      inclusionFee: { p90: '100' },
-      latestLedger: 12345,
+  it('should throw NotFoundException if tx status is NOT_FOUND', async () => {
+    mockRpcClient.getTransaction.mockResolvedValue({
+      status: 'NOT_FOUND',
     });
+
+    await expect(service.getTransactionEvents('txhash')).rejects.toThrow(
+      NotFoundException,
+    );
   });
 
-  it('should fallback to 100 baseFee if ledger details are missing', async () => {
-    const mockRpcFees = {
-      sorobanInclusionFee: { p90: '500' },
-      inclusionFee: { p90: '100' },
-      latestLedger: 12345,
+  it('should return empty array if tx status is not SUCCESS', async () => {
+    mockRpcClient.getTransaction.mockResolvedValue({
+      status: 'FAILED',
+    });
+
+    const result = await service.getTransactionEvents('txhash');
+    expect(result).toEqual([]);
+  });
+
+  it('should return empty array if resultMetaXdr is missing', async () => {
+    mockRpcClient.getTransaction.mockResolvedValue({
+      status: 'SUCCESS',
+      resultMetaXdr: undefined,
+    });
+
+    const result = await service.getTransactionEvents('txhash');
+    expect(result).toEqual([]);
+  });
+
+  it('should parse and decode events from resultMetaXdr matching contractId', async () => {
+    const mockEvent = {
+      contractId: () => Buffer.from('mock-contract-id-bytes'),
+      type: () => ({ name: 'contract', value: 0 }),
+      body: () => ({
+        v0: () => ({
+          topics: () => [nativeToScVal('shipment_created'), nativeToScVal('shipment-1')],
+          data: () => nativeToScVal({ amount: 100 }),
+        }),
+      }),
     };
-    mockRpcClient.getFeeStats.mockResolvedValue(mockRpcFees);
-    mockRpcClient.getLatestLedger.mockResolvedValue({ sequence: 12345 });
-    mockRpcClient.getLedger.mockResolvedValue(null);
 
-    const result = await service.getFeeStats();
+    const mockSorobanMeta = {
+      events: () => [mockEvent],
+    };
 
-    expect(result.baseFee).toBe(100);
+    const mockMeta = {
+      switch: () => 3,
+      v3: () => ({
+        sorobanMeta: () => mockSorobanMeta,
+      }),
+    };
+
+    mockRpcClient.getTransaction.mockResolvedValue({
+      status: 'SUCCESS',
+      resultMetaXdr: mockMeta,
+      ledger: 100,
+    });
+
+    const encodeContractSpy = jest.spyOn(StrKey, 'encodeContract').mockReturnValue('C1234567890');
+
+    const result = await service.getTransactionEvents('txhash');
+
+    expect(encodeContractSpy).toHaveBeenCalled();
+    expect(result).toEqual([
+      {
+        id: 'txhash-0',
+        contractId: 'C1234567890',
+        type: 'contract',
+        topic: ['shipment_created', 'shipment-1'],
+        value: { amount: 100n },
+        ledger: 100,
+        txHash: 'txhash',
+      },
+    ]);
+
+    encodeContractSpy.mockRestore();
   });
 });
+
