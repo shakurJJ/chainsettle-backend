@@ -122,3 +122,66 @@ describe('StellarService — amount utilities', () => {
     });
   });
 });
+
+describe('StellarService — getFeeStats', () => {
+  let service: StellarService;
+  let mockRpcClient: any;
+
+  beforeEach(() => {
+    const config = {
+      get: jest.fn((key: string) => {
+        if (key === 'STELLAR_RPC_URL') return 'https://mock-rpc.org';
+        if (key === 'STELLAR_HORIZON_URL') return 'https://mock-horizon.org';
+        if (key === 'STELLAR_NETWORK') return 'testnet';
+        return undefined;
+      }),
+    } as unknown as ConfigService;
+    service = new StellarService(config);
+    service.onModuleInit();
+
+    mockRpcClient = {
+      getFeeStats: jest.fn(),
+      getLatestLedger: jest.fn(),
+      getLedger: jest.fn(),
+    };
+    (service as any).rpcClient = mockRpcClient;
+  });
+
+  it('should query rpcClient.getFeeStats and ledger details, returning combined results', async () => {
+    const mockRpcFees = {
+      sorobanInclusionFee: { p90: '500' },
+      inclusionFee: { p90: '100' },
+      latestLedger: 12345,
+    };
+    mockRpcClient.getFeeStats.mockResolvedValue(mockRpcFees);
+    mockRpcClient.getLatestLedger.mockResolvedValue({ sequence: 12345 });
+    mockRpcClient.getLedger.mockResolvedValue({ baseFee: 100 });
+
+    const result = await service.getFeeStats();
+
+    expect(mockRpcClient.getFeeStats).toHaveBeenCalled();
+    expect(mockRpcClient.getLatestLedger).toHaveBeenCalled();
+    expect(mockRpcClient.getLedger).toHaveBeenCalledWith({ ledgerSeq: 12345 });
+    expect(result).toEqual({
+      baseFee: 100,
+      sorobanInclusionFee: { p90: '500' },
+      inclusionFee: { p90: '100' },
+      latestLedger: 12345,
+    });
+  });
+
+  it('should fallback to 100 baseFee if ledger details are missing', async () => {
+    const mockRpcFees = {
+      sorobanInclusionFee: { p90: '500' },
+      inclusionFee: { p90: '100' },
+      latestLedger: 12345,
+    };
+    mockRpcClient.getFeeStats.mockResolvedValue(mockRpcFees);
+    mockRpcClient.getLatestLedger.mockResolvedValue({ sequence: 12345 });
+    mockRpcClient.getLedger.mockResolvedValue(null);
+
+    const result = await service.getFeeStats();
+
+    expect(result.baseFee).toBe(100);
+  });
+});

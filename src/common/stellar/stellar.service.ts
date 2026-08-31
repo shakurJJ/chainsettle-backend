@@ -413,4 +413,33 @@ onModuleInit() {
       active = false;
     };
   }
+
+  /**
+   * Queries the configured Soroban RPC for base fee and recent resource fee stats.
+   */
+  async getFeeStats(): Promise<any> {
+    return withSpan(
+      'stellar.getFeeStats',
+      async (span) => {
+        try {
+          const stats = await this.rpcClient.getFeeStats();
+          const latestLedger = await this.getLatestLedger();
+          const ledgerDetails = await this.getLedger(latestLedger);
+          const baseFee = ledgerDetails?.baseFee ?? 100;
+
+          return {
+            baseFee,
+            sorobanInclusionFee: stats.sorobanInclusionFee,
+            inclusionFee: stats.inclusionFee,
+            latestLedger: stats.latestLedger || latestLedger,
+          };
+        } catch (error) {
+          this.logger.error(`getFeeStats failed: ${error.message}`);
+          throw error;
+        }
+      },
+      { 'stellar.rpc_url': this.config.get<string>('STELLAR_RPC_URL', '') },
+      SpanKind.CLIENT,
+    );
+  }
 }
