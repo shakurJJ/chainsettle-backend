@@ -64,6 +64,13 @@ export class NotificationsController {
     return this.notificationsService.sendTestNotification(userId);
   }
 
+  @Get('digest-preview')
+  @ApiOperation({ summary: 'Preview the next scheduled email digest' })
+  async getDigestPreview(@CurrentUser('id') userId: string) {
+    const digest = await this.notificationsService.buildDigest(userId);
+    return digest || { subject: '', html: '' };
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Fetch a single notification by ID' })
   async findOne(@Param('id') id: string, @CurrentUser('id') userId: string) {
