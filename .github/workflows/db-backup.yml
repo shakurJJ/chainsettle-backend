@@ -21,7 +21,7 @@ jobs:
 
       - name: Configure AWS credentials
         if: ${{ secrets.BACKUP_S3_BUCKET != '' }}
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-access-key-id: ${{ secrets.BACKUP_AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.BACKUP_AWS_SECRET_ACCESS_KEY }}
