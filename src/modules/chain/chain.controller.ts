@@ -12,7 +12,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { StellarService } from '../../common/stellar/stellar.service';
 import { RedisService } from '../../common/redis/redis.service';
 import { Throttle } from '@nestjs/throttler';
-import { AddressParamDto } from './dto/address-param.dto';
+import { AddressParamDto } from './address-param.dto';
 import { Public } from '../../common/decorators/public.decorator';
 
 @ApiTags('chain')
@@ -51,6 +51,15 @@ export class ChainController {
       throw new NotFoundException(`Account ${params.address} not found on-chain`);
     }
     return info;
+  }
+
+  @Get('contract/events/:txHash')
+  @ApiOperation({ summary: 'Decode events emitted by a specific transaction' })
+  async getTransactionEvents(@Param('txHash') txHash: string) {
+    if (!/^[0-9a-fA-F]{64}$/.test(txHash)) {
+      throw new BadRequestException('Transaction hash must be a 64-character hex string');
+    }
+    return this.stellar.getTransactionEvents(txHash);
   }
 
   @Get('status')
