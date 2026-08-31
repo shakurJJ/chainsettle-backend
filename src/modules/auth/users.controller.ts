@@ -57,6 +57,21 @@ export class UsersController {
     return this.authService.getSessions(userId);
   }
 
+  @Post('me/sessions/:id/revoke')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Revoke a single active session for the authenticated user',
+    description:
+      'Deletes the selected session entry and adds its JWT to the revocation blocklist. ' +
+      'This invalidates only that device/session without logging out other active sessions.',
+  })
+  @ApiResponse({ status: 200, description: 'Session revoked successfully' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 404, description: 'Session not found' })
+  revokeSession(@CurrentUser('id') userId: string, @Param('id') sessionId: string) {
+    return this.authService.revokeSession(userId, sessionId);
+  }
+
   @Patch('me')
   @BlockImpersonation()
   @ApiOperation({ summary: 'Update user profile (name, email)' })

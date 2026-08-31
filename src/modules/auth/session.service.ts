@@ -129,6 +129,28 @@ export class SessionService {
   }
 
   /**
+   * Revoke one active session owned by a user.
+   * Returns false if the session is already absent.
+   */
+  async revokeSession(userId: string, sessionId: string): Promise<boolean> {
+    const key = this.sessionKey(userId, sessionId);
+    const session = await this.redis.getJson<SessionRecord>(key);
+
+    if (!session) {
+      return false;
+    }
+
+    const ttlSeconds = await this.redis.ttl(key);
+    const remainingSeconds = ttlSeconds > 0 ? ttlSeconds : 1;
+
+    await this.redis.del(key);
+    await this.redis.set(this.blocklistKey(sessionId), '1', remainingSeconds);
+
+    this.logger.debug(`Session revoked: ${sessionId} for user ${userId}`);
+    return true;
+  }
+
+  /**
    * Check whether a jti is on the blocklist (called by JwtStrategy on every request).
    */
   async isBlocked(jti: string): Promise<boolean> {

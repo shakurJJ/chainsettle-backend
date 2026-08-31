@@ -47,6 +47,8 @@ export const envValidationSchema = Joi.object({
   // Rate Limiting
   THROTTLE_TTL: Joi.number().integer().min(1).default(60),
   THROTTLE_LIMIT: Joi.number().integer().min(1).default(100),
+  THROTTLE_LIMIT_VERIFIED: Joi.number().integer().min(1).default(250),
+  THROTTLE_LIMIT_ADMIN: Joi.number().integer().min(1).default(500),
 
   // Redis
   REDIS_URL: Joi.string().uri({ scheme: ['redis', 'rediss'] }).required(),
@@ -70,6 +72,10 @@ export const envValidationSchema = Joi.object({
 
   // Development
   SLOW_QUERY_THRESHOLD_MS: Joi.number().integer().min(0).default(100),
+
+  // Webhooks
+  WEBHOOK_DELIVERY_TIMEOUT_MS: Joi.number().integer().min(1000).max(600000).default(10000),
+  WEBHOOK_MAX_PAYLOAD_BYTES: Joi.number().integer().min(1024).max(50 * 1024 * 1024).default(256 * 1024),
 
   // KYC/AML (#233)
   // Shipments with totalAmount (in stroops) at or above this threshold require
