@@ -68,4 +68,16 @@ export class ChainController {
   async getStatus() {
     return this.stellar.getNetworkStatus();
   }
+
+  @Get('fees')
+  @ApiOperation({ summary: 'Get current Stellar network base fee and resource fee estimates' })
+  async getFees() {
+    const cacheKey = 'chain:fees';
+    const cached = await this.redis.get(cacheKey);
+    if (cached) return JSON.parse(cached);
+
+    const fees = await this.stellar.getFeeStats();
+    await this.redis.set(cacheKey, JSON.stringify(fees), 30); // 30s TTL
+    return fees;
+  }
 }
