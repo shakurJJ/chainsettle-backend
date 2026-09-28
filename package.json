@@ -55,7 +55,7 @@
     "ioredis": "^5.11.0",
     "ipfs-http-client": "^60.0.1",
     "joi": "^18.2.3",
-    "nest-winston": "^1.10.2",
+    "nest-winston": "^2.0.0",
     "nodemailer": "^6.9.0",
     "passport": "^0.6.0",
     "passport-custom": "^1.1.1",
