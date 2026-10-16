@@ -21,6 +21,9 @@
     "check:sdk": "node scripts/check-sdk.js",
     "generate:sdk": "node scripts/generate-sdk.js"
   },
+  "prisma": {
+    "seed": "ts-node prisma/seed.ts"
+  },
   "dependencies": {
     "@apollo/server": "^4.0.0",
     "@nestjs/apollo": "^12.0.0",

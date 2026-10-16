@@ -265,9 +265,14 @@ npx prisma migrate dev --name init
 # Generate Prisma client
 npx prisma generate
 
-# (Optional) seed initial data
-# npx prisma db seed
+# Seed deterministic local development data
+npx prisma db seed
 ```
+
+The seed is safe to run repeatedly. It creates testnet-format Stellar addresses
+for a buyer, supplier, arbiter, and admin, and includes draft, active, disputed,
+completed, and cancelled shipment scenarios. Use the seeded buyer address when
+authenticating requests to verify `GET /shipments`.
 
 ### 4. Start the development server
 
