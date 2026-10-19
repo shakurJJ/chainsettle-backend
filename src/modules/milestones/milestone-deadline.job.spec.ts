@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
 import { MilestoneDeadlineJob } from './milestone-deadline.job';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -26,6 +27,16 @@ describe('MilestoneDeadlineJob', () => {
           provide: NotificationsService,
           useValue: {
             notifyUser: jest.fn(),
+          },
+        },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: jest.fn((key: string, defaultValue?: any) => {
+              if (key === 'OVERDUE_REMINDER_1_DAYS') return 0;
+              if (key === 'OVERDUE_REMINDER_3_DAYS') return 3;
+              return defaultValue;
+            }),
           },
         },
       ],
@@ -281,6 +292,64 @@ describe('MilestoneDeadlineJob', () => {
           recipient: expect.any(String),
         }),
       );
+    });
+  });
+
+  describe('ConfigService integration', () => {
+    it('should read reminder intervals from ConfigService when configured', async () => {
+      const module: TestingModule = await Test.createTestingModule({
+        providers: [
+          MilestoneDeadlineJob,
+          {
+            provide: PrismaService,
+            useValue: { milestone: { findMany: jest.fn(), update: jest.fn() } },
+          },
+          {
+            provide: NotificationsService,
+            useValue: { notifyUser: jest.fn() },
+          },
+          {
+            provide: ConfigService,
+            useValue: {
+              get: jest.fn((key: string) => {
+                if (key === 'OVERDUE_REMINDER_1_DAYS') return 2;
+                if (key === 'OVERDUE_REMINDER_3_DAYS') return 5;
+                return undefined;
+              }),
+            },
+          },
+        ],
+      }).compile();
+
+      const customService = module.get<MilestoneDeadlineJob>(MilestoneDeadlineJob);
+      expect((customService as any).reminder1Days).toBe(2);
+      expect((customService as any).reminder3Days).toBe(5);
+    });
+
+    it('should default reminder intervals when ConfigService has no values', async () => {
+      const module: TestingModule = await Test.createTestingModule({
+        providers: [
+          MilestoneDeadlineJob,
+          {
+            provide: PrismaService,
+            useValue: { milestone: { findMany: jest.fn(), update: jest.fn() } },
+          },
+          {
+            provide: NotificationsService,
+            useValue: { notifyUser: jest.fn() },
+          },
+          {
+            provide: ConfigService,
+            useValue: {
+              get: jest.fn((_key: string, fallback: any) => fallback),
+            },
+          },
+        ],
+      }).compile();
+
+      const defaultService = module.get<MilestoneDeadlineJob>(MilestoneDeadlineJob);
+      expect((defaultService as any).reminder1Days).toBe(0);
+      expect((defaultService as any).reminder3Days).toBe(3);
     });
   });
 });

@@ -46,6 +46,11 @@ export const envValidationSchema = Joi.object({
   // Nightly deletion of read notifications older than this many days (default 90)
   NOTIFICATION_RETENTION_DAYS: Joi.number().integer().min(1).max(3650).default(90),
 
+  // Milestone overdue reminders and dispute escalation (#491)
+  OVERDUE_REMINDER_1_DAYS: Joi.number().integer().min(0).max(365).default(0),
+  OVERDUE_REMINDER_3_DAYS: Joi.number().integer().min(1).max(365).default(3),
+  DISPUTE_ESCALATION_DAYS: Joi.number().integer().min(1).max(365).default(7),
+
   // Stellar
   STELLAR_NETWORK: Joi.string().valid('testnet', 'mainnet', 'futurenet').default('testnet'),
   STELLAR_RPC_URL: Joi.string().uri(),

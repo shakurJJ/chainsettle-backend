@@ -503,6 +503,9 @@ npm run sbom
 | `DATABASE_REPLICA_URL` | No | Optional read-replica URL for GET-heavy paths |
 | `SHIPMENT_ARCHIVAL_DAYS` | No | Days before terminal shipments move to cold storage (default: 90) |
 | `SHIPMENT_ARCHIVAL_CRON` | No | Cron schedule for the archival job; invalid expressions fail at startup (default: `0 3 * * *`) |
+| `OVERDUE_REMINDER_1_DAYS` | No | Days after milestone due date before sending initial overdue reminder (default: 0) |
+| `OVERDUE_REMINDER_3_DAYS` | No | Days after initial reminder before sending follow-up escalation reminder (default: 3) |
+| `DISPUTE_ESCALATION_DAYS` | No | Days a milestone can remain in DISPUTED status before escalating to admins (default: 7) |
 | `JWT_SECRET` | Yes | Secret for signing JWTs |
 | `JWT_EXPIRES_IN` | No | Token expiry (default: `7d`) |
 | `IMPERSONATION_JWT_EXPIRES_IN` | No | Admin impersonation token TTL (default: `15m`) |
