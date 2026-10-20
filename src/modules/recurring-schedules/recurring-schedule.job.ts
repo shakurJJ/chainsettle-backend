@@ -7,6 +7,7 @@ import { RedisService } from '../../common/redis/redis.service';
 import { TokenRegistryService } from '../../common/token-registry/token-registry.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { advance } from './recurring-schedules.service';
+import { runTrackedJob } from '../../common/jobs/job-tracker.util';
 
 const LOCK_KEY = 'chainsettle:recurring-schedules:lock';
 const LOCK_TTL_MS = 4 * 60 * 1000;
@@ -29,37 +30,44 @@ export class RecurringScheduleJob {
     private readonly notifications: NotificationsService,
   ) {}
 
-  @Cron(CronExpression.EVERY_5_MINUTES)
+  @Cron(CronExpression.EVERY_5_MINUTES, { name: 'recurring-schedule' })
   async run(): Promise<number> {
-    const token = randomUUID();
-    if (!(await this.redis.acquireLock(LOCK_KEY, token, LOCK_TTL_MS))) {
-      this.logger.debug('Skipping recurring schedules — another instance holds the lock');
-      return 0;
-    }
-
-    let created = 0;
-    try {
-      const now = new Date();
-      const due = await this.prisma.recurringSchedule.findMany({
-        where: { active: true, nextRunAt: { lte: now } },
-        orderBy: { nextRunAt: 'asc' },
-        take: BATCH_SIZE,
-        include: { template: true, owner: { select: { stellarAddress: true } } },
-      });
-
-      for (const schedule of due) {
-        try {
-          if (await this.runOne(schedule, now)) created++;
-        } catch (err: any) {
-          this.logger.error(`Recurring schedule ${schedule.id} failed: ${err.message}`);
+    return runTrackedJob(
+      this.redis,
+      'recurring-schedule',
+      async () => {
+        const token = randomUUID();
+        if (!(await this.redis.acquireLock(LOCK_KEY, token, LOCK_TTL_MS))) {
+          this.logger.debug('Skipping recurring schedules — another instance holds the lock');
+          return 0;
         }
-      }
-    } finally {
-      await this.redis.releaseLock(LOCK_KEY, token);
-    }
 
-    if (created > 0) this.logger.log(`Created ${created} recurring draft shipment(s)`);
-    return created;
+        let created = 0;
+        try {
+          const now = new Date();
+          const due = await this.prisma.recurringSchedule.findMany({
+            where: { active: true, nextRunAt: { lte: now } },
+            orderBy: { nextRunAt: 'asc' },
+            take: BATCH_SIZE,
+            include: { template: true, owner: { select: { stellarAddress: true } } },
+          });
+
+          for (const schedule of due) {
+            try {
+              if (await this.runOne(schedule, now)) created++;
+            } catch (err: any) {
+              this.logger.error(`Recurring schedule ${schedule.id} failed: ${err.message}`);
+            }
+          }
+        } finally {
+          await this.redis.releaseLock(LOCK_KEY, token);
+        }
+
+        if (created > 0) this.logger.log(`Created ${created} recurring draft shipment(s)`);
+        return created;
+      },
+      this.logger,
+    );
   }
 
   private async runOne(schedule: any, now: Date): Promise<boolean> {

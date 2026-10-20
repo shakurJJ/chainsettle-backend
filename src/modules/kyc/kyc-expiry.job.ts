@@ -1,9 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { KycStatus, NotificationType } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { AuditLogService } from '../audit-logs/audit-log.service';
+import { RedisService } from '../../common/redis/redis.service';
+import { runTrackedJob } from '../../common/jobs/job-tracker.util';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -28,19 +30,27 @@ export class KycExpiryJob {
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
     private readonly auditLog: AuditLogService,
+    @Optional() private readonly redis?: RedisService,
   ) {}
 
-  @Cron(CronExpression.EVERY_DAY_AT_1AM)
+  @Cron(CronExpression.EVERY_DAY_AT_1AM, { name: 'kyc-expiry' })
   async run(): Promise<{ reminded: number; expired: number }> {
-    try {
-      const reminded = await this.sendReminders();
-      const expired = await this.expireLapsed();
-      this.logger.log(`KYC expiry check complete — ${reminded} reminder(s), ${expired} expiration(s)`);
-      return { reminded, expired };
-    } catch (error) {
-      this.logger.error('KYC expiry job failed', (error as Error).stack);
-      return { reminded: 0, expired: 0 };
+    const execute = async () => {
+      try {
+        const reminded = await this.sendReminders();
+        const expired = await this.expireLapsed();
+        this.logger.log(`KYC expiry check complete — ${reminded} reminder(s), ${expired} expiration(s)`);
+        return { reminded, expired };
+      } catch (error) {
+        this.logger.error('KYC expiry job failed', (error as Error).stack);
+        return { reminded: 0, expired: 0 };
+      }
+    };
+
+    if (this.redis) {
+      return runTrackedJob(this.redis, 'kyc-expiry', execute, this.logger);
     }
+    return execute();
   }
 
   async sendReminders(now: Date = new Date()): Promise<number> {

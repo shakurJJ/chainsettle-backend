@@ -117,6 +117,8 @@ model User {
   /// Validated against SUPPORTED_CURRENCIES in FxRateService.
   /// Defaults to 'USD' so existing users see no behaviour change.
   displayCurrency  String    @default("USD")
+  /// Preferred language locale for notifications and emails (#543).
+  locale           String    @default("en")
 
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
@@ -143,6 +145,8 @@ model User {
   sentInvitations     ShipmentInvitation[] @relation("SentInvitations")
   acceptedInvitations ShipmentInvitation[] @relation("AcceptedInvitations")
   savedFilters      SavedFilter[]      @relation("SavedFilters")
+  organizationMemberships OrganizationMember[]
+  createdOrganizations    Organization[]       @relation("OrganizationCreator")
   announcementDismissals AnnouncementDismissal[]
   contacts           Contact[]
   shipmentReminders ShipmentReminder[] @relation("ShipmentReminders")
@@ -871,3 +875,61 @@ model RecurringSchedule {
   @@index([active, nextRunAt])
   @@map("recurring_schedules")
 }
+
+// ============================================================
+// EMAIL SUPPRESSION (#434)
+// ============================================================
+
+enum EmailSuppressionReason {
+  BOUNCE
+  COMPLAINT
+}
+
+model EmailSuppression {
+  id        String                 @id @default(uuid())
+  email     String                 @unique // stored lower-cased
+  reason    EmailSuppressionReason
+  createdAt DateTime               @default(now())
+
+  @@map("email_suppressions")
+}
+
+// ============================================================
+// ORGANIZATIONS (#435)
+// ============================================================
+
+enum OrganizationRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  createdBy String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  creator User                 @relation("OrganizationCreator", fields: [createdBy], references: [id])
+  members OrganizationMember[]
+
+  @@map("organizations")
+}
+
+model OrganizationMember {
+  id        String           @id @default(uuid())
+  orgId     String
+  userId    String
+  role      OrganizationRole @default(MEMBER)
+  createdAt DateTime         @default(now())
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId])
+  @@index([userId])
+  @@map("organization_members")
+}
+

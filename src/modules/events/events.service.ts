@@ -12,6 +12,7 @@ import { ShipmentsService } from '../shipments/shipments.service';
 import { MetricsService } from '../../common/metrics/metrics.service';
 import { NotificationType } from '@prisma/client';
 import { AuditLogService } from '../audit-logs/audit-log.service';
+import { runTrackedJob } from '../../common/jobs/job-tracker.util';
 
 const MAX_ATTEMPTS = 5;
 const POLLER_LOCK_KEY = 'chainsettle:event-poller:leader';
@@ -205,14 +206,18 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
   // RETRY CRON — runs every minute, exponential back-off
   // ----------------------------------------------------------
 
-  @Cron(CronExpression.EVERY_MINUTE)
+  @Cron(CronExpression.EVERY_MINUTE, { name: 'failed-events-retry' })
   async retryFailedEvents() {
-    // Only the poller leader retries DLQ work to avoid duplicate side-effects.
-    if (!this.isLeader) {
-      return;
-    }
+    return runTrackedJob(
+      this.redis,
+      'failed-events-retry',
+      async () => {
+        // Only the poller leader retries DLQ work to avoid duplicate side-effects.
+        if (!this.isLeader) {
+          return;
+        }
 
-    const now = new Date();
+        const now = new Date();
 
     const pending = await this.prisma.failedEvent.findMany({
       where: { resolvedAt: null, attemptCount: { lt: MAX_ATTEMPTS } },
@@ -258,6 +263,9 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
         }
       }
     }
+  },
+  this.logger,
+);
   }
 
   // ----------------------------------------------------------

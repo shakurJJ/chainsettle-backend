@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisService } from '../../common/redis/redis.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { runTrackedJob } from '../../common/jobs/job-tracker.util';
 
 const REMINDER_LOCK_KEY = 'chainsettle:shipment-reminders:lock';
 const REMINDER_LOCK_TTL_MS = 4 * 60 * 1000;
@@ -25,15 +26,19 @@ export class ShipmentReminderJob {
     private readonly notifications: NotificationsService,
   ) {}
 
-  @Cron('*/5 * * * *')
+  @Cron('*/5 * * * *', { name: 'shipment-reminder' })
   async run(): Promise<number> {
-    const token = randomUUID();
-    if (!(await this.redis.acquireLock(REMINDER_LOCK_KEY, token, REMINDER_LOCK_TTL_MS))) {
-      this.logger.debug('Skipping reminders — another instance holds the lock');
-      return 0;
-    }
+    return runTrackedJob(
+      this.redis,
+      'shipment-reminder',
+      async () => {
+        const token = randomUUID();
+        if (!(await this.redis.acquireLock(REMINDER_LOCK_KEY, token, REMINDER_LOCK_TTL_MS))) {
+          this.logger.debug('Skipping reminders — another instance holds the lock');
+          return 0;
+        }
 
-    let sent = 0;
+        let sent = 0;
     try {
       const due = await this.prisma.shipmentReminder.findMany({
         where: { sentAt: null, remindAt: { lte: new Date() } },
@@ -63,7 +68,10 @@ export class ShipmentReminderJob {
       await this.redis.releaseLock(REMINDER_LOCK_KEY, token);
     }
 
-    if (sent > 0) this.logger.log(`Sent ${sent} shipment reminder(s)`);
-    return sent;
+        if (sent > 0) this.logger.log(`Sent ${sent} shipment reminder(s)`);
+        return sent;
+      },
+      this.logger,
+    );
   }
 }

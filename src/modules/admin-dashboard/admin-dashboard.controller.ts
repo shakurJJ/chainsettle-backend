@@ -7,21 +7,27 @@ import {
   Query,
   Res,
   MessageEvent,
-} from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
-import { ConfigService } from '@nestjs/config';
-import { UserRole } from '@prisma/client';
-import { Observable } from 'rxjs';
-import { Response } from 'express';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { AdminDashboardService } from './admin-dashboard.service';
-import { VolumeReportQueryDto } from './dto/volume-report-query.dto';
+} from "@nestjs/common";
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+} from "@nestjs/swagger";
+import { ConfigService } from "@nestjs/config";
+import { UserRole } from "@prisma/client";
+import { Observable } from "rxjs";
+import { Response } from "express";
+import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
+import { Roles } from "../../common/decorators/roles.decorator";
+import { AdminDashboardService } from "./admin-dashboard.service";
+import { VolumeReportQueryDto } from "./dto/volume-report-query.dto";
+import { ScheduledJobDto } from "./dto/scheduled-job.dto";
 
-@ApiTags('admin')
+@ApiTags("admin")
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
-@Controller('admin')
+@Controller("admin")
 export class AdminDashboardController {
   private readonly logger = new Logger(AdminDashboardController.name);
 
@@ -39,21 +45,27 @@ export class AdminDashboardController {
    * Closing the connection cleans up the server-side interval automatically
    * (the Observable subscription is torn down by NestJS when the response closes).
    */
-  @Get('dashboard/realtime')
+  @Get("dashboard/realtime")
   @Roles(UserRole.ADMIN)
   @Sse()
   @ApiOperation({
-    summary: '[Admin] SSE stream of live platform metrics',
+    summary: "[Admin] SSE stream of live platform metrics",
     description:
-      'Streams periodic snapshots of active shipments, event poller lag, and failed webhook count. ' +
-      'Uses Server-Sent Events — no client re-polling required. ' +
-      'Push interval is controlled by ADMIN_DASHBOARD_SSE_INTERVAL_MS env var (default 5000 ms).',
+      "Streams periodic snapshots of active shipments, event poller lag, and failed webhook count. " +
+      "Uses Server-Sent Events — no client re-polling required. " +
+      "Push interval is controlled by ADMIN_DASHBOARD_SSE_INTERVAL_MS env var (default 5000 ms).",
   })
-  @ApiResponse({ status: 200, description: 'SSE stream of DashboardSnapshot objects' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 403, description: 'Admin access required' })
+  @ApiResponse({
+    status: 200,
+    description: "SSE stream of DashboardSnapshot objects",
+  })
+  @ApiResponse({ status: 401, description: "Unauthorized" })
+  @ApiResponse({ status: 403, description: "Admin access required" })
   realtimeDashboard(): Observable<MessageEvent> {
-    const intervalMs = this.config.get<number>('ADMIN_DASHBOARD_SSE_INTERVAL_MS', 5_000);
+    const intervalMs = this.config.get<number>(
+      "ADMIN_DASHBOARD_SSE_INTERVAL_MS",
+      5_000,
+    );
 
     return new Observable<MessageEvent>((subscriber) => {
       const push = () => {
@@ -75,7 +87,7 @@ export class AdminDashboardController {
 
       return () => {
         clearInterval(timer);
-        this.logger.debug('SSE client disconnected — interval cleared');
+        this.logger.debug("SSE client disconnected — interval cleared");
       };
     });
   }
@@ -85,23 +97,52 @@ export class AdminDashboardController {
    *
    * Shipment volume time series report grouped by interval.
    */
-  @Get('reports/volume')
+  @Get("reports/volume")
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: '[Admin] Shipment volume time-series report' })
-  @ApiResponse({ status: 200, description: 'Time-series volume report (JSON or CSV)' })
-  @ApiResponse({ status: 400, description: 'Invalid date range or parameter' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 403, description: 'Admin access required' })
+  @ApiOperation({ summary: "[Admin] Shipment volume time-series report" })
+  @ApiResponse({
+    status: 200,
+    description: "Time-series volume report (JSON or CSV)",
+  })
+  @ApiResponse({ status: 400, description: "Invalid date range or parameter" })
+  @ApiResponse({ status: 401, description: "Unauthorized" })
+  @ApiResponse({ status: 403, description: "Admin access required" })
   async getVolumeReport(
     @Query() query: VolumeReportQueryDto,
     @Res() res: Response,
   ) {
     const result = await this.dashboard.getVolumeReport(query);
-    if (query.format === 'csv') {
-      res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', 'attachment; filename="shipment-volume-report.csv"');
+    if (query.format === "csv") {
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader(
+        "Content-Disposition",
+        'attachment; filename="shipment-volume-report.csv"',
+      );
       return res.send(result);
     }
     return res.json(result);
+  }
+
+  /**
+   * GET /api/v1/admin/jobs
+   *
+   * Lists all scheduled cron jobs with schedule, last run result/duration, and next run time (#533).
+   */
+  @Get("jobs")
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: "[Admin] List scheduled cron jobs with last and next run times",
+    description:
+      "Gives admins a view of every cron job, schedule, when it last ran, whether it succeeded, and when it runs next.",
+  })
+  @ApiResponse({
+    status: 200,
+    description: "List of scheduled cron jobs",
+    type: [ScheduledJobDto],
+  })
+  @ApiResponse({ status: 401, description: "Unauthorized" })
+  @ApiResponse({ status: 403, description: "Admin access required" })
+  async getScheduledJobs(): Promise<ScheduledJobDto[]> {
+    return this.dashboard.getScheduledJobs();
   }
 }

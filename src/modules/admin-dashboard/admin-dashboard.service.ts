@@ -1,10 +1,16 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
-import { PrismaService } from '../../common/prisma/prisma.service';
-import { RedisService } from '../../common/redis/redis.service';
-import { TokenRegistryService } from '../../common/token-registry/token-registry.service';
-import { FxRateService } from '../../common/fx/fx-rate.service';
-import { VolumeReportQueryDto } from './dto/volume-report-query.dto';
-import { buildCsvFromRows } from '../../common/utils/csv.util';
+import { Injectable, Logger, BadRequestException } from "@nestjs/common";
+import { SchedulerRegistry } from "@nestjs/schedule";
+import { PrismaService } from "../../common/prisma/prisma.service";
+import { RedisService } from "../../common/redis/redis.service";
+import { TokenRegistryService } from "../../common/token-registry/token-registry.service";
+import { FxRateService } from "../../common/fx/fx-rate.service";
+import { VolumeReportQueryDto } from "./dto/volume-report-query.dto";
+import { ScheduledJobDto } from "./dto/scheduled-job.dto";
+import { buildCsvFromRows } from "../../common/utils/csv.util";
+import {
+  getJobRedisKey,
+  JobRunRecord,
+} from "../../common/jobs/job-tracker.util";
 
 export interface DashboardSnapshot {
   /** ISO-8601 timestamp of when this snapshot was taken */
@@ -36,30 +42,36 @@ export class AdminDashboardService {
     private readonly redis: RedisService,
     private readonly tokenRegistry: TokenRegistryService,
     private readonly fxRate: FxRateService,
+    private readonly schedulerRegistry: SchedulerRegistry,
   ) {}
 
   async getSnapshot(): Promise<DashboardSnapshot> {
-    const [activeShipments, failedWebhookCount, cursorRow] = await Promise.allSettled([
-      this.prisma.shipment.count({ where: { status: 'ACTIVE' } }),
-      this.prisma.webhookDelivery.count({ where: { permanentlyFailedAt: { not: null } } }),
-      this.prisma.eventCursor.findUnique({ where: { id: 'main' } }),
-    ]);
+    const [activeShipments, failedWebhookCount, cursorRow] =
+      await Promise.allSettled([
+        this.prisma.shipment.count({ where: { status: "ACTIVE" } }),
+        this.prisma.webhookDelivery.count({
+          where: { permanentlyFailedAt: { not: null } },
+        }),
+        this.prisma.eventCursor.findUnique({ where: { id: "main" } }),
+      ]);
 
     const activeShipmentsValue =
-      activeShipments.status === 'fulfilled' ? activeShipments.value : 0;
+      activeShipments.status === "fulfilled" ? activeShipments.value : 0;
 
     const failedWebhookValue =
-      failedWebhookCount.status === 'fulfilled' ? failedWebhookCount.value : 0;
+      failedWebhookCount.status === "fulfilled" ? failedWebhookCount.value : 0;
 
-    const cursor =
-      cursorRow.status === 'fulfilled' ? cursorRow.value : null;
+    const cursor = cursorRow.status === "fulfilled" ? cursorRow.value : null;
 
-    const eventPollerLedger: number | null = cursor?.lastProcessedLedger ?? null;
+    const eventPollerLedger: number | null =
+      cursor?.lastProcessedLedger ?? null;
     let eventPollerLag: number | null = null;
 
     if (eventPollerLedger !== null) {
       try {
-        const tipRaw = await this.redis.get('chainsettle:stellar:latest-ledger');
+        const tipRaw = await this.redis.get(
+          "chainsettle:stellar:latest-ledger",
+        );
         if (tipRaw) {
           const tip = parseInt(tipRaw, 10);
           if (Number.isFinite(tip)) {
@@ -67,7 +79,9 @@ export class AdminDashboardService {
           }
         }
       } catch (err: any) {
-        this.logger.debug(`Could not read stellar tip from Redis: ${err.message}`);
+        this.logger.debug(
+          `Could not read stellar tip from Redis: ${err.message}`,
+        );
       }
     }
 
@@ -80,10 +94,12 @@ export class AdminDashboardService {
     };
   }
 
-  async getVolumeReport(query: VolumeReportQueryDto): Promise<VolumeBucket[] | string> {
-    const interval = query.interval || 'day';
+  async getVolumeReport(
+    query: VolumeReportQueryDto,
+  ): Promise<VolumeBucket[] | string> {
+    const interval = query.interval || "day";
     const now = new Date();
-    
+
     let toDate = query.to ? new Date(query.to) : now;
     if (isNaN(toDate.getTime())) {
       throw new BadRequestException('Invalid "to" date parameter');
@@ -101,20 +117,22 @@ export class AdminDashboardService {
     }
 
     if (fromDate > toDate) {
-      throw new BadRequestException('"from" date must be before or equal to "to" date');
+      throw new BadRequestException(
+        '"from" date must be before or equal to "to" date',
+      );
     }
 
     // Enforce 2 years max range
     const maxMs = 2 * 365 * 24 * 60 * 60 * 1000;
     if (toDate.getTime() - fromDate.getTime() > maxMs) {
-      throw new BadRequestException('Date range cannot exceed 2 years');
+      throw new BadRequestException("Date range cannot exceed 2 years");
     }
 
     // Cache key for 10 minutes cache
-    const cacheKey = `admin:reports:volume:${fromDate.toISOString()}:${toDate.toISOString()}:${interval}:${query.token || 'all'}:${query.format || 'json'}`;
+    const cacheKey = `admin:reports:volume:${fromDate.toISOString()}:${toDate.toISOString()}:${interval}:${query.token || "all"}:${query.format || "json"}`;
     const cached = await this.redis.get(cacheKey);
     if (cached) {
-      if (query.format === 'csv') {
+      if (query.format === "csv") {
         return cached;
       }
       try {
@@ -127,11 +145,14 @@ export class AdminDashboardService {
     // Resolve token decimals and symbol if token filter is provided
     let tokenAddressFilter: string | undefined = undefined;
     let tokenDecimals = 7;
-    let tokenSymbol = 'USDC';
+    let tokenSymbol = "USDC";
 
     if (query.token) {
-      const entry = this.tokenRegistry.findByAddress(query.token) ||
-        this.tokenRegistry.listTokens().find(t => t.symbol.toUpperCase() === query.token?.toUpperCase());
+      const entry =
+        this.tokenRegistry.findByAddress(query.token) ||
+        this.tokenRegistry
+          .listTokens()
+          .find((t) => t.symbol.toUpperCase() === query.token?.toUpperCase());
       if (entry) {
         tokenAddressFilter = entry.address;
         tokenDecimals = entry.decimals;
@@ -147,7 +168,7 @@ export class AdminDashboardService {
 
     // Build raw SQL query using date_trunc
     const dateTruncUnit = interval; // 'day', 'week', 'month'
-    
+
     // We select created shipments and completed shipments aggregated by bucket
     // Note: totalAmount and releasedAmount are BigInt stroops in DB
     const rawCreated: Array<{
@@ -155,7 +176,8 @@ export class AdminDashboardService {
       shipments_created: bigint | number;
       total_value: bigint | number;
       released_value: bigint | number;
-    }> = await this.prisma.$queryRawUnsafe(`
+    }> = await this.prisma.$queryRawUnsafe(
+      `
       SELECT 
         date_trunc('${dateTruncUnit}', "createdAt") AS period_start,
         COUNT(*)::bigint AS shipments_created,
@@ -163,26 +185,36 @@ export class AdminDashboardService {
         COALESCE(SUM("releasedAmount"), 0)::bigint AS released_value
       FROM shipments
       WHERE "createdAt" >= $1 AND "createdAt" <= $2
-        ${tokenAddressFilter ? `AND UPPER("tokenAddress") = UPPER('${tokenAddressFilter}')` : ''}
+        ${tokenAddressFilter ? `AND UPPER("tokenAddress") = UPPER('${tokenAddressFilter}')` : ""}
       GROUP BY period_start
       ORDER BY period_start ASC
-    `, fromDate, toDate);
+    `,
+      fromDate,
+      toDate,
+    );
 
     const rawCompleted: Array<{
       period_start: Date;
       shipments_completed: bigint | number;
-    }> = await this.prisma.$queryRawUnsafe(`
+    }> = await this.prisma.$queryRawUnsafe(
+      `
       SELECT 
         date_trunc('${dateTruncUnit}', "updatedAt") AS period_start,
         COUNT(*)::bigint AS shipments_completed
       FROM shipments
       WHERE status = 'COMPLETED' AND "updatedAt" >= $1 AND "updatedAt" <= $2
-        ${tokenAddressFilter ? `AND UPPER("tokenAddress") = UPPER('${tokenAddressFilter}')` : ''}
+        ${tokenAddressFilter ? `AND UPPER("tokenAddress") = UPPER('${tokenAddressFilter}')` : ""}
       GROUP BY period_start
       ORDER BY period_start ASC
-    `, fromDate, toDate);
+    `,
+      fromDate,
+      toDate,
+    );
 
-    const createdMap = new Map<string, { count: number; totalValue: bigint; releasedValue: bigint }>();
+    const createdMap = new Map<
+      string,
+      { count: number; totalValue: bigint; releasedValue: bigint }
+    >();
     for (const row of rawCreated) {
       const key = new Date(row.period_start).toISOString();
       createdMap.set(key, {
@@ -201,28 +233,34 @@ export class AdminDashboardService {
     // Generate continuous time series buckets (filling empty periods with zeros)
     const buckets: VolumeBucket[] = [];
     let curr = new Date(fromDate);
-    
+
     // Align curr to period start
-    if (interval === 'day') {
+    if (interval === "day") {
       curr.setUTCHours(0, 0, 0, 0);
-    } else if (interval === 'week') {
+    } else if (interval === "week") {
       curr.setUTCHours(0, 0, 0, 0);
       const day = curr.getUTCDay();
       const diff = curr.getUTCDate() - day + (day === 0 ? -6 : 1); // Monday start
       curr.setUTCDate(diff);
-    } else if (interval === 'month') {
+    } else if (interval === "month") {
       curr.setUTCHours(0, 0, 0, 0);
       curr.setUTCDate(1);
     }
 
     while (curr <= toDate) {
       const periodIso = curr.toISOString();
-      const createdData = createdMap.get(periodIso) || { count: 0, totalValue: BigInt(0), releasedValue: BigInt(0) };
+      const createdData = createdMap.get(periodIso) || {
+        count: 0,
+        totalValue: BigInt(0),
+        releasedValue: BigInt(0),
+      };
       const completedCount = completedMap.get(periodIso) || 0;
 
-      const totalValHuman = Number(createdData.totalValue) / (10 ** tokenDecimals);
-      const releasedValHuman = Number(createdData.releasedValue) / (10 ** tokenDecimals);
-      const totalValueUsd = Math.round((totalValHuman * usdRate) * 100) / 100;
+      const totalValHuman =
+        Number(createdData.totalValue) / 10 ** tokenDecimals;
+      const releasedValHuman =
+        Number(createdData.releasedValue) / 10 ** tokenDecimals;
+      const totalValueUsd = Math.round(totalValHuman * usdRate * 100) / 100;
 
       buckets.push({
         periodStart: periodIso,
@@ -234,29 +272,78 @@ export class AdminDashboardService {
       });
 
       // Increment curr
-      if (interval === 'day') {
+      if (interval === "day") {
         curr.setUTCDate(curr.getUTCDate() + 1);
-      } else if (interval === 'week') {
+      } else if (interval === "week") {
         curr.setUTCDate(curr.getUTCDate() + 7);
-      } else if (interval === 'month') {
+      } else if (interval === "month") {
         curr.setUTCMonth(curr.getUTCMonth() + 1);
       }
     }
 
-    if (query.format === 'csv') {
-      const csvStr = buildCsvFromRows(buckets.map(b => ({
-        periodStart: b.periodStart,
-        shipmentsCreated: b.shipmentsCreated,
-        shipmentsCompleted: b.shipmentsCompleted,
-        totalValue: b.totalValue,
-        totalValueUsd: b.totalValueUsd,
-        releasedValue: b.releasedValue,
-      })));
+    if (query.format === "csv") {
+      const csvStr = buildCsvFromRows(
+        buckets.map((b) => ({
+          periodStart: b.periodStart,
+          shipmentsCreated: b.shipmentsCreated,
+          shipmentsCompleted: b.shipmentsCompleted,
+          totalValue: b.totalValue,
+          totalValueUsd: b.totalValueUsd,
+          releasedValue: b.releasedValue,
+        })),
+      );
       await this.redis.set(cacheKey, csvStr, 600); // 10 minutes cache
       return csvStr;
     }
 
     await this.redis.set(cacheKey, JSON.stringify(buckets), 600); // 10 minutes cache
     return buckets;
+  }
+
+  /**
+   * Retrieves all registered cron jobs with their schedule, next execution time,
+   * and previous run metrics from Redis (#533).
+   */
+  async getScheduledJobs(): Promise<ScheduledJobDto[]> {
+    const cronJobs = this.schedulerRegistry.getCronJobs();
+    const jobs: ScheduledJobDto[] = [];
+
+    for (const [name, cronJob] of cronJobs.entries()) {
+      let nextRunAt: string | null = null;
+      try {
+        if (typeof (cronJob as any).nextDate === "function") {
+          const next = (cronJob as any).nextDate();
+          if (next) {
+            nextRunAt =
+              typeof next.toISO === "function"
+                ? next.toISO()
+                : new Date(next).toISOString();
+          }
+        }
+      } catch {
+        nextRunAt = null;
+      }
+
+      let schedule = "";
+      try {
+        schedule = (cronJob as any).cronTime?.source?.toString() || "";
+      } catch {
+        schedule = "";
+      }
+
+      const redisKey = getJobRedisKey(name);
+      const lastRun = await this.redis.getJson<JobRunRecord>(redisKey);
+
+      jobs.push({
+        name,
+        schedule,
+        lastRunAt: lastRun?.lastRunAt ?? null,
+        lastResult: lastRun?.lastResult ?? null,
+        durationMs: lastRun?.durationMs ?? null,
+        nextRunAt,
+      });
+    }
+
+    return jobs.sort((a, b) => a.name.localeCompare(b.name));
   }
 }

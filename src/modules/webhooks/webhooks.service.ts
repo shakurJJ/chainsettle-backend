@@ -103,6 +103,13 @@ function nowUnixSeconds(): number {
   return Math.floor(Date.now() / 1_000);
 }
 
+interface EndpointWithOptionalEncryptedHeaders {
+  id: string;
+  url: string;
+  secret: string;
+  headers?: unknown;
+}
+
 // ─── Service ─────────────────────────────────────────────────────────────────
 
 @Injectable()
@@ -678,7 +685,7 @@ export class WebhooksService {
 
   // ── Auto-retry scheduler ───────────────────────────────────────────────────
 
-  @Cron(CronExpression.EVERY_MINUTE)
+  @Cron(CronExpression.EVERY_MINUTE, { name: 'webhook-retry-queue' })
   async processRetryQueue() {
     const due = await this.prisma.webhookDelivery.findMany({
       where: {

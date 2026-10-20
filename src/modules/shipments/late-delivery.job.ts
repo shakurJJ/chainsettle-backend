@@ -6,6 +6,8 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisService } from '../../common/redis/redis.service';
 import { NotificationsService } from '../notifications/notifications.service';
 
+import { runTrackedJob } from '../../common/jobs/job-tracker.util';
+
 const LATE_DELIVERY_LOCK_KEY = 'chainsettle:late-delivery:lock';
 const LATE_DELIVERY_LOCK_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -25,30 +27,37 @@ export class LateDeliveryJob {
     private readonly notifications: NotificationsService,
   ) {}
 
-  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT, { name: 'late-delivery' })
   async run(): Promise<number> {
-    const token = randomUUID();
-    const acquired = await this.redis.acquireLock(
-      LATE_DELIVERY_LOCK_KEY,
-      token,
-      LATE_DELIVERY_LOCK_TTL_MS,
+    return runTrackedJob(
+      this.redis,
+      'late-delivery',
+      async () => {
+        const token = randomUUID();
+        const acquired = await this.redis.acquireLock(
+          LATE_DELIVERY_LOCK_KEY,
+          token,
+          LATE_DELIVERY_LOCK_TTL_MS,
+        );
+
+        if (!acquired) {
+          this.logger.debug('Skipping late delivery check — another instance holds the lock');
+          return 0;
+        }
+
+        let flaggedCount = 0;
+        try {
+          flaggedCount = await this.checkOverdueShipments();
+        } catch (err: any) {
+          this.logger.error(`Late delivery check failed: ${err.message}`, err.stack);
+        } finally {
+          await this.redis.releaseLock(LATE_DELIVERY_LOCK_KEY, token);
+        }
+
+        return flaggedCount;
+      },
+      this.logger,
     );
-
-    if (!acquired) {
-      this.logger.debug('Skipping late delivery check — another instance holds the lock');
-      return 0;
-    }
-
-    let flaggedCount = 0;
-    try {
-      flaggedCount = await this.checkOverdueShipments();
-    } catch (err: any) {
-      this.logger.error(`Late delivery check failed: ${err.message}`, err.stack);
-    } finally {
-      await this.redis.releaseLock(LATE_DELIVERY_LOCK_KEY, token);
-    }
-
-    return flaggedCount;
   }
 
   /**

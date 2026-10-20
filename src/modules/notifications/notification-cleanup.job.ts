@@ -5,6 +5,8 @@ import { randomUUID } from 'crypto';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisService } from '../../common/redis/redis.service';
 
+import { runTrackedJob } from '../../common/jobs/job-tracker.util';
+
 const CLEANUP_LOCK_KEY = 'chainsettle:notification-cleanup:lock';
 const CLEANUP_LOCK_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const BATCH_SIZE = 5_000;
@@ -29,26 +31,33 @@ export class NotificationCleanupJob {
     private readonly config: ConfigService,
   ) {}
 
-  @Cron('0 2 * * *') // 02:00 server time every night
+  @Cron('0 2 * * *', { name: 'notification-cleanup' }) // 02:00 server time every night
   async runCleanup(): Promise<void> {
-    const token = randomUUID();
-    const acquired = await this.redis.acquireLock(
-      CLEANUP_LOCK_KEY,
-      token,
-      CLEANUP_LOCK_TTL_MS,
+    await runTrackedJob(
+      this.redis,
+      'notification-cleanup',
+      async () => {
+        const token = randomUUID();
+        const acquired = await this.redis.acquireLock(
+          CLEANUP_LOCK_KEY,
+          token,
+          CLEANUP_LOCK_TTL_MS,
+        );
+
+        if (!acquired) {
+          this.logger.debug('Skipping notification cleanup — another instance holds the lock');
+          return;
+        }
+
+        try {
+          await this.deleteReadNotifications();
+          await this.warnStaleUnread();
+        } finally {
+          await this.redis.releaseLock(CLEANUP_LOCK_KEY, token);
+        }
+      },
+      this.logger,
     );
-
-    if (!acquired) {
-      this.logger.debug('Skipping notification cleanup — another instance holds the lock');
-      return;
-    }
-
-    try {
-      await this.deleteReadNotifications();
-      await this.warnStaleUnread();
-    } finally {
-      await this.redis.releaseLock(CLEANUP_LOCK_KEY, token);
-    }
   }
 
   // ---------------------------------------------------------------------------

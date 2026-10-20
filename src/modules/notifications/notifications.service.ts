@@ -24,10 +24,15 @@ type ChannelPrefs = {
   push?: boolean;
 };
 type PreferenceMap = Record<NotificationType, ChannelPrefs>;
-export type DigestFrequency = 'instant' | 'daily' | 'weekly';
+export type DigestFrequency = "instant" | "daily" | "weekly";
 type StoredPreferences = PreferenceMap & {
   _meta?: { digestFrequency?: DigestFrequency };
-  _quietHours?: { enabled: boolean; start: string; end: string; timezone: string };
+  _quietHours?: {
+    enabled: boolean;
+    start: string;
+    end: string;
+    timezone: string;
+  };
 };
 
 type NotificationGroup = {
@@ -39,7 +44,7 @@ type NotificationGroup = {
   notifications: any[];
 };
 
-const DEFAULT_DIGEST_FREQUENCY: DigestFrequency = 'daily';
+const DEFAULT_DIGEST_FREQUENCY: DigestFrequency = "daily";
 
 // SMS is only allowed for these notification types
 export const SMS_ALLOWED_TYPES: NotificationType[] = [
@@ -68,7 +73,9 @@ function buildDefaultPreferences(): PreferenceMap {
   }, {} as PreferenceMap);
 }
 
-function normalizeChannelPrefs(raw: Partial<ChannelPrefs> | undefined): ChannelPrefs {
+function normalizeChannelPrefs(
+  raw: Partial<ChannelPrefs> | undefined,
+): ChannelPrefs {
   return {
     inApp: raw?.inApp ?? true,
     email: raw?.email ?? true,
@@ -83,7 +90,7 @@ function normalizeChannelPrefs(raw: Partial<ChannelPrefs> | undefined): ChannelP
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
   private transporter: nodemailer.Transporter;
-  private smsProvider: ReturnType<SmsProviderFactory['create']>;
+  private smsProvider: ReturnType<SmsProviderFactory["create"]>;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -95,12 +102,12 @@ export class NotificationsService {
     @Optional() private readonly webPush: WebPushService,
   ) {
     this.transporter = nodemailer.createTransport({
-      host: this.config.get('SMTP_HOST'),
-      port: this.config.get<number>('SMTP_PORT', 587),
+      host: this.config.get("SMTP_HOST"),
+      port: this.config.get<number>("SMTP_PORT", 587),
       secure: false,
       auth: {
-        user: this.config.get('SMTP_USER'),
-        pass: this.config.get('SMTP_PASS'),
+        user: this.config.get("SMTP_USER"),
+        pass: this.config.get("SMTP_PASS"),
       },
     });
 
@@ -130,7 +137,9 @@ export class NotificationsService {
       });
 
       if (!user) {
-        this.logger.warn(`No user found for address ${stellarAddress} — skipping notification`);
+        this.logger.warn(
+          `No user found for address ${stellarAddress} — skipping notification`,
+        );
         return;
       }
 
@@ -142,11 +151,26 @@ export class NotificationsService {
       if (!inApp) return;
 
       const notification = await this.prisma.notification.create({
-        data: { userId: user.id, type, title, message, data: data ?? {}, ...(deliverAfter ? { deliverAfter } : {}) },
+        data: {
+          userId: user.id,
+          type,
+          title,
+          message,
+          data: data ?? {},
+          ...(deliverAfter ? { deliverAfter } : {}),
+        },
       });
 
       if (!deliverAfter && emailEnabled && user.email) {
-        await this.sendEmail(user.email, title, message, undefined, type, data);
+        await this.sendEmail(
+          user.email,
+          title,
+          message,
+          undefined,
+          type,
+          data,
+          user.locale ?? DEFAULT_LOCALE,
+        );
         await this.prisma.notification.update({
           where: { id: notification.id },
           data: { emailSent: true },
@@ -154,30 +178,64 @@ export class NotificationsService {
       }
 
       if (!deliverAfter && slackEnabled && slackWebhookUrl) {
-        await this.sendSlackMessage(slackWebhookUrl, type, title, message, data);
+        await this.sendSlackMessage(
+          slackWebhookUrl,
+          type,
+          title,
+          message,
+          data,
+        );
       }
 
       // Send SMS if enabled, user has verified phone, type is allowed, and rate limit not exceeded
-      if (smsEnabled && user.phoneVerified && user.phoneNumber && SMS_ALLOWED_TYPES.includes(type)) {
-        await this.sendSmsNotification(user.id, user.phoneNumber, type, title, message, data);
+      if (
+        smsEnabled &&
+        user.phoneVerified &&
+        user.phoneNumber &&
+        SMS_ALLOWED_TYPES.includes(type)
+      ) {
+        await this.sendSmsNotification(
+          user.id,
+          user.phoneNumber,
+          type,
+          title,
+          message,
+          data,
+        );
       }
 
       // Send Discord notification if enabled and webhook is configured
       if (discordEnabled && discordWebhookUrl) {
-        await this.sendDiscordMessage(discordWebhookUrl, type, title, message, data);
+        await this.sendDiscordMessage(
+          discordWebhookUrl,
+          type,
+          title,
+          message,
+          data,
+        );
       }
 
       this.gateway?.pushToUser(user.id, notification);
 
       if (!deliverAfter && pushEnabled) {
         this.webPush
-          ?.sendToUser(user.id, type, title, message, data as Record<string, string> | undefined)
-          .catch((err) => this.logger.error('Web push dispatch error', err.message));
+          ?.sendToUser(
+            user.id,
+            type,
+            title,
+            message,
+            data as Record<string, string> | undefined,
+          )
+          .catch((err) =>
+            this.logger.error("Web push dispatch error", err.message),
+          );
       }
 
       this.webhooks
         ?.dispatch(type, { notificationId: notification.id, ...(data ?? {}) })
-        .catch((err) => this.logger.error('Webhook dispatch error', err.message));
+        .catch((err) =>
+          this.logger.error("Webhook dispatch error", err.message),
+        );
 
       return notification;
     } catch (error) {
@@ -202,23 +260,49 @@ export class NotificationsService {
       });
 
       if (!user) {
-        this.logger.warn(`No user found for address ${stellarAddress} — skipping mention notification`);
+        this.logger.warn(
+          `No user found for address ${stellarAddress} — skipping mention notification`,
+        );
         return;
       }
 
       const prefs = await this.getOrCreatePreferences(user.id);
-      const deliverAfter = type === NotificationType.SYSTEM_ALERT && data?.urgent === true ? null : this.getQuietHoursEnd(new Date(), (prefs as StoredPreferences)._quietHours);
+      const deliverAfter =
+        type === NotificationType.SYSTEM_ALERT && data?.urgent === true
+          ? null
+          : this.getQuietHoursEnd(
+              new Date(),
+              (prefs as StoredPreferences)._quietHours,
+            );
       const { inApp } = prefs[type] ?? prefs[NotificationType.COMMENT_ADDED];
 
       if (!inApp) return;
 
       const notification = await this.prisma.notification.create({
-        data: { userId: user.id, type, title, message, data: { ...(data ?? {}), ...(deliverAfter ? { forceEmail: true } : {}) }, ...(deliverAfter ? { deliverAfter } : {}) },
+        data: {
+          userId: user.id,
+          type,
+          title,
+          message,
+          data: {
+            ...(data ?? {}),
+            ...(deliverAfter ? { forceEmail: true } : {}),
+          },
+          ...(deliverAfter ? { deliverAfter } : {}),
+        },
       });
 
       // Force email delivery regardless of digest preference when the user has an email
       if (user.email && !deliverAfter) {
-        await this.sendEmail(user.email, title, message, undefined, type, data);
+        await this.sendEmail(
+          user.email,
+          title,
+          message,
+          undefined,
+          type,
+          data,
+          user.locale ?? DEFAULT_LOCALE,
+        );
         await this.prisma.notification.update({
           where: { id: notification.id },
           data: { emailSent: true },
@@ -229,11 +313,16 @@ export class NotificationsService {
 
       this.webhooks
         ?.dispatch(type, { notificationId: notification.id, ...(data ?? {}) })
-        .catch((err) => this.logger.error('Webhook dispatch error', err.message));
+        .catch((err) =>
+          this.logger.error("Webhook dispatch error", err.message),
+        );
 
       return notification;
     } catch (error) {
-      this.logger.error(`Failed to send mention notification to ${stellarAddress}`, error.message);
+      this.logger.error(
+        `Failed to send mention notification to ${stellarAddress}`,
+        error.message,
+      );
     }
   }
 
@@ -275,7 +364,7 @@ export class NotificationsService {
           title,
           userId: { in: watchers.map((w) => w.userId) },
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: "desc" },
         take: watchers.length,
       });
 
@@ -283,7 +372,10 @@ export class NotificationsService {
         this.gateway?.pushToUser(notif.userId, notif);
       }
     } catch (error) {
-      this.logger.error(`Failed to notify watchers for shipment ${shipmentId}`, (error as Error).message);
+      this.logger.error(
+        `Failed to notify watchers for shipment ${shipmentId}`,
+        (error as Error).message,
+      );
     }
   }
 
@@ -295,15 +387,17 @@ export class NotificationsService {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
 
     if (!user) {
-      this.logger.warn(`No user found for id ${userId} — skipping test notification`);
+      this.logger.warn(
+        `No user found for id ${userId} — skipping test notification`,
+      );
       return;
     }
 
     return this.notifyUser(
       user.stellarAddress,
       NotificationType.SYSTEM_ALERT,
-      'Test Notification',
-      'This is a test notification to verify your notification pipeline is working correctly.',
+      "Test Notification",
+      "This is a test notification to verify your notification pipeline is working correctly.",
     );
   }
 
@@ -330,35 +424,61 @@ export class NotificationsService {
   }
 
   private validateQuietHours(q: any): void {
-    if (!q || typeof q.enabled !== 'boolean' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(q.start) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(q.end) || typeof q.timezone !== 'string') throw new BadRequestException('quietHours must contain enabled, HH:mm start/end, and an IANA timezone');
-    try { new Intl.DateTimeFormat('en-US', { timeZone: q.timezone }); } catch { throw new BadRequestException('quietHours.timezone must be a valid IANA timezone'); }
+    if (
+      !q ||
+      typeof q.enabled !== "boolean" ||
+      !/^([01]\d|2[0-3]):[0-5]\d$/.test(q.start) ||
+      !/^([01]\d|2[0-3]):[0-5]\d$/.test(q.end) ||
+      typeof q.timezone !== "string"
+    )
+      throw new BadRequestException(
+        "quietHours must contain enabled, HH:mm start/end, and an IANA timezone",
+      );
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: q.timezone });
+    } catch {
+      throw new BadRequestException(
+        "quietHours.timezone must be a valid IANA timezone",
+      );
+    }
   }
 
   async isQuietHours(userId: string): Promise<boolean> {
-    const prefs = await this.getOrCreatePreferences(userId) as StoredPreferences;
+    const prefs = (await this.getOrCreatePreferences(
+      userId,
+    )) as StoredPreferences;
     return this.getQuietHoursEnd(new Date(), prefs._quietHours) !== null;
   }
   async updatePreferences(userId: string, dto: UpdatePreferencesDto) {
     if (dto.quietHours !== undefined) this.validateQuietHours(dto.quietHours);
-    const current = (await this.getOrCreatePreferences(userId)) as StoredPreferences;
-    const merged: StoredPreferences = { ...current, ...(dto.preferences ?? {}) };
+    const current = (await this.getOrCreatePreferences(
+      userId,
+    )) as StoredPreferences;
+    const merged: StoredPreferences = {
+      ...current,
+      ...(dto.preferences ?? {}),
+    };
     if (dto.quietHours !== undefined) merged._quietHours = dto.quietHours;
     if (dto.digestFrequency) {
       merged._meta = { ...current._meta, digestFrequency: dto.digestFrequency };
     }
 
-    const data: { preferences: StoredPreferences; slackWebhookUrl?: string | null; discordWebhookUrl?: string | null } = {
+    const data: {
+      preferences: StoredPreferences;
+      slackWebhookUrl?: string | null;
+      discordWebhookUrl?: string | null;
+    } = {
       preferences: merged,
     };
     if (dto.slackWebhookUrl !== undefined) {
       data.slackWebhookUrl =
-        dto.slackWebhookUrl === '' || dto.slackWebhookUrl === null
+        dto.slackWebhookUrl === "" || dto.slackWebhookUrl === null
           ? null
           : dto.slackWebhookUrl;
     }
     if (dto.discordWebhookUrl !== undefined) {
       data.discordWebhookUrl =
-        dto.discordWebhookUrl === '' || dto.discordWebhookUrl === null
+        dto.discordWebhookUrl === "" || dto.discordWebhookUrl === null
           ? null
           : dto.discordWebhookUrl;
     }
@@ -375,18 +495,26 @@ export class NotificationsService {
    * users without a stored value to 'daily' (no migration required).
    */
   async getDigestFrequency(userId: string): Promise<DigestFrequency> {
-    const prefs = (await this.getOrCreatePreferences(userId)) as StoredPreferences;
+    const prefs = (await this.getOrCreatePreferences(
+      userId,
+    )) as StoredPreferences;
     return prefs._meta?.digestFrequency ?? DEFAULT_DIGEST_FREQUENCY;
   }
 
   async getPreferencesResponse(userId: string) {
-    const { preferences, slackWebhookUrl, discordWebhookUrl } = await this.getOrCreatePreferenceRecord(userId);
+    const { preferences, slackWebhookUrl, discordWebhookUrl } =
+      await this.getOrCreatePreferenceRecord(userId);
     const stored = preferences as StoredPreferences;
     const { _meta, _quietHours, ...typePreferences } = stored;
     return {
       ...typePreferences,
       digestFrequency: _meta?.digestFrequency ?? DEFAULT_DIGEST_FREQUENCY,
-      quietHours: _quietHours ?? { enabled: false, start: '22:00', end: '08:00', timezone: 'UTC' },
+      quietHours: _quietHours ?? {
+        enabled: false,
+        start: "22:00",
+        end: "08:00",
+        timezone: "UTC",
+      },
       slackWebhookUrl,
       discordWebhookUrl,
     };
@@ -532,7 +660,7 @@ export class NotificationsService {
     unreadOnly = false,
     page = 1,
     limit = 20,
-    groupBy?: 'shipment' | 'none',
+    groupBy?: "shipment" | "none",
   ) {
     const where: any = { userId };
     if (unreadOnly) where.read = false;
@@ -540,17 +668,21 @@ export class NotificationsService {
     // Once the snooze time passes the row reappears automatically — no cron needed.
     where.OR = [{ snoozedUntil: null }, { snoozedUntil: { lt: new Date() } }];
 
-    if (groupBy === 'shipment') {
+    if (groupBy === "shipment") {
       const notifications = await this.prisma.notification.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: "desc" },
       });
 
       const groups = new Map<string, NotificationGroup>();
       const shipmentIds = Array.from(
         new Set(
           notifications
-            .map((n) => (n.data && typeof n.data === 'object' && 'shipmentId' in n.data ? String((n.data as any).shipmentId) : null))
+            .map((n) =>
+              n.data && typeof n.data === "object" && "shipmentId" in n.data
+                ? String((n.data as any).shipmentId)
+                : null,
+            )
             .filter((id): id is string => Boolean(id)),
         ),
       );
@@ -564,21 +696,31 @@ export class NotificationsService {
       const shipmentMap = new Map(shipments.map((s) => [s.id, s]));
 
       for (const notification of notifications) {
-        const shipmentId = notification.data && typeof notification.data === 'object' && 'shipmentId' in notification.data
-          ? String((notification.data as any).shipmentId)
-          : null;
-        const key = shipmentId ?? '__general__';
+        const shipmentId =
+          notification.data &&
+          typeof notification.data === "object" &&
+          "shipmentId" in notification.data
+            ? String((notification.data as any).shipmentId)
+            : null;
+        const key = shipmentId ?? "__general__";
         const group = groups.get(key) ?? {
           key,
           shipmentId,
-          referenceNumber: shipmentId ? shipmentMap.get(shipmentId)?.referenceNumber ?? null : null,
+          referenceNumber: shipmentId
+            ? (shipmentMap.get(shipmentId)?.referenceNumber ?? null)
+            : null,
           unreadCount: 0,
           latestAt: notification.createdAt,
           notifications: [],
         };
 
         group.notifications.push(notification);
-        group.latestAt = new Date(Math.max(new Date(group.latestAt).getTime(), new Date(notification.createdAt).getTime()));
+        group.latestAt = new Date(
+          Math.max(
+            new Date(group.latestAt).getTime(),
+            new Date(notification.createdAt).getTime(),
+          ),
+        );
         group.unreadCount += notification.read ? 0 : 1;
         groups.set(key, group);
       }
@@ -588,10 +730,17 @@ export class NotificationsService {
           ...group,
           notifications: group.notifications
             .slice()
-            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+            .sort(
+              (a, b) =>
+                new Date(b.createdAt).getTime() -
+                new Date(a.createdAt).getTime(),
+            )
             .slice(0, 3),
         }))
-        .sort((a, b) => new Date(b.latestAt).getTime() - new Date(a.latestAt).getTime())
+        .sort(
+          (a, b) =>
+            new Date(b.latestAt).getTime() - new Date(a.latestAt).getTime(),
+        )
         .slice((page - 1) * limit, page * limit);
 
       return { data: grouped, meta: { total: grouped.length, page, limit } };
@@ -600,7 +749,7 @@ export class NotificationsService {
     const [notifications, total] = await this.prisma.$transaction([
       this.prisma.notification.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: "desc" },
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -616,7 +765,7 @@ export class NotificationsService {
         userId,
         read: false,
         data: {
-          path: ['shipmentId'],
+          path: ["shipmentId"],
           equals: shipmentId,
         },
       },
@@ -632,7 +781,7 @@ export class NotificationsService {
   async snooze(userId: string, id: string, until: string): Promise<void> {
     const snoozedUntil = new Date(until);
     if (snoozedUntil <= new Date()) {
-      throw new BadRequestException('Snooze time must be in the future');
+      throw new BadRequestException("Snooze time must be in the future");
     }
 
     const result = await this.prisma.notification.updateMany({
@@ -641,7 +790,7 @@ export class NotificationsService {
     });
 
     if (result.count === 0) {
-      throw new NotFoundException('Notification not found');
+      throw new NotFoundException("Notification not found");
     }
   }
 
@@ -652,7 +801,7 @@ export class NotificationsService {
     });
 
     if (result.count === 0) {
-      throw new NotFoundException('Notification not found');
+      throw new NotFoundException("Notification not found");
     }
   }
 
@@ -677,10 +826,12 @@ export class NotificationsService {
     return { deletedCount: result.count };
   }
 
-  async buildDigest(userId: string): Promise<{ subject: string; html: string } | null> {
+  async buildDigest(
+    userId: string,
+  ): Promise<{ subject: string; html: string } | null> {
     const unread = await this.prisma.notification.findMany({
       where: { userId, read: false },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
 
     if (unread.length === 0) return null;
@@ -697,12 +848,10 @@ export class NotificationsService {
 
     const sections = Object.entries(grouped)
       .map(([type, items]) => {
-        const rows = items
-          .map((n) => `<li>${n.title}</li>`)
-          .join('');
-        return `<h3 style="color:#1a1a2e;">${type.replace(/_/g, ' ')} (${items.length})</h3><ul>${rows}</ul>`;
+        const rows = items.map((n) => `<li>${n.title}</li>`).join("");
+        return `<h3 style="color:#1a1a2e;">${type.replace(/_/g, " ")} (${items.length})</h3><ul>${rows}</ul>`;
       })
-      .join('');
+      .join("");
 
     const unsubscribeUrl = this.getUnsubscribeUrl(userId, 'ALL');
 
@@ -718,12 +867,17 @@ export class NotificationsService {
       </div>
     `;
 
-    return { subject: `Daily digest — ${unread.length} unread notification(s)`, html };
+    return {
+      subject: `Daily digest — ${unread.length} unread notification(s)`,
+      html,
+    };
   }
 
   /**
    * Loads and renders a Handlebars template for the given notification type.
    * Returns null when no template file exists for that type (triggers plain-text fallback).
+   * Supports locale-specific templates (<locale>/<type>.hbs) with fallback to English
+   * and root templates directory (#543).
    * Localized copy is injected as `t` from the i18n email catalog.
    */
   private renderTemplate(
@@ -732,21 +886,25 @@ export class NotificationsService {
     locale: string = DEFAULT_LOCALE,
     unsubscribeUrl?: string,
   ): string | null {
-    const templatePath = path.join(__dirname, 'templates', `${type}.hbs`);
-    if (!fs.existsSync(templatePath)) {
+    const candidatePaths = [
+      path.join(__dirname, "templates", locale, `${type}.hbs`),
+      path.join(__dirname, "templates", DEFAULT_LOCALE, `${type}.hbs`),
+      path.join(__dirname, "templates", `${type}.hbs`),
+    ];
+
+    const templatePath = candidatePaths.find((p) => fs.existsSync(p));
+    if (!templatePath) {
       return null;
     }
     try {
-      const source = fs.readFileSync(templatePath, 'utf-8');
+      const source = fs.readFileSync(templatePath, "utf-8");
       const template = Handlebars.compile(source);
       const emailCopy = this.i18n.getEmailCopy(type, locale);
       const interpolated = emailCopy
         ? Object.fromEntries(
             Object.entries(emailCopy).map(([k, v]) => [
               k,
-              typeof v === 'string'
-                ? Handlebars.compile(v)(data ?? {})
-                : v,
+              typeof v === "string" ? Handlebars.compile(v)(data ?? {}) : v,
             ]),
           )
         : {};
@@ -769,7 +927,9 @@ export class NotificationsService {
   ): Promise<boolean> {
     // Never send to addresses that hard-bounced or complained (#434).
     if (await this.isEmailSuppressed(to)) {
-      this.logger.warn(`Email to ${to} skipped — address is on the suppression list`);
+      this.logger.warn(
+        `Email to ${to} skipped — address is on the suppression list`,
+      );
       return false;
     }
     try {
@@ -806,18 +966,20 @@ export class NotificationsService {
           ? this.i18n.getEmailCopy(type, locale)!.subject
           : subject;
       const footer =
-        this.i18n.t('email.GENERIC_FOOTER', locale) ||
+        this.i18n.t("email.GENERIC_FOOTER", locale) ||
         "You're receiving this because you're a participant on ChainSettle.";
       const footerHtml = unsubscribeUrl
         ? `<small style="color: #888;">${footer}</small><br /><small style="color: #888;"><a href="${unsubscribeUrl}" style="color: #888; text-decoration: underline;">Unsubscribe</a></small>`
         : `<small style="color: #888;">${footer}</small>`;
 
       await this.transporter.sendMail({
-        from: this.config.get('EMAIL_FROM', 'noreply@chainsetttle.com'),
+        from: this.config.get("EMAIL_FROM", "noreply@chainsetttle.com"),
         to,
         subject: `ChainSettle — ${localizedSubject}`,
         text,
-        html: renderedHtml ?? `
+        html:
+          renderedHtml ??
+          `
           <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
             <h2 style="color: #1a1a2e;">ChainSettle</h2>
             <p>${text}</p>
@@ -864,44 +1026,59 @@ export class NotificationsService {
     try {
       const shipmentId = data?.shipmentId ? String(data.shipmentId) : undefined;
       const milestoneIndex =
-        data?.milestoneIndex !== undefined ? String(data.milestoneIndex) : undefined;
+        data?.milestoneIndex !== undefined
+          ? String(data.milestoneIndex)
+          : undefined;
 
       const fields = [
-        shipmentId ? { type: 'mrkdwn', text: `*Shipment:*
-\`${shipmentId}\`` } : null,
-        milestoneIndex !== undefined
-          ? { type: 'mrkdwn', text: `*Milestone:*
-${milestoneIndex}` }
+        shipmentId
+          ? {
+              type: "mrkdwn",
+              text: `*Shipment:*
+\`${shipmentId}\``,
+            }
           : null,
-        { type: 'mrkdwn', text: `*Type:*
-${type}` },
+        milestoneIndex !== undefined
+          ? {
+              type: "mrkdwn",
+              text: `*Milestone:*
+${milestoneIndex}`,
+            }
+          : null,
+        {
+          type: "mrkdwn",
+          text: `*Type:*
+${type}`,
+        },
       ].filter(Boolean);
 
       const payload = {
         text: `ChainSettle — ${title}`,
         blocks: [
           {
-            type: 'header',
-            text: { type: 'plain_text', text: `ChainSettle — ${title}`, emoji: true },
+            type: "header",
+            text: {
+              type: "plain_text",
+              text: `ChainSettle — ${title}`,
+              emoji: true,
+            },
           },
           {
-            type: 'section',
-            text: { type: 'mrkdwn', text: message },
+            type: "section",
+            text: { type: "mrkdwn", text: message },
           },
-          ...(fields.length
-            ? [{ type: 'section', fields }]
-            : []),
+          ...(fields.length ? [{ type: "section", fields }] : []),
         ],
       };
 
       const response = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
-        const body = await response.text().catch(() => '');
+        const body = await response.text().catch(() => "");
         this.logger.error(
           `Slack webhook failed (${response.status}): ${body || response.statusText}`,
         );
@@ -910,7 +1087,10 @@ ${type}` },
 
       this.logger.log(`Slack notification sent for ${type}: ${title}`);
     } catch (error) {
-      this.logger.error(`Slack notification failed for ${type}`, (error as Error).message);
+      this.logger.error(
+        `Slack notification failed for ${type}`,
+        (error as Error).message,
+      );
     }
   }
 
@@ -928,7 +1108,7 @@ ${type}` },
     data?: Record<string, any>,
   ): Promise<void> {
     if (!this.smsProvider) {
-      this.logger.debug('SMS provider not configured, skipping SMS');
+      this.logger.debug("SMS provider not configured, skipping SMS");
       return;
     }
 
@@ -974,7 +1154,10 @@ ${type}` },
 
       this.logger.log(`SMS notification sent for ${type}: ${title}`);
     } catch (error) {
-      this.logger.error(`SMS notification failed for ${type}`, (error as Error).message);
+      this.logger.error(
+        `SMS notification failed for ${type}`,
+        (error as Error).message,
+      );
     }
   }
 
@@ -991,19 +1174,22 @@ ${type}` },
   ): Promise<void> {
     try {
       const shipmentId = data?.shipmentId ? String(data.shipmentId) : undefined;
-      const milestoneIndex = data?.milestoneIndex !== undefined ? String(data.milestoneIndex) : undefined;
+      const milestoneIndex =
+        data?.milestoneIndex !== undefined
+          ? String(data.milestoneIndex)
+          : undefined;
 
       // Color based on notification type
       const colorMap: Record<string, number> = {
-        DISPUTE_RAISED: 0xff0000,      // Red
-        DISPUTE_RESOLVED: 0x00ff00,    // Green
-        PAYMENT_RELEASED: 0x00ff00,    // Green
-        MILESTONE_OVERDUE: 0xffaa00,   // Orange
-        PROOF_SUBMITTED: 0x0099ff,     // Blue
+        DISPUTE_RAISED: 0xff0000, // Red
+        DISPUTE_RESOLVED: 0x00ff00, // Green
+        PAYMENT_RELEASED: 0x00ff00, // Green
+        MILESTONE_OVERDUE: 0xffaa00, // Orange
+        PROOF_SUBMITTED: 0x0099ff, // Blue
         MILESTONE_CONFIRMED: 0x00ff00, // Green
-        SHIPMENT_CANCELLED: 0xff0000,  // Red
-        COMMENT_ADDED: 0x888888,       // Gray
-        SYSTEM_ALERT: 0xffaa00,        // Orange
+        SHIPMENT_CANCELLED: 0xff0000, // Red
+        COMMENT_ADDED: 0x888888, // Gray
+        SYSTEM_ALERT: 0xffaa00, // Orange
       };
       const color = colorMap[type] || 0x666666;
 
@@ -1012,55 +1198,69 @@ ${type}` },
         description: message,
         color,
         timestamp: new Date().toISOString(),
-        footer: { text: 'ChainSettle' },
+        footer: { text: "ChainSettle" },
         fields: [],
       };
 
       if (shipmentId) {
-        embed.fields.push({ name: 'Shipment', value: shipmentId, inline: true });
+        embed.fields.push({
+          name: "Shipment",
+          value: shipmentId,
+          inline: true,
+        });
       }
       if (milestoneIndex !== undefined) {
-        embed.fields.push({ name: 'Milestone', value: milestoneIndex, inline: true });
+        embed.fields.push({
+          name: "Milestone",
+          value: milestoneIndex,
+          inline: true,
+        });
       }
-      embed.fields.push({ name: 'Type', value: type, inline: true });
+      embed.fields.push({ name: "Type", value: type, inline: true });
 
       const payload = {
         embeds: [embed],
       };
 
       const response = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
       if (response.status === 429) {
         // Handle rate limiting - Discord sends retry_after in the response
-        const retryAfter = response.headers.get('retry-after');
+        const retryAfter = response.headers.get("retry-after");
         const waitMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : 5000;
-        this.logger.warn(`Discord rate limited, waiting ${waitMs}ms before retry`);
-        
+        this.logger.warn(
+          `Discord rate limited, waiting ${waitMs}ms before retry`,
+        );
+
         // Wait and retry once
-        await new Promise(resolve => setTimeout(resolve, waitMs));
-        
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+
         const retryResponse = await fetch(webhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        
+
         if (!retryResponse.ok) {
-          const body = await retryResponse.text().catch(() => '');
-          this.logger.error(`Discord webhook retry failed (${retryResponse.status}): ${body || retryResponse.statusText}`);
+          const body = await retryResponse.text().catch(() => "");
+          this.logger.error(
+            `Discord webhook retry failed (${retryResponse.status}): ${body || retryResponse.statusText}`,
+          );
           return;
         }
-        
-        this.logger.log(`Discord notification sent for ${type}: ${title} (after retry)`);
+
+        this.logger.log(
+          `Discord notification sent for ${type}: ${title} (after retry)`,
+        );
         return;
       }
 
       if (!response.ok) {
-        const body = await response.text().catch(() => '');
+        const body = await response.text().catch(() => "");
         this.logger.error(
           `Discord webhook failed (${response.status}): ${body || response.statusText}`,
         );
@@ -1069,7 +1269,10 @@ ${type}` },
 
       this.logger.log(`Discord notification sent for ${type}: ${title}`);
     } catch (error) {
-      this.logger.error(`Discord notification failed for ${type}`, (error as Error).message);
+      this.logger.error(
+        `Discord notification failed for ${type}`,
+        (error as Error).message,
+      );
     }
   }
 }

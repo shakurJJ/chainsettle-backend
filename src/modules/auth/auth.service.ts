@@ -8,22 +8,22 @@ import {
   ForbiddenException,
   PayloadTooLargeException,
   Optional,
-} from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
-import { ConfigService } from '@nestjs/config';
-import { randomUUID } from 'crypto';
-import { Keypair } from '@stellar/stellar-sdk';
-import { UserRole, ShipmentStatus } from '@prisma/client';
-import { PrismaService } from '../../common/prisma/prisma.service';
-import { RedisService } from '../../common/redis/redis.service';
-import { IpfsService } from '../../common/ipfs/ipfs.service';
-import { LoginDto } from './dto/login.dto';
-import { UpdateProfileDto } from './dto/update-profile.dto';
-import { NotificationsService } from '../notifications/notifications.service';
-import { AuditLogService } from '../audit-logs/audit-log.service';
-import { SessionService } from './session.service';
-import { ForceLogoutDto } from './dto/force-logout.dto';
-import { maskIpAddress } from '../../common/utils/ip.util';
+} from "@nestjs/common";
+import { JwtService } from "@nestjs/jwt";
+import { ConfigService } from "@nestjs/config";
+import { randomUUID } from "crypto";
+import { Keypair } from "@stellar/stellar-sdk";
+import { UserRole, ShipmentStatus } from "@prisma/client";
+import { PrismaService } from "../../common/prisma/prisma.service";
+import { RedisService } from "../../common/redis/redis.service";
+import { IpfsService } from "../../common/ipfs/ipfs.service";
+import { LoginDto } from "./dto/login.dto";
+import { UpdateProfileDto } from "./dto/update-profile.dto";
+import { NotificationsService } from "../notifications/notifications.service";
+import { AuditLogService } from "../audit-logs/audit-log.service";
+import { SessionService } from "./session.service";
+import { ForceLogoutDto } from "./dto/force-logout.dto";
+import { maskIpAddress } from "../../common/utils/ip.util";
 
 /**
  * AuthService
@@ -42,10 +42,11 @@ import { maskIpAddress } from '../../common/utils/ip.util';
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
-  private readonly NONCE_PREFIX = 'chainsettle:nonce:';
+  private readonly NONCE_PREFIX = "chainsettle:nonce:";
   private readonly NONCE_TTL_MS = 5 * 60 * 1000; // 5 minutes in milliseconds
-  private readonly EMAIL_VERIFICATION_TOKEN_PREFIX = 'chainsettle:email-verification-token:';
-  private readonly PHONE_OTP_PREFIX = 'chainsettle:phone-otp:';
+  private readonly EMAIL_VERIFICATION_TOKEN_PREFIX =
+    "chainsettle:email-verification-token:";
+  private readonly PHONE_OTP_PREFIX = "chainsettle:phone-otp:";
   private readonly PHONE_OTP_TTL_MS = 5 * 60 * 1000; // 5 minutes for OTP
   private readonly PHONE_OTP_LENGTH = 6;
 
@@ -71,7 +72,6 @@ export class AuthService {
     // Store in Redis with 5-minute expiration using Redis-native TTL
     await this.redis.setPx(key, nonce, this.NONCE_TTL_MS);
 
-
     return nonce;
   }
 
@@ -81,8 +81,8 @@ export class AuthService {
 
   async login(
     dto: LoginDto,
-    userAgent = 'unknown',
-    ipAddress = 'unknown',
+    userAgent = "unknown",
+    ipAddress = "unknown",
   ): Promise<{ accessToken: string; user: any }> {
     const { stellarAddress, signedNonce, signature } = dto;
 
@@ -90,26 +90,35 @@ export class AuthService {
     const key = `${this.NONCE_PREFIX}${stellarAddress}`;
     const storedNonce = await this.redis.get(key);
 
-
     if (!storedNonce) {
-      throw new UnauthorizedException('Nonce expired or not found. Request a new one.');
+      throw new UnauthorizedException(
+        "Nonce expired or not found. Request a new one.",
+      );
     }
 
     // Verify the signature against the stored nonce.
     let isValid = false;
     try {
       const keypair = Keypair.fromPublicKey(stellarAddress);
-      const signatureBuffer = Buffer.from(signature, 'base64');
+      const signatureBuffer = Buffer.from(signature, "base64");
       isValid = keypair.verify(Buffer.from(storedNonce), signatureBuffer);
     } catch (err) {
       this.logger.warn(`Signature verification failed for ${stellarAddress}`);
-      await this.recordFailedLoginIfKnownUser(stellarAddress, ipAddress, userAgent);
-      throw new UnauthorizedException('Signature verification failed');
+      await this.recordFailedLoginIfKnownUser(
+        stellarAddress,
+        ipAddress,
+        userAgent,
+      );
+      throw new UnauthorizedException("Signature verification failed");
     }
 
     if (!isValid) {
-      await this.recordFailedLoginIfKnownUser(stellarAddress, ipAddress, userAgent);
-      throw new UnauthorizedException('Signature verification failed');
+      await this.recordFailedLoginIfKnownUser(
+        stellarAddress,
+        ipAddress,
+        userAgent,
+      );
+      throw new UnauthorizedException("Signature verification failed");
     }
 
     // Clear the nonce — one-time use
@@ -138,8 +147,8 @@ export class AuthService {
     await this.auditLog.record({
       actorId: user.id,
       actorAddress: user.stellarAddress,
-      action: 'LOGIN_SUCCESS',
-      resourceType: 'User',
+      action: "LOGIN_SUCCESS",
+      resourceType: "User",
       resourceId: user.id,
       metadata: {
         userAgent,
@@ -166,18 +175,20 @@ export class AuthService {
         await this.auditLog.record({
           actorId: existingUser.id,
           actorAddress: existingUser.stellarAddress,
-          action: 'LOGIN_FAILED',
-          resourceType: 'User',
+          action: "LOGIN_FAILED",
+          resourceType: "User",
           resourceId: existingUser.id,
           metadata: {
             userAgent,
-            reason: 'Signature verification failed',
+            reason: "Signature verification failed",
           },
           ipAddress,
         });
       }
     } catch (error) {
-      this.logger.error(`Failed to record LOGIN_FAILED audit log: ${error.message}`);
+      this.logger.error(
+        `Failed to record LOGIN_FAILED audit log: ${error.message}`,
+      );
     }
   }
 
@@ -191,6 +202,7 @@ export class AuthService {
         email: true,
         role: true,
         displayCurrency: true,
+        locale: true,
         avatarCid: true,
         deactivatedAt: true,
         createdAt: true,
@@ -198,11 +210,11 @@ export class AuthService {
     });
 
     if (!user) {
-      throw new UnauthorizedException('User not found');
+      throw new UnauthorizedException("User not found");
     }
 
     if (user.deactivatedAt) {
-      throw new UnauthorizedException('Account has been deactivated');
+      throw new UnauthorizedException("Account has been deactivated");
     }
 
     const { deactivatedAt: _deactivatedAt, ...profile } = user;
@@ -217,13 +229,17 @@ export class AuthService {
    * `jti` is the sessionId embedded in the JWT at login time.
    * `exp` is the JWT expiry epoch (seconds) so we can compute remaining TTL.
    */
-  async logout(userId: string, jti: string, exp: number): Promise<{ message: string }> {
+  async logout(
+    userId: string,
+    jti: string,
+    exp: number,
+  ): Promise<{ message: string }> {
     const nowMs = Date.now();
     const expiryMs = exp * 1000;
     const remainingMs = Math.max(0, expiryMs - nowMs);
 
     await this.sessions.invalidateSession(userId, jti, remainingMs);
-    return { message: 'Logged out successfully' };
+    return { message: "Logged out successfully" };
   }
 
   /**
@@ -239,14 +255,17 @@ export class AuthService {
    * The session record is deleted and its JWT is added to the blocklist
    * so future requests with that token are rejected.
    */
-  async revokeSession(userId: string, sessionId: string): Promise<{ message: string }> {
+  async revokeSession(
+    userId: string,
+    sessionId: string,
+  ): Promise<{ message: string }> {
     const revoked = await this.sessions.revokeSession(userId, sessionId);
 
     if (!revoked) {
-      throw new NotFoundException('Session not found');
+      throw new NotFoundException("Session not found");
     }
 
-    return { message: 'Session revoked successfully' };
+    return { message: "Session revoked successfully" };
   }
 
   /**
@@ -254,7 +273,9 @@ export class AuthService {
    * Preserves the User row and all historical relations (shipments, comments, audit logs).
    * Rejects with 409 if the user is still party to any ACTIVE shipment.
    */
-  async deactivateUser(userId: string): Promise<{ message: string; deactivatedAt: Date }> {
+  async deactivateUser(
+    userId: string,
+  ): Promise<{ message: string; deactivatedAt: Date }> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -265,11 +286,11 @@ export class AuthService {
     });
 
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new NotFoundException("User not found");
     }
 
     if (user.deactivatedAt) {
-      throw new ConflictException('Account is already deactivated');
+      throw new ConflictException("Account is already deactivated");
     }
 
     const activeShipmentCount = await this.prisma.shipment.count({
@@ -287,7 +308,7 @@ export class AuthService {
     if (activeShipmentCount > 0) {
       throw new ConflictException(
         `Cannot deactivate account while you have ${activeShipmentCount} active shipment(s). ` +
-          'Resolve or transfer all ACTIVE shipments where you are buyer, supplier, logistics, or arbiter first.',
+          "Resolve or transfer all ACTIVE shipments where you are buyer, supplier, logistics, or arbiter first.",
       );
     }
 
@@ -301,8 +322,8 @@ export class AuthService {
     await this.auditLog.record({
       actorId: user.id,
       actorAddress: user.stellarAddress,
-      action: 'USER_DEACTIVATED',
-      resourceType: 'User',
+      action: "USER_DEACTIVATED",
+      resourceType: "User",
       resourceId: user.id,
       metadata: { deactivatedAt: deactivatedAt.toISOString() },
     });
@@ -310,7 +331,7 @@ export class AuthService {
     this.logger.log(`User deactivated: ${user.stellarAddress} (${user.id})`);
 
     return {
-      message: 'Account deactivated successfully',
+      message: "Account deactivated successfully",
       deactivatedAt,
     };
   }
@@ -322,10 +343,15 @@ export class AuthService {
    * mid-shipment for fraud response). Idempotent: setting a user to the
    * state they're already in is a no-op, not an error.
    */
-  async adminSetActive(id: string, active: boolean, adminId: string, adminAddress: string) {
+  async adminSetActive(
+    id: string,
+    active: boolean,
+    adminId: string,
+    adminAddress: string,
+  ) {
     if (!active && id === adminId) {
       throw new BadRequestException(
-        'Admins cannot deactivate their own account via this route. Use DELETE /users/me instead.',
+        "Admins cannot deactivate their own account via this route. Use DELETE /users/me instead.",
       );
     }
 
@@ -335,13 +361,13 @@ export class AuthService {
     });
 
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new NotFoundException("User not found");
     }
 
     const isCurrentlyActive = !user.deactivatedAt;
     if (isCurrentlyActive === active) {
       return {
-        message: `Account is already ${active ? 'active' : 'deactivated'}`,
+        message: `Account is already ${active ? "active" : "deactivated"}`,
         deactivatedAt: user.deactivatedAt,
       };
     }
@@ -356,18 +382,18 @@ export class AuthService {
     await this.auditLog.record({
       actorId: adminId,
       actorAddress: adminAddress,
-      action: active ? 'ADMIN_USER_REACTIVATED' : 'ADMIN_USER_DEACTIVATED',
-      resourceType: 'User',
+      action: active ? "ADMIN_USER_REACTIVATED" : "ADMIN_USER_DEACTIVATED",
+      resourceType: "User",
       resourceId: id,
       metadata: { targetUserId: id, targetStellarAddress: user.stellarAddress },
     });
 
     this.logger.log(
-      `User ${user.stellarAddress} (${id}) ${active ? 'reactivated' : 'deactivated'} by admin ${adminId}`,
+      `User ${user.stellarAddress} (${id}) ${active ? "reactivated" : "deactivated"} by admin ${adminId}`,
     );
 
     return {
-      message: `Account ${active ? 'reactivated' : 'deactivated'} successfully`,
+      message: `Account ${active ? "reactivated" : "deactivated"} successfully`,
       deactivatedAt,
     };
   }
@@ -396,10 +422,15 @@ export class AuthService {
     });
 
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new NotFoundException("User not found");
     }
 
-    const [shipmentCount, activeApiKeyCount, webhookCount, unreadNotificationCount] = await Promise.all([
+    const [
+      shipmentCount,
+      activeApiKeyCount,
+      webhookCount,
+      unreadNotificationCount,
+    ] = await Promise.all([
       this.prisma.shipment.count({
         where: {
           OR: [
@@ -449,7 +480,7 @@ export class AuthService {
     });
 
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new NotFoundException("User not found");
     }
 
     const [shipments, comments, notifications, auditLogs] = await Promise.all([
@@ -481,15 +512,36 @@ export class AuthService {
       }),
       this.prisma.shipmentComment.findMany({
         where: { authorId: userId },
-        select: { id: true, shipmentId: true, body: true, visibility: true, createdAt: true },
+        select: {
+          id: true,
+          shipmentId: true,
+          body: true,
+          visibility: true,
+          createdAt: true,
+        },
       }),
       this.prisma.notification.findMany({
         where: { userId },
-        select: { id: true, type: true, title: true, message: true, data: true, read: true, createdAt: true },
+        select: {
+          id: true,
+          type: true,
+          title: true,
+          message: true,
+          data: true,
+          read: true,
+          createdAt: true,
+        },
       }),
       this.prisma.auditLog.findMany({
         where: { userId },
-        select: { id: true, action: true, entityType: true, entityId: true, metadata: true, createdAt: true },
+        select: {
+          id: true,
+          action: true,
+          entityType: true,
+          entityId: true,
+          metadata: true,
+          createdAt: true,
+        },
       }),
     ]);
 
@@ -510,9 +562,16 @@ export class AuthService {
   async getPublicProfile(stellarAddress: string) {
     const user = await this.prisma.user.findUnique({
       where: { stellarAddress },
-      select: { stellarAddress: true, name: true, role: true, organizationName: true, countryCode: true, createdAt: true },
+      select: {
+        stellarAddress: true,
+        name: true,
+        role: true,
+        organizationName: true,
+        countryCode: true,
+        createdAt: true,
+      },
     });
-    if (!user) throw new NotFoundException('User not found');
+    if (!user) throw new NotFoundException("User not found");
     return {
       ...user,
       avatarUrl: user.avatarCid ? `/api/v1/ipfs/${user.avatarCid}` : null,
@@ -532,29 +591,29 @@ export class AuthService {
     avatarUrl: string;
   }> {
     if (!file) {
-      throw new BadRequestException('Avatar image file is required');
+      throw new BadRequestException("Avatar image file is required");
     }
 
-    const allowedMimeTypes = ['image/png', 'image/jpeg', 'image/webp'];
+    const allowedMimeTypes = ["image/png", "image/jpeg", "image/webp"];
     if (!allowedMimeTypes.includes(file.mimetype)) {
       throw new BadRequestException(
-        `Invalid file type: ${file.mimetype}. Allowed types: ${allowedMimeTypes.join(', ')}`,
+        `Invalid file type: ${file.mimetype}. Allowed types: ${allowedMimeTypes.join(", ")}`,
       );
     }
 
     const maxSizeBytes = 2 * 1024 * 1024; // 2 MB
     const fileSize = file.size ?? file.buffer?.length ?? 0;
     if (fileSize > maxSizeBytes) {
-      throw new PayloadTooLargeException('Avatar image must not exceed 2 MB');
+      throw new PayloadTooLargeException("Avatar image must not exceed 2 MB");
     }
 
     if (!this.ipfs) {
-      throw new BadRequestException('IPFS service is not available');
+      throw new BadRequestException("IPFS service is not available");
     }
 
     const cid = await this.ipfs.uploadFile(
       file.buffer,
-      file.originalname || 'avatar',
+      file.originalname || "avatar",
       file.mimetype,
     );
 
@@ -566,7 +625,7 @@ export class AuthService {
     const avatarUrl = `/api/v1/ipfs/${cid}`;
 
     return {
-      message: 'Avatar uploaded successfully',
+      message: "Avatar uploaded successfully",
       avatarCid: cid,
       avatarUrl,
     };
@@ -582,7 +641,7 @@ export class AuthService {
     });
 
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new NotFoundException("User not found");
     }
 
     await this.prisma.user.update({
@@ -590,7 +649,7 @@ export class AuthService {
       data: { avatarCid: null },
     });
 
-    return { message: 'Avatar deleted successfully' };
+    return { message: "Avatar deleted successfully" };
   }
 
   /**
@@ -605,10 +664,15 @@ export class AuthService {
   ): Promise<{
     accessToken: string;
     expiresIn: string;
-    targetUser: { id: string; stellarAddress: string; role: UserRole; name: string | null };
+    targetUser: {
+      id: string;
+      stellarAddress: string;
+      role: UserRole;
+      name: string | null;
+    };
   }> {
     if (targetUserId === adminId) {
-      throw new BadRequestException('Cannot impersonate your own account');
+      throw new BadRequestException("Cannot impersonate your own account");
     }
 
     const target = await this.prisma.user.findUnique({
@@ -623,18 +687,21 @@ export class AuthService {
     });
 
     if (!target) {
-      throw new NotFoundException('User not found');
+      throw new NotFoundException("User not found");
     }
 
     if (target.deactivatedAt) {
-      throw new ForbiddenException('Cannot impersonate a deactivated user');
+      throw new ForbiddenException("Cannot impersonate a deactivated user");
     }
 
     if (target.role === UserRole.ADMIN) {
-      throw new ForbiddenException('Cannot impersonate another admin');
+      throw new ForbiddenException("Cannot impersonate another admin");
     }
 
-    const expiresIn = this.config.get<string>('IMPERSONATION_JWT_EXPIRES_IN', '15m');
+    const expiresIn = this.config.get<string>(
+      "IMPERSONATION_JWT_EXPIRES_IN",
+      "15m",
+    );
 
     const accessToken = this.jwt.sign(
       {
@@ -651,8 +718,8 @@ export class AuthService {
     await this.auditLog.record({
       actorId: adminId,
       actorAddress: adminAddress,
-      action: 'admin.impersonate',
-      resourceType: 'User',
+      action: "admin.impersonate",
+      resourceType: "User",
       resourceId: target.id,
       metadata: {
         targetUserId: target.id,
@@ -705,7 +772,7 @@ export class AuthService {
     });
 
     if (!target) {
-      throw new NotFoundException('User not found');
+      throw new NotFoundException("User not found");
     }
 
     const revokeApiKeys = dto?.revokeApiKeys ?? false;
@@ -714,7 +781,7 @@ export class AuthService {
     // includeCurrent: true ensures every active session for the target user is blocklisted
     const revokedSessionsCount = await this.sessions.revokeAllSessions(
       target.id,
-      '',
+      "",
       true,
     );
 
@@ -738,8 +805,8 @@ export class AuthService {
     await this.auditLog.record({
       actorId: adminId,
       actorAddress: adminAddress,
-      action: 'ADMIN_FORCE_LOGOUT',
-      resourceType: 'User',
+      action: "ADMIN_FORCE_LOGOUT",
+      resourceType: "User",
       resourceId: target.id,
       metadata: {
         targetUserId: target.id,
@@ -757,7 +824,7 @@ export class AuthService {
     );
 
     return {
-      message: 'User force-logged out successfully',
+      message: "User force-logged out successfully",
       revokedSessionsCount,
       revokedApiKeysCount,
     };
@@ -773,9 +840,9 @@ export class AuthService {
         where: { id: userId },
         select: { displayCurrency: true },
       });
-      return user?.displayCurrency ?? 'USD';
+      return user?.displayCurrency ?? "USD";
     } catch {
-      return 'USD';
+      return "USD";
     }
   }
 
@@ -783,7 +850,7 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
 
     if (!user) {
-      throw new UnauthorizedException('User not found');
+      throw new UnauthorizedException("User not found");
     }
 
     const updateData: any = {};
@@ -796,13 +863,17 @@ export class AuthService {
       updateData.displayCurrency = dto.displayCurrency.toUpperCase();
     }
 
+    if (dto.locale !== undefined) {
+      updateData.locale = dto.locale.toLowerCase();
+    }
+
     if (dto.email !== undefined && dto.email !== user.email) {
       const existing = await this.prisma.user.findUnique({
         where: { email: dto.email },
       });
 
       if (existing && existing.id !== userId) {
-        throw new ConflictException('Email is already in use');
+        throw new ConflictException("Email is already in use");
       }
 
       await this.sendVerificationEmail(userId, dto.email);
@@ -820,15 +891,20 @@ export class AuthService {
     return this.getProfile(userId);
   }
 
-  async updateUserRole(id: string, callerId: string, callerAddress: string, newRole: UserRole) {
+  async updateUserRole(
+    id: string,
+    callerId: string,
+    callerAddress: string,
+    newRole: UserRole,
+  ) {
     const user = await this.prisma.user.findUnique({ where: { id } });
 
     if (!user) {
-      throw new UnauthorizedException('User not found');
+      throw new UnauthorizedException("User not found");
     }
 
     if (id === callerId && newRole !== UserRole.ADMIN) {
-      throw new ConflictException('Admins cannot demote themselves');
+      throw new ConflictException("Admins cannot demote themselves");
     }
 
     const oldRole = user.role;
@@ -838,8 +914,8 @@ export class AuthService {
     await this.auditLog.record({
       actorId: callerId,
       actorAddress: callerAddress,
-      action: 'USER_ROLE_CHANGED',
-      resourceType: 'User',
+      action: "USER_ROLE_CHANGED",
+      resourceType: "User",
       resourceId: id,
       metadata: { from: oldRole, to: newRole },
     });
@@ -852,9 +928,15 @@ export class AuthService {
     emailVerified?: boolean;
     page?: number;
     limit?: number;
-    orderBy?: 'createdAt' | 'name';
+    orderBy?: "createdAt" | "name";
   }) {
-    const { role, emailVerified, page = 1, limit = 20, orderBy = 'createdAt' } = filters;
+    const {
+      role,
+      emailVerified,
+      page = 1,
+      limit = 20,
+      orderBy = "createdAt",
+    } = filters;
 
     const where: any = {};
     if (role !== undefined) where.role = role;
@@ -872,7 +954,7 @@ export class AuthService {
           role: true,
           createdAt: true,
         },
-        orderBy: orderBy === 'name' ? { name: 'asc' } : { createdAt: 'desc' },
+        orderBy: orderBy === "name" ? { name: "asc" } : { createdAt: "desc" },
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -895,12 +977,14 @@ export class AuthService {
     try {
       payload = this.jwt.verify<{ sub: string; email: string }>(token);
     } catch {
-      throw new UnauthorizedException('Invalid or expired verification token');
+      throw new UnauthorizedException("Invalid or expired verification token");
     }
 
-    const storedToken = await this.redis.get(this.getVerificationTokenKey(payload.sub));
+    const storedToken = await this.redis.get(
+      this.getVerificationTokenKey(payload.sub),
+    );
     if (!storedToken || storedToken !== token) {
-      throw new UnauthorizedException('Invalid or expired verification token');
+      throw new UnauthorizedException("Invalid or expired verification token");
     }
 
     const user = await this.prisma.user.findUnique({
@@ -908,11 +992,13 @@ export class AuthService {
     });
 
     if (!user) {
-      throw new UnauthorizedException('User not found');
+      throw new UnauthorizedException("User not found");
     }
 
     if (user.pendingEmail !== payload.email) {
-      throw new UnauthorizedException('Verification token does not match pending email');
+      throw new UnauthorizedException(
+        "Verification token does not match pending email",
+      );
     }
 
     const existing = await this.prisma.user.findUnique({
@@ -920,7 +1006,7 @@ export class AuthService {
     });
 
     if (existing && existing.id !== user.id) {
-      throw new ConflictException('Email is already in use');
+      throw new ConflictException("Email is already in use");
     }
 
     await this.prisma.user.update({
@@ -934,7 +1020,7 @@ export class AuthService {
 
     await this.redis.del(this.getVerificationTokenKey(user.id));
 
-    return { message: 'Email verified successfully' };
+    return { message: "Email verified successfully" };
   }
 
   async resendVerificationEmail(userId: string) {
@@ -944,11 +1030,11 @@ export class AuthService {
     });
 
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new NotFoundException("User not found");
     }
 
     if (!user.pendingEmail) {
-      throw new BadRequestException('No pending email to verify');
+      throw new BadRequestException("No pending email to verify");
     }
 
     return this.sendVerificationEmail(user.id, user.pendingEmail);
@@ -959,22 +1045,23 @@ export class AuthService {
   }
 
   private async sendVerificationEmail(userId: string, email: string) {
-    const token = this.jwt.sign(
-      { sub: userId, email },
-      { expiresIn: '24h' },
+    const token = this.jwt.sign({ sub: userId, email }, { expiresIn: "24h" });
+
+    await this.redis.setPx(
+      this.getVerificationTokenKey(userId),
+      token,
+      24 * 60 * 60 * 1000,
     );
 
-    await this.redis.setPx(this.getVerificationTokenKey(userId), token, 24 * 60 * 60 * 1000);
-
-    const verificationLink = `${this.config.get('API_BASE_URL', 'http://localhost:3000')}/api/v1/auth/verify-email?token=${token}`;
+    const verificationLink = `${this.config.get("API_BASE_URL", "http://localhost:3000")}/api/v1/auth/verify-email?token=${token}`;
 
     await this.notifications.sendEmail(
       email,
-      'Verify your email address',
+      "Verify your email address",
       `Click this link to verify your email: ${verificationLink}`,
     );
 
-    return { message: 'Verification email sent' };
+    return { message: "Verification email sent" };
   }
 
   // ----------------------------------------------------------
@@ -985,15 +1072,21 @@ export class AuthService {
    * Initiate phone number verification by sending an OTP.
    * Stores the pending phone and OTP in Redis.
    */
-  async sendPhoneVerificationOtp(userId: string, phoneNumber: string): Promise<{ message: string }> {
+  async sendPhoneVerificationOtp(
+    userId: string,
+    phoneNumber: string,
+  ): Promise<{ message: string }> {
     // Check if phone is already verified
     const existingUser = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { phoneNumber: true, phoneVerified: true },
     });
 
-    if (existingUser?.phoneVerified && existingUser?.phoneNumber === phoneNumber) {
-      throw new BadRequestException('Phone number is already verified');
+    if (
+      existingUser?.phoneVerified &&
+      existingUser?.phoneNumber === phoneNumber
+    ) {
+      throw new BadRequestException("Phone number is already verified");
     }
 
     // Generate OTP
@@ -1011,14 +1104,17 @@ export class AuthService {
     // For now, log the OTP for development
     this.logger.log(`Phone verification OTP for ${userId}: ${otp}`);
 
-    return { message: 'Verification code sent to your phone' };
+    return { message: "Verification code sent to your phone" };
   }
 
   /**
    * Verify phone number with OTP.
    * If OTP is valid, updates user's phoneNumber and sets phoneVerified to true.
    */
-  async verifyPhone(userId: string, otp: string): Promise<{ message: string; phoneNumber: string }> {
+  async verifyPhone(
+    userId: string,
+    otp: string,
+  ): Promise<{ message: string; phoneNumber: string }> {
     const key = `${this.PHONE_OTP_PREFIX}${userId}`;
     const pendingKey = `${this.PHONE_OTP_PREFIX}${userId}:pending`;
 
@@ -1026,11 +1122,13 @@ export class AuthService {
     const pendingPhone = await this.redis.get(pendingKey);
 
     if (!storedOtp || storedOtp !== otp) {
-      throw new UnauthorizedException('Invalid or expired verification code');
+      throw new UnauthorizedException("Invalid or expired verification code");
     }
 
     if (!pendingPhone) {
-      throw new BadRequestException('No pending phone verification. Request a new code.');
+      throw new BadRequestException(
+        "No pending phone verification. Request a new code.",
+      );
     }
 
     // Clear the OTP and pending phone
@@ -1049,7 +1147,10 @@ export class AuthService {
 
     this.logger.log(`Phone verified for user ${userId}: ${pendingPhone}`);
 
-    return { message: 'Phone number verified successfully', phoneNumber: pendingPhone };
+    return {
+      message: "Phone number verified successfully",
+      phoneNumber: pendingPhone,
+    };
   }
 
   /**
@@ -1078,14 +1179,16 @@ export class AuthService {
     const take = Math.min(Math.max(1, limit || 20), 100);
     const where: any = {
       userId,
-      action: { in: ['LOGIN_SUCCESS', 'LOGIN_FAILED'] },
+      action: { in: ["LOGIN_SUCCESS", "LOGIN_FAILED"] },
     };
 
     let logs: any[];
     if (cursor) {
       let cursorId = cursor;
       try {
-        const decoded = JSON.parse(Buffer.from(cursor, 'base64').toString('utf-8'));
+        const decoded = JSON.parse(
+          Buffer.from(cursor, "base64").toString("utf-8"),
+        );
         if (decoded?.id) {
           cursorId = decoded.id;
         }
@@ -1095,7 +1198,7 @@ export class AuthService {
 
       logs = await this.prisma.auditLog.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: "desc" },
         cursor: { id: cursorId },
         skip: 1,
         take,
@@ -1103,7 +1206,7 @@ export class AuthService {
     } else {
       logs = await this.prisma.auditLog.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: "desc" },
         take,
       });
     }
@@ -1115,12 +1218,12 @@ export class AuthService {
               id: logs[logs.length - 1].id,
               createdAt: logs[logs.length - 1].createdAt.toISOString(),
             }),
-          ).toString('base64')
+          ).toString("base64")
         : null;
 
     const data = logs.map((log) => {
       const metadata = (log.metadata as Record<string, any>) ?? {};
-      const isSuccess = log.action === 'LOGIN_SUCCESS';
+      const isSuccess = log.action === "LOGIN_SUCCESS";
       const isCurrentSession =
         isSuccess && Boolean(currentJti && metadata.sessionId === currentJti);
 
@@ -1128,7 +1231,7 @@ export class AuthService {
         id: log.id,
         timestamp: log.createdAt,
         ipAddress: maskIpAddress(log.ipAddress),
-        userAgent: metadata.userAgent ?? 'unknown',
+        userAgent: metadata.userAgent ?? "unknown",
         success: isSuccess,
         isCurrentSession,
       };
@@ -1147,7 +1250,7 @@ export class AuthService {
    * Generate a numeric OTP of configured length.
    */
   private generateOtp(): string {
-    let otp = '';
+    let otp = "";
     for (let i = 0; i < this.PHONE_OTP_LENGTH; i++) {
       otp += Math.floor(Math.random() * 10).toString();
     }
