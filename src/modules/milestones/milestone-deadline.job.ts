@@ -1,5 +1,6 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RedisService } from '../../common/redis/redis.service';
@@ -33,10 +34,11 @@ export class MilestoneDeadlineJob {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    private readonly config: ConfigService,
     @Optional() private readonly redis?: RedisService,
   ) {
-    this.reminder1Days = parseInt(process.env.OVERDUE_REMINDER_1_DAYS ?? '0', 10);
-    this.reminder3Days = parseInt(process.env.OVERDUE_REMINDER_3_DAYS ?? '3', 10);
+    this.reminder1Days = this.config.get<number>('OVERDUE_REMINDER_1_DAYS', 0);
+    this.reminder3Days = this.config.get<number>('OVERDUE_REMINDER_3_DAYS', 3);
   }
 
   /**

@@ -159,6 +159,16 @@ export const envValidationSchema = Joi.object({
   // skipped, and how long it is skipped for before a trial call is allowed.
   FX_BREAKER_FAILURE_THRESHOLD: Joi.number().integer().min(1).default(5),
   FX_BREAKER_COOLDOWN_SECONDS: Joi.number().integer().min(1).default(60),
+
+  // Milestone deadline reminders (#491)
+  // Days after dueAt when the initial overdue notification is sent (default 0: immediate)
+  OVERDUE_REMINDER_1_DAYS: Joi.number().integer().min(0).max(365).default(0),
+  // Days after initial reminder when the escalation notification is sent (default 3)
+  OVERDUE_REMINDER_3_DAYS: Joi.number().integer().min(0).max(365).default(3),
+
+  // Dispute escalation (#491)
+  // Days a milestone can remain in DISPUTED status before admins are alerted (default 7)
+  DISPUTE_ESCALATION_DAYS: Joi.number().integer().min(1).max(365).default(7),
 })
   .or('STELLAR_RPC_URL', 'STELLAR_RPC_URLS')
   .or('STELLAR_HORIZON_URL', 'STELLAR_HORIZON_URLS')

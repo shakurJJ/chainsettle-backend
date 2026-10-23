@@ -533,6 +533,9 @@ npm run sbom
 | `SMTP_PASS` | No | SMTP password |
 | `CORS_ORIGIN` | No | Allowed frontend origin |
 | `EVENT_POLLING_INTERVAL_MS` | No | Cron interval in ms (default: 5000) |
+| `OVERDUE_REMINDER_1_DAYS` | No | Days after dueAt when initial overdue notification is sent (default: 0) |
+| `OVERDUE_REMINDER_3_DAYS` | No | Days after initial reminder when escalation notification is sent (default: 3) |
+| `DISPUTE_ESCALATION_DAYS` | No | Days a milestone can remain in DISPUTED status before admins are alerted (default: 7) |
 
 ---
 

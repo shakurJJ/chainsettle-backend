@@ -1,5 +1,6 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RedisService } from '../../common/redis/redis.service';
@@ -21,6 +22,7 @@ export class DisputeEscalationJob {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    private readonly config: ConfigService,
     @Optional() private readonly redis?: RedisService,
   ) {}
 
@@ -30,7 +32,7 @@ export class DisputeEscalationJob {
       try {
         this.logger.log('Starting dispute escalation check...');
 
-      const days = parseInt(process.env.DISPUTE_ESCALATION_DAYS ?? '7', 10);
+      const days = this.config.get<number>('DISPUTE_ESCALATION_DAYS', 7);
       const threshold = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
       const overdue = await this.prisma.milestone.findMany({
