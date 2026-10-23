@@ -21,8 +21,9 @@ export class TransformInterceptor<T>
     context: ExecutionContext,
     next: CallHandler,
   ): Observable<ApiResponse<T>> {
+    const response = context.switchToHttp().getResponse();
     return next.handle().pipe(
-      map((data) => ({
+      map((data) => response.statusCode === 304 ? data : ({
         success: true,
         data,
         timestamp: new Date().toISOString(),

@@ -246,6 +246,9 @@ model Shipment {
 
   isDraft          Boolean         @default(false) // true when created via CSV bulk import; no on-chain backing yet
 
+  @@index([buyerAddress, status, createdAt])
+  @@index([supplierAddress, status, createdAt])
+  @@index([updatedAt])
   @@map("shipments")
 }
 

@@ -38,19 +38,21 @@ const DUPLICATE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
  * Strong ETag for a shipment's mutable state (#387). Derived from id and
  * updatedAt so every successful write produces a new value.
  */
-export function shipmentEtag(shipment: { id: string; updatedAt: Date }): string {
+export function shipmentEtag(shipment: { id: string; updatedAt: Date }, milestoneUpdatedAt?: Date | null): string {
   const hash = createHash('sha1')
-    .update(`${shipment.id}:${new Date(shipment.updatedAt).toISOString()}`)
+    .update(`${shipment.id}:${new Date(shipment.updatedAt).toISOString()}:${milestoneUpdatedAt ? new Date(milestoneUpdatedAt).toISOString() : ''}`)
     .digest('hex');
-  return `"${hash}"`;
+  return `W/"${hash}"`;
 }
 
 /** True when an If-Match header value matches the current ETag (or is `*`). */
 export function ifMatchSatisfied(ifMatch: string, currentEtag: string): boolean {
+  const normalize = (value: string) => value.trim().replace(/^W\//, '');
+  const normalizedCurrent = normalize(currentEtag);
   return ifMatch
     .split(',')
-    .map((v) => v.trim().replace(/^W\//, ''))
-    .some((v) => v === '*' || v === currentEtag);
+    .map(normalize)
+    .some((v) => v === '*' || v === normalizedCurrent);
 }
 
 import { computeFieldChanges, extractChanges, isHiddenField } from './shipment-diff.util';
@@ -328,14 +330,14 @@ export class ShipmentsService {
         ...(updatedAfter && { gte: new Date(updatedAfter) }),
         ...(updatedBefore && { lte: new Date(updatedBefore) }),
       };
-    }
-
-    if (!includeArchived) {
-      where.archivedAt = null;
-    }
-
-    if (isDraft !== undefined) {
-      where.isDraft = isDraft;
+        const shipments = await db.shipment.findMany({
+          where: { ...where, createdAt: { lte: new Date(decoded.createdAt) } },
+          ...projection,
+          orderBy: { createdAt: 'desc' },
+          cursor: { id: decoded.id },
+          skip: 1,
+          take: limit,
+        });
     }
 
     if (favorite === true) {
@@ -536,6 +538,26 @@ export class ShipmentsService {
     if (!shipment) throw new NotFoundException(`Shipment ${id} not found`);
     const serialized = await this.serialize(shipment, callerUserId, precisionOverride, displayCurrency);
     return fields ? pickFields(serialized, fields) : serialized;
+  }
+
+  /** Computes the detail representation validator without loading its full relations. */
+  async getDetailEtag(id: string): Promise<string> {
+    const db = this.prisma.read ?? this.prisma;
+    const shipment = await db.shipment.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        updatedAt: true,
+        milestones: {
+          where: { deletedAt: null },
+          orderBy: { updatedAt: 'desc' },
+          take: 1,
+          select: { updatedAt: true },
+        },
+      },
+    });
+    if (!shipment) throw new NotFoundException(`Shipment ${id} not found`);
+    return shipmentEtag(shipment, shipment.milestones[0]?.updatedAt);
   }
 
   /**
@@ -794,7 +816,7 @@ export class ShipmentsService {
     if (!shipment) {
       throw new NotFoundException(`Shipment ${id} not found`);
     }
-    this.assertIfMatch(shipment, ifMatch);
+    await this.assertIfMatch(shipment, ifMatch);
 
     // Verify buyer is the one making the update
     if (shipment.buyerAddress !== buyerAddress) {
@@ -1042,7 +1064,7 @@ export class ShipmentsService {
     if (!shipment) {
       throw new NotFoundException(`Shipment ${id} not found`);
     }
-    this.assertIfMatch(shipment, ifMatch);
+    await this.assertIfMatch(shipment, ifMatch);
 
     if (!Array.isArray(tags)) {
       throw new BadRequestException('tags must be an array');
@@ -1102,22 +1124,17 @@ export class ShipmentsService {
 
   /** Returns the current ETag for a shipment. */
   async getEtag(id: string): Promise<string> {
-    const shipment = await this.prisma.shipment.findUnique({
-      where: { id },
-      select: { id: true, updatedAt: true },
-    });
-    if (!shipment) throw new NotFoundException(`Shipment ${id} not found`);
-    return shipmentEtag(shipment);
+    return this.getDetailEtag(id);
   }
 
-  private assertIfMatch(shipment: { id: string; updatedAt: Date }, ifMatch?: string) {
+  private async assertIfMatch(shipment: { id: string; updatedAt: Date }, ifMatch?: string) {
     if (ifMatch === undefined || ifMatch === null || ifMatch === '') {
       if (this.config.get<string>('SHIPMENT_REQUIRE_IF_MATCH') === 'true') {
         throw new PreconditionFailedException('If-Match header is required');
       }
       return;
     }
-    if (!ifMatchSatisfied(ifMatch, shipmentEtag(shipment))) {
+    if (!ifMatchSatisfied(ifMatch, await this.getDetailEtag(shipment.id))) {
       throw new PreconditionFailedException('Shipment has been modified; refetch and retry');
     }
   }

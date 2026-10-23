@@ -1,3 +1,4 @@
+import { MetricsService } from '../../common/metrics/metrics.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
@@ -76,6 +77,7 @@ function buildPrismaMock() {
 }
 
 const auditLogMock = { record: jest.fn() };
+const metricsMock = { observeWebhookDelivery: jest.fn() };
 
 // ─── Suite ────────────────────────────────────────────────────────────────────
 
@@ -90,6 +92,7 @@ describe('WebhooksService', () => {
         WebhooksService,
         { provide: PrismaService, useValue: prisma },
         { provide: AuditLogService, useValue: auditLogMock },
+        { provide: MetricsService, useValue: metricsMock },
         {
           provide: ConfigService,
           useValue: {
@@ -161,6 +164,7 @@ describe('WebhooksService', () => {
       expect(axiosPost).toHaveBeenCalledTimes(1);
       const [, body, config] = axiosPost.mock.calls[0]!;
       assertHeaders(config!.headers as Record<string, string>, body as string, plaintextSecret);
+      expect(metricsMock.observeWebhookDelivery).toHaveBeenCalledWith('success', 200, expect.any(Number));
     });
   });
 

@@ -56,9 +56,29 @@ API prefix.
 | Error rate (5xx) | `rate(chainsettle_http_request_duration_seconds_count{status=~"5.."}[1m])` |
 | Events processed/s | `rate(chainsettle_events_processed_total[1m])` |
 | Event failures | `increase(chainsettle_events_failed_total[5m])` |
+| Webhook delivery failures | `rate(chainsettle_webhook_deliveries_total{result="failure"}[5m])` |
 | Active shipments | `chainsettle_active_shipments` |
 | Job success rate | `sum by (job, result) (rate(chainsettle_job_runs_total[5m]))` |
 | Job duration p95 | `histogram_quantile(0.95, sum by (le, job) (rate(chainsettle_job_duration_seconds_bucket[5m])))` |
+
+Example Prometheus alert rule for sustained webhook delivery failures:
+
+```yaml
+groups:
+  - name: chainsettle-webhooks
+    rules:
+      - alert: WebhookDeliveryFailureRateHigh
+        expr: >-
+          sum(rate(chainsettle_webhook_deliveries_total{result="failure"}[5m]))
+          /
+          clamp_min(sum(rate(chainsettle_webhook_deliveries_total[5m])), 1)
+          > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Webhook delivery failures exceed 5% for 10 minutes
+```
 
 ---
 

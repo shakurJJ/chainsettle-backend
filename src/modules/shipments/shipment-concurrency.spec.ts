@@ -34,6 +34,10 @@ describe('Shipment optimistic concurrency (If-Match)', () => {
         }),
       },
     };
+    prisma.read = prisma;
+    prisma.milestone = { findMany: jest.fn().mockResolvedValue([]) };
+    prisma.read = prisma;
+    prisma.milestone = { findMany: jest.fn().mockResolvedValue([]) };
     service = Object.create(ShipmentsService.prototype);
     Object.assign(service, {
       prisma,
@@ -103,5 +107,11 @@ describe('Shipment optimistic concurrency (If-Match)', () => {
     expect(ifMatchSatisfied('*', etag)).toBe(true);
     expect(ifMatchSatisfied(`"x", ${etag}`, etag)).toBe(true);
     expect(ifMatchSatisfied('"x"', etag)).toBe(false);
+  });
+
+  it('changes the weak detail ETag when a milestone changes', () => {
+    const milestoneUpdatedAt = new Date('2026-02-01T00:00:00.000Z');
+    expect(shipmentEtag(row, milestoneUpdatedAt)).not.toBe(shipmentEtag(row));
+    expect(shipmentEtag(row, milestoneUpdatedAt)).toMatch(/^W\//);
   });
 });

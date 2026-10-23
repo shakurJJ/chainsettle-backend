@@ -10,6 +10,7 @@ import { Cron, CronExpression } from "@nestjs/schedule";
 import * as crypto from "crypto";
 import axios, { AxiosError } from "axios";
 import { PrismaService } from "../../common/prisma/prisma.service";
+import { MetricsService } from "../../common/metrics/metrics.service";
 import { AuditLogService } from "../audit-logs/audit-log.service";
 import { NotificationType, Prisma } from "@prisma/client";
 import { CreateWebhookDto } from "./dto/create-webhook.dto";
@@ -123,6 +124,7 @@ export class WebhooksService {
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
+    private readonly metrics: MetricsService,
   ) {
     this.deliveryTimeoutMs = this.normalizePositiveInteger(
       this.config.get<number | string>("WEBHOOK_DELIVERY_TIMEOUT_MS", 10_000),
@@ -146,6 +148,11 @@ export class WebhooksService {
   ): number {
     const parsed = Number(value ?? fallback);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  }
+
+  private recordDeliveryMetric(startedAt: number, statusCode: number | null) {
+    const success = statusCode !== null && statusCode >= 200 && statusCode < 300;
+    this.metrics.observeWebhookDelivery(success ? 'success' : 'failure', statusCode, (Date.now() - startedAt) / 1_000);
   }
 
   private preparePayloadForDelivery(
@@ -513,6 +520,7 @@ export class WebhooksService {
     const signature = signBody(endpoint.secret, body);
     const signatureV2 = signBodyV2(endpoint.secret, ts, body);
 
+    const startedAt = Date.now();
     if (payloadCheck.exceedsLimit) {
       await this.prisma.webhookDelivery.update({
         where: { id: deliveryId },
@@ -524,6 +532,7 @@ export class WebhooksService {
           permanentlyFailedAt: new Date(),
         },
       });
+      this.recordDeliveryMetric(startedAt, null);
 
       this.logger.warn(
         `[webhook] Manual retry ${deliveryId} skipped for endpoint ${endpointId}: payload exceeds configured max of ${this.maxPayloadBytes} bytes`,
@@ -554,6 +563,7 @@ export class WebhooksService {
           permanentlyFailedAt: null,
         },
       });
+      this.recordDeliveryMetric(startedAt, res.status);
     } catch (err) {
       const statusCode: number | null =
         (err as AxiosError).response?.status ?? null;
@@ -570,6 +580,7 @@ export class WebhooksService {
           permanentlyFailedAt: null,
         },
       });
+      this.recordDeliveryMetric(startedAt, statusCode);
     }
 
     return { message: "Webhook delivery retried" };
@@ -728,6 +739,7 @@ export class WebhooksService {
       },
     });
 
+    const startedAt = Date.now();
     if (payloadCheck.exceedsLimit) {
       await this.prisma.webhookDelivery.update({
         where: { id: delivery.id },
@@ -738,6 +750,7 @@ export class WebhooksService {
           permanentlyFailedAt: new Date(),
         },
       });
+      this.recordDeliveryMetric(startedAt, null);
 
       this.logger.warn(
         `[webhook] Delivery ${delivery.id} not sent for endpoint ${ep.id}: payload exceeds configured max of ${this.maxPayloadBytes} bytes`,
@@ -765,7 +778,9 @@ export class WebhooksService {
           nextRetryAt: null,
         },
       });
+      this.recordDeliveryMetric(startedAt, res.status);
     } catch (err) {
+      this.recordDeliveryMetric(startedAt, (err as AxiosError).response?.status ?? null);
       await this.handleFailure(
         delivery,
         ep.secret,
@@ -801,6 +816,7 @@ export class WebhooksService {
       },
     });
 
+    const startedAt = Date.now();
     if (payloadCheck.exceedsLimit) {
       await this.prisma.webhookDelivery.update({
         where: { id: delivery.id },
@@ -811,6 +827,7 @@ export class WebhooksService {
           permanentlyFailedAt: new Date(),
         },
       });
+      this.recordDeliveryMetric(startedAt, null);
 
       this.logger.warn(
         `[webhook] Retry ${delivery.id} skipped for endpoint ${ep.id}: payload exceeds configured max of ${this.maxPayloadBytes} bytes`,
@@ -839,11 +856,13 @@ export class WebhooksService {
           permanentlyFailedAt: null,
         },
       });
+      this.recordDeliveryMetric(startedAt, res.status);
 
       this.logger.log(
         `[retry] Delivery ${delivery.id} succeeded on attempt ${updatedDelivery.attemptCount}`,
       );
     } catch (err) {
+      this.recordDeliveryMetric(startedAt, (err as AxiosError).response?.status ?? null);
       await this.handleFailure(
         updatedDelivery,
         ep.secret,

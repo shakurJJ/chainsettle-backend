@@ -443,6 +443,7 @@ export class ShipmentsController {
   @UseGuards(ShipmentReadAccessGuard)
   @ApiOperation({ summary: 'Get full shipment details including milestones and events' })
   @ApiResponse({ status: 200, description: 'Shipment found' })
+  @ApiResponse({ status: 304, description: 'Shipment has not changed' })
   @ApiResponse({ status: 404, description: 'Shipment not found' })
   @ApiQuery({ name: 'precision', required: false, type: Number, description: 'Override decimal places for FX-converted values (e.g. 0 for JPY, 2 for USD). Defaults to currency-appropriate value.' })
   @ApiQuery({ name: 'fields', required: false, type: String, description: `Comma-separated sparse fieldset; id is always included. Valid: ${SHIPMENT_DETAIL_FIELDS.join(', ')}` })
@@ -454,7 +455,16 @@ export class ShipmentsController {
     @Query('precision') precision?: string,
     @Query('fields') fieldsRaw?: string,
     @Query('currency') currencyOverride?: string,
+    @Headers('if-none-match') ifNoneMatch?: string,
+    @Res({ passthrough: true }) res?: Response,
   ) {
+    const etag = await this.shipmentsService.getDetailEtag(id);
+    res?.setHeader('ETag', etag);
+    const normalizeEtag = (value: string) => value.trim().replace(/^W\//, '');
+    if (ifNoneMatch?.split(',').some((candidate) => candidate.trim() === '*' || normalizeEtag(candidate) === normalizeEtag(etag))) {
+      if (res) res.status(HttpStatus.NOT_MODIFIED);
+      return undefined;
+    }
     const precisionOverride = precision !== undefined ? parseInt(precision, 10) : undefined;
     const fields = parseFields(fieldsRaw, SHIPMENT_DETAIL_FIELDS);
     const userCurrency = await this.authService.getUserDisplayCurrency(user?.id);

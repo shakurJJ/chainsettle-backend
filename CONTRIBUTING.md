@@ -70,6 +70,9 @@ Examples: `feat/165-remove-pending-milestone`, `fix/201-shipment-status-bug`,
 `docs/214-contributing-guide`.
 
 Common types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`.
+Commit messages are checked locally by the Husky `commit-msg` hook using
+`@commitlint/config-conventional`. Allowed types include `build`, `chore`, `ci`,
+`docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, and `test`.
 
 ---
 

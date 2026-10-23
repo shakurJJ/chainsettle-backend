@@ -22,6 +22,7 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "dev:mock-chain": "ts-node test/mocks/stellar-rpc-server.ts",
     "prepare": "husky || true",
+    "commitlint": "commitlint --edit",
     "format": "prettier --write \"src/**/*.ts\"",
     "loadtest": "bash load-tests/run-all.sh",
     "check:sdk": "node scripts/check-sdk.js",
@@ -85,6 +86,8 @@
   },
   "devDependencies": {
     "@babel/types": "^7.29.8",
+    "@commitlint/cli": "^19.8.1",
+    "@commitlint/config-conventional": "^19.8.1",
     "@nestjs/cli": "^10.0.0",
     "@nestjs/schematics": "^10.0.0",
     "@nestjs/testing": "^10.0.0",
