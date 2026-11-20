@@ -207,6 +207,20 @@ export class ShipmentsService {
         metadata: dto.metadata,
         tags: dto.tags ?? [],
         expectedDeliveryAt: dto.expectedDeliveryAt ? new Date(dto.expectedDeliveryAt) : null,
+        ...(Array.isArray(dto.lineItems) && dto.lineItems.length > 0
+          ? {
+              lineItems: {
+                create: dto.lineItems.map((item: any) => ({
+                  sku: item.sku ?? null,
+                  name: item.name,
+                  quantity: item.quantity,
+                  unit: item.unit ?? 'unit',
+                  unitPrice: item.unitPrice,
+                  currency: item.currency ?? 'USDC',
+                })),
+              },
+            }
+          : {}),
         milestones: {
           create: milestones.map((m: any, index: number) => ({
             milestoneIndex: index,
@@ -228,7 +242,7 @@ export class ShipmentsService {
           })),
         },
       },
-      include: { milestones: true },
+      include: { milestones: true, lineItems: true },
     });
 
     // Notify the designated arbiter about their assignment
@@ -527,6 +541,7 @@ export class ShipmentsService {
       events: { orderBy: { ledger: 'desc' as const }, take: 20 },
       trackingUpdates: { orderBy: { createdAt: 'asc' as const } },
       approvals: { orderBy: { createdAt: 'asc' as const } },
+      lineItems: { orderBy: { createdAt: 'asc' as const } },
       ...(callerUserId
         ? { favorites: { where: { userId: callerUserId }, select: { id: true } } }
         : {}),
@@ -846,11 +861,43 @@ export class ShipmentsService {
       updateData.expectedDeliveryAt = dto.expectedDeliveryAt ? new Date(dto.expectedDeliveryAt) : null;
     }
 
+    // Line items may only be replaced while the shipment is a DRAFT.
+    if (dto.lineItems !== undefined) {
+      if (!shipment.isDraft) {
+        throw new ConflictException('Line items can only be edited while the shipment is in DRAFT status');
+      }
+
+      // Validate sum does not exceed totalAmount before persisting.
+      const totalHuman = Number(shipment.totalAmount) / 1e7;
+      const lineItemsSum = dto.lineItems.reduce((acc: number, item: any) => {
+        return acc + Number(item.quantity) * parseFloat(item.unitPrice);
+      }, 0);
+      if (lineItemsSum > totalHuman) {
+        throw new BadRequestException(
+          `The sum of line item values (quantity × unitPrice = ${lineItemsSum.toFixed(6)}) ` +
+          `must not exceed the shipment totalAmount (${totalHuman.toFixed(6)}).`,
+        );
+      }
+
+      updateData.lineItems = {
+        deleteMany: {},
+        create: dto.lineItems.map((item: any) => ({
+          sku: item.sku ?? null,
+          name: item.name,
+          quantity: item.quantity,
+          unit: item.unit ?? 'unit',
+          unitPrice: item.unitPrice,
+          currency: item.currency ?? 'USDC',
+        })),
+      };
+    }
+
     const updated = await this.conditionalUpdate(shipment, ifMatch, {
       data: updateData,
       include: {
         milestones: { where: { deletedAt: null }, orderBy: { milestoneIndex: 'asc' } },
         events: { orderBy: { ledger: 'desc' }, take: 20 },
+        lineItems: { orderBy: { createdAt: 'asc' } },
       },
     });
 
@@ -2232,6 +2279,7 @@ export class ShipmentsService {
       where,
       include: {
         milestones: { where: { deletedAt: null }, orderBy: { milestoneIndex: 'asc' } },
+        lineItems: { orderBy: { createdAt: 'asc' } },
         buyer:     userSelect,
         supplier:  userSelect,
         logistics: userSelect,
@@ -2248,6 +2296,8 @@ export class ShipmentsService {
       'expectedDeliveryAt',
       'milestoneName', 'milestoneIndex', 'paymentPercent', 'milestoneStatus',
       'proofHash', 'confirmedAt',
+      'lineItemSku', 'lineItemName', 'lineItemQuantity', 'lineItemUnit',
+      'lineItemUnitPrice', 'lineItemCurrency',
     ];
 
     const escape = (v: any) => {
@@ -2274,16 +2324,27 @@ export class ShipmentsService {
         s.expectedDeliveryAt ? (s.expectedDeliveryAt instanceof Date ? s.expectedDeliveryAt.toISOString() : new Date(s.expectedDeliveryAt).toISOString()) : '',
       ];
 
-      if (!s.milestones?.length) {
-        rows.push([...base, '', '', '', '', '', ''].map(escape).join(','));
-      } else {
-        for (const m of s.milestones) {
-          rows.push([
-            ...base,
+      const milestoneRows = s.milestones?.length
+        ? s.milestones.map((m: any) => [
             m.name, m.milestoneIndex, m.paymentPercent,
             m.status, m.proofHash ?? '', m.confirmedAt?.toISOString() ?? '',
-          ].map(escape).join(','));
-        }
+          ])
+        : [['', '', '', '', '', '']];
+
+      const lineItemRows = s.lineItems?.length
+        ? s.lineItems.map((li: any) => [
+            li.sku ?? '', li.name, li.quantity?.toString() ?? '',
+            li.unit ?? '', li.unitPrice?.toString() ?? '', li.currency ?? '',
+          ])
+        : [['', '', '', '', '', '']];
+
+      // Emit one row per (milestone × lineItem) combination. When either list
+      // is empty a single placeholder row keeps every column aligned.
+      const maxRows = Math.max(milestoneRows.length, lineItemRows.length);
+      for (let i = 0; i < maxRows; i++) {
+        const mRow = milestoneRows[i] ?? ['', '', '', '', '', ''];
+        const liRow = lineItemRows[i] ?? ['', '', '', '', '', ''];
+        rows.push([...base, ...mRow, ...liRow].map(escape).join(','));
       }
     }
 
@@ -2336,6 +2397,17 @@ export class ShipmentsService {
             doc.text(
               `  [${m.milestoneIndex}] ${m.name} — ${m.paymentPercent}% — ${m.status}` +
               (m.confirmedAt ? ` — confirmed ${m.confirmedAt.toISOString()}` : ''),
+            );
+          }
+        }
+
+        if (s.lineItems?.length) {
+          doc.moveDown(0.5).fontSize(10).text('Line Items:', { underline: true });
+          doc.fontSize(9);
+          for (const li of s.lineItems) {
+            const sku = li.sku ? ` [${li.sku}]` : '';
+            doc.text(
+              `  ${li.name}${sku} — qty: ${li.quantity} ${li.unit ?? 'unit'} × ${li.unitPrice} ${li.currency ?? 'USDC'}`,
             );
           }
         }
@@ -2806,6 +2878,17 @@ export class ShipmentsService {
           isOverdue: Boolean(isOverdue),
         };
       }),
+      lineItems: shipment.lineItems?.map((item: any) => ({
+        id: item.id,
+        sku: item.sku ?? null,
+        name: item.name,
+        quantity: item.quantity?.toString(),
+        unit: item.unit,
+        unitPrice: item.unitPrice?.toString(),
+        currency: item.currency,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+      })) ?? [],
       trackingUpdates,
       latestTracking,
     };
