@@ -16,7 +16,12 @@ export interface LinkAddressDto {
   signature: string;
 }
 
+export interface UpdateProfileDto {
+  timezone?: string;
+}
+
 const DEFAULT_GRACE_PERIOD_DAYS = 30;
+const DEFAULT_TIMEZONE = 'UTC';
 
 @Injectable()
 export class UsersService {
@@ -110,6 +115,46 @@ export class UsersService {
       where: { userId, address },
     });
     return linked !== null;
+  }
+
+  /**
+   * Updates the current user's profile. The timezone must be a valid IANA
+   * timezone name; invalid values are rejected before persisting.
+   */
+  async updateProfile(userId: string, dto: UpdateProfileDto): Promise<User> {
+    const user = await this.usersRepository.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (dto.timezone !== undefined) {
+      if (!this.isValidTimezone(dto.timezone)) {
+        throw new BadRequestException('Invalid IANA timezone');
+      }
+      user.timezone = dto.timezone;
+    }
+
+    return this.usersRepository.save(user);
+  }
+
+  /**
+   * Resolves the user's timezone, falling back to UTC when unset.
+   */
+  getUserTimezone(user: Pick<User, 'timezone'>): string {
+    return user.timezone || DEFAULT_TIMEZONE;
+  }
+
+  private isValidTimezone(timezone: string): boolean {
+    if (typeof timezone !== 'string' || timezone.length === 0) {
+      return false;
+    }
+    try {
+      // Throws RangeError for unknown IANA timezone names.
+      new Intl.DateTimeFormat('en-US', { timeZone: timezone });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**

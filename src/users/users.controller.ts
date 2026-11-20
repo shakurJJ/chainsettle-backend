@@ -6,6 +6,7 @@ import {
   HttpException,
   HttpStatus,
   Param,
+  Patch,
   Post,
   Req,
   UseGuards,
@@ -26,6 +27,10 @@ interface LinkAddressDto {
   signature: string;
 }
 
+interface UpdateProfileDto {
+  timezone?: string;
+}
+
 @Controller('users')
 @UseGuards(JwtAuthGuard)
 export class UsersController {
@@ -33,6 +38,21 @@ export class UsersController {
     private readonly usersService: UsersService,
     private readonly siwsService: SiwsService,
   ) {}
+
+  @Patch('me')
+  async updateProfile(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: UpdateProfileDto,
+  ): Promise<{ success: boolean; timezone: string }> {
+    if (dto.timezone !== undefined) {
+      if (!this.usersService.isValidTimezone(dto.timezone)) {
+        throw new HttpException('Invalid IANA timezone', HttpStatus.BAD_REQUEST);
+      }
+    }
+
+    const timezone = await this.usersService.updateTimezone(req.user.id, dto.timezone);
+    return { success: true, timezone };
+  }
 
   @Get('me/addresses')
   async listAddresses(@Req() req: AuthenticatedRequest): Promise<LinkedAddress[]> {
