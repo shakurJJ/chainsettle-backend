@@ -12,11 +12,50 @@ import {
   IsISO8601,
   MaxLength,
   IsObject,
+  IsNumberString,
+  IsPositive,
+  IsNumber,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
 import { IsMilestoneSumValid } from '../../../common/validators/milestone-sum.validator';
+import { IsLineItemsSumValid } from '../../../common/validators/line-items-sum.validator';
 import { IsStellarAddress } from '../../../common/decorators/is-stellar-address.decorator';
+
+export class LineItemDto {
+  @ApiProperty({ required: false, example: 'SKU-1234', description: 'Stock-keeping unit code (optional)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  sku?: string;
+
+  @ApiProperty({ example: 'Industrial Pump', description: 'Human-readable product name' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(255)
+  name: string;
+
+  @ApiProperty({ example: 10, description: 'Quantity (supports decimals, e.g. 1.5 kg)' })
+  @IsNumber({ allowInfinity: false, allowNaN: false })
+  @IsPositive()
+  quantity: number;
+
+  @ApiProperty({ required: false, example: 'pcs', description: 'Unit of measure (default: unit)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  unit?: string;
+
+  @ApiProperty({ example: '500.00', description: 'Price per unit in human-readable token amount (not stroops)' })
+  @IsNumberString()
+  unitPrice: string;
+
+  @ApiProperty({ required: false, example: 'USDC', description: 'Currency / token symbol (default: USDC)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(10)
+  currency?: string;
+}
 
 export class MilestoneDto {
   @ApiProperty({ example: 'Goods Dispatched' })
@@ -129,6 +168,21 @@ export class CreateShipmentDto {
   @IsInt()
   @Min(1)
   requiredApprovals?: number;
+
+  @ApiProperty({
+    type: [LineItemDto],
+    required: false,
+    description:
+      'Structured list of goods in this shipment. The sum of (quantity × unitPrice) ' +
+      'across all items must not exceed totalAmount (converted to human-readable units).',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => LineItemDto)
+  @IsLineItemsSumValid()
+  lineItems?: LineItemDto[];
 }
 
 export class ApproveShipmentDto {
@@ -177,6 +231,20 @@ export class UpdateShipmentDto {
   @IsOptional()
   @IsISO8601()
   expectedDeliveryAt?: string;
+
+  @ApiProperty({
+    type: [LineItemDto],
+    required: false,
+    description:
+      'Replace all line items for this shipment. Only accepted while the shipment is DRAFT. ' +
+      'The sum of (quantity × unitPrice) must not exceed totalAmount.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => LineItemDto)
+  lineItems?: LineItemDto[];
 }
 
 export class BulkStatusDto {
