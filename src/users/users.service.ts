@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, LessThan, Not, Repository } from 'typeorm';
 import { LinkedAddress } from './linked-address.entity';
 import { User } from './user.entity';
 import { SiwsService } from '../auth/siws.service';
@@ -15,6 +15,8 @@ export interface LinkAddressDto {
   challenge: string;
   signature: string;
 }
+
+const DEFAULT_GRACE_PERIOD_DAYS = 30;
 
 @Injectable()
 export class UsersService {
@@ -108,6 +110,76 @@ export class UsersService {
       where: { userId, address },
     });
     return linked !== null;
+  }
+
+  /**
+   * Deactivates an account and records when it happened so it can be
+   * restored within the grace period before PII is anonymised.
+   */
+  async deactivate(userId: string): Promise<User> {
+    const user = await this.usersRepository.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    if (user.deactivatedAt) {
+      return user;
+    }
+    user.deactivatedAt = new Date();
+    return this.usersRepository.save(user);
+  }
+
+  /**
+   * Reactivates a deactivated account only while it is still inside the
+   * grace window. Accounts past the window are treated as purged.
+   */
+  async restore(userId: string): Promise<User> {
+    const user = await this.usersRepository.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    if (!user.deactivatedAt) {
+      throw new BadRequestException('Account is not deactivated');
+    }
+    if (this.isPastGracePeriod(user.deactivatedAt)) {
+      throw new BadRequestException('Grace period has expired');
+    }
+    user.deactivatedAt = null;
+    return this.usersRepository.save(user);
+  }
+
+  /**
+   * Anonymises PII for accounts whose grace period has elapsed. Shipment
+   * records are left intact because they reference the user by id only.
+   */
+  async purgeExpiredAccounts(): Promise<number> {
+    const cutoff = this.graceCutoff();
+    const expired = await this.usersRepository.find({
+      where: { deactivatedAt: LessThan(cutoff) },
+    });
+
+    for (const user of expired) {
+      user.email = `deleted-${user.id}@anonymised.invalid`;
+      user.displayName = null;
+      user.deactivatedAt = null;
+      user.anonymisedAt = new Date();
+      await this.usersRepository.save(user);
+    }
+
+    return expired.length;
+  }
+
+  private isPastGracePeriod(deactivatedAt: Date): boolean {
+    return deactivatedAt.getTime() < this.graceCutoff().getTime();
+  }
+
+  private graceCutoff(): Date {
+    const days = this.gracePeriodDays();
+    return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  }
+
+  private gracePeriodDays(): number {
+    const raw = Number(process.env.ACCOUNT_GRACE_PERIOD_DAYS);
+    return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_GRACE_PERIOD_DAYS;
   }
 
   private isUniqueViolation(error: unknown): boolean {

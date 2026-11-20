@@ -82,4 +82,22 @@ export class UsersController {
     await this.usersService.unlinkAddress(req.user.id, address);
     return { success: true };
   }
+
+  @Delete('me')
+  async deactivate(@Req() req: AuthenticatedRequest): Promise<{ success: boolean; deactivatedAt: Date }> {
+    const deactivatedAt = await this.usersService.deactivateAccount(req.user.id);
+    return { success: true, deactivatedAt };
+  }
+
+  @Post('me/restore')
+  async restore(@Req() req: AuthenticatedRequest): Promise<{ success: boolean }> {
+    const restored = await this.usersService.restoreAccount(req.user.id);
+    if (!restored) {
+      throw new HttpException(
+        'Account cannot be restored: grace period has expired',
+        HttpStatus.GONE,
+      );
+    }
+    return { success: true };
+  }
 }
