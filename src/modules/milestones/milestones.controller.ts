@@ -36,6 +36,7 @@ import { ConfirmMilestoneDto } from './dto/confirm-milestone.dto';
 import { BulkConfirmMilestonesDto } from './dto/bulk-confirm-milestones.dto';
 import { BulkRejectMilestonesDto } from './dto/bulk-reject-milestones.dto';
 import { RebalanceMilestonesDto } from './dto/rebalance-milestones.dto';
+import { SubmitDisputeRationaleDto } from './dto/submit-dispute-rationale.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AuthenticatedUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ShipmentParticipantGuard } from '../shipments/guards/shipment-participant.guard';
@@ -149,6 +150,28 @@ export class MilestonesController {
     @Param('index', ParseIntPipe) index: number,
   ) {
     return this.milestonesService.getDisputeDetail(shipmentId, index);
+  }
+
+  @Post(':index/dispute/rationale')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Write the immutable arbiter rationale for a resolved dispute' })
+  @ApiResponse({ status: 201, description: 'Rationale stored and both parties notified' })
+  @ApiResponse({ status: 403, description: 'Caller is not the assigned arbiter' })
+  @ApiResponse({ status: 409, description: 'Dispute is not resolved or rationale already exists' })
+  submitDisputeRationale(
+    @Param('shipmentId') shipmentId: string,
+    @Param('index', ParseIntPipe) index: number,
+    @Body() dto: SubmitDisputeRationaleDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const callerAddress: string = user?.stellarAddress ?? user?.sub;
+    return this.milestonesService.submitDisputeRationale(
+      shipmentId,
+      index,
+      callerAddress,
+      dto.rationale,
+      dto.ipfsCid,
+    );
   }
 
   @Get(':index')

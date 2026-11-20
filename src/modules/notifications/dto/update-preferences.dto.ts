@@ -12,13 +12,13 @@ export class UpdatePreferencesDto {
   quietHours?: { enabled: boolean; start: string; end: string; timezone: string };
   @ApiProperty({
     description: 'Partial map of NotificationType to channel flags',
-    example: { PROOF_SUBMITTED: { inApp: true, email: false, slack: true, sms: false, discord: true } },
+    example: { PROOF_SUBMITTED: { inApp: true, email: false, slack: true, sms: false, discord: true, telegram: false } },
     required: false,
   })
   @IsOptional()
   @IsObject()
   preferences?: Partial<
-    Record<NotificationType, { inApp: boolean; email: boolean; slack?: boolean; sms?: boolean; discord?: boolean }>
+    Record<NotificationType, { inApp: boolean; email: boolean; slack?: boolean; sms?: boolean; discord?: boolean; telegram?: boolean }>
   >;
 
   @ApiProperty({

@@ -4,12 +4,28 @@ import { NotificationsService } from "./notifications.service";
 import { PrismaService } from "../../common/prisma/prisma.service";
 import { NotificationType } from "@prisma/client";
 import { I18nService } from "../../i18n/i18n.service";
+import { TelegramService } from "./telegram.service";
 
 const ALL_TYPES = Object.values(NotificationType);
+const TELEGRAM_DEFAULT_TYPES = new Set<NotificationType>([
+  NotificationType.DISPUTE_RAISED,
+  NotificationType.DISPUTE_RESOLVED,
+  NotificationType.PAYMENT_RELEASED,
+  NotificationType.MILESTONE_OVERDUE,
+  NotificationType.SYSTEM_ALERT,
+]);
 
 function allEnabled() {
   return ALL_TYPES.reduce(
-    (acc, t) => ({ ...acc, [t]: { inApp: true, email: true, slack: true } }),
+    (acc, t) => ({
+      ...acc,
+      [t]: {
+        inApp: true,
+        email: true,
+        slack: true,
+        telegram: TELEGRAM_DEFAULT_TYPES.has(t),
+      },
+    }),
     {},
   );
 }
@@ -24,6 +40,7 @@ const mockNotification = {
   userId: "user-1",
   type: NotificationType.PROOF_SUBMITTED,
 };
+const telegramNotification = { sendMessage: jest.fn().mockResolvedValue(undefined) };
 
 function buildPrisma(
   prefOverride?: object,
@@ -45,10 +62,12 @@ function buildPrisma(
       upsert: jest.fn().mockResolvedValue({
         preferences: prefOverride ?? allEnabled(),
         slackWebhookUrl,
+        telegramChatId: '123456',
       }),
       update: jest.fn().mockResolvedValue({
         preferences: prefOverride ?? allEnabled(),
         slackWebhookUrl,
+        telegramChatId: '123456',
       }),
     },
     emailSuppression: {
@@ -76,6 +95,7 @@ async function buildService(prisma: any, configOverrides: Record<string, any> = 
           t: jest.fn((key: string) => key),
         },
       },
+      { provide: TelegramService, useValue: telegramNotification },
     ],
   }).compile();
   return module.get(NotificationsService);
@@ -101,14 +121,16 @@ describe("NotificationsService — preferences", () => {
       );
     });
 
-    it("all types default to inApp: true, email: true, slack: true", async () => {
+    it("enables Telegram by default only for critical event types", async () => {
       const prisma = buildPrisma();
       const service = await buildService(prisma);
 
       const prefs = await service.getOrCreatePreferences("user-1");
 
       ALL_TYPES.forEach((type) => {
-        expect(prefs[type]).toEqual({ inApp: true, email: true, slack: true });
+        expect(prefs[type].telegram).toBe(
+          TELEGRAM_DEFAULT_TYPES.has(type),
+        );
       });
     });
   });
@@ -175,6 +197,24 @@ describe("NotificationsService — preferences", () => {
 
       expect(prisma.notification.create).toHaveBeenCalledTimes(1);
       expect(sendEmailSpy).not.toHaveBeenCalled();
+    });
+
+    it('sends an opted-in critical event to the linked Telegram chat', async () => {
+      const prisma = buildPrisma();
+      const service = await buildService(prisma);
+      jest.spyOn(service, 'sendEmail').mockResolvedValue(undefined);
+
+      await service.notifyUser(
+        'GABC',
+        NotificationType.DISPUTE_RESOLVED,
+        'Dispute resolved',
+        'The arbiter resolved the dispute.',
+      );
+
+      expect(telegramNotification.sendMessage).toHaveBeenCalledWith(
+        '123456',
+        'ChainSettle — Dispute resolved\n\nThe arbiter resolved the dispute.',
+      );
     });
 
     it("sends email when email preference is true and user has an email", async () => {
