@@ -35,6 +35,7 @@ import { AppendMilestoneDto } from './dto/append-milestone.dto';
 import { ConfirmMilestoneDto } from './dto/confirm-milestone.dto';
 import { BulkConfirmMilestonesDto } from './dto/bulk-confirm-milestones.dto';
 import { BulkRejectMilestonesDto } from './dto/bulk-reject-milestones.dto';
+import { RejectProofDto } from './dto/reject-proof.dto';
 import { RebalanceMilestonesDto } from './dto/rebalance-milestones.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AuthenticatedUser, CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -332,9 +333,36 @@ export class MilestonesController {
   }
 
   /**
-   * POST /api/v1/shipments/:shipmentId/milestones/:index/confirm
-   * Buyer registers an on-chain milestone confirmation so the DB reflects it immediately.
+   * POST /api/v1/shipments/:shipmentId/milestones/:index/reject
+   * Buyer rejects a submitted proof, reverting the milestone to PENDING.
+   * Requires a structured reason code; a note is mandatory when code is OTHER.
    */
+  @Post(':index/reject')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(ShipmentParticipantGuard)
+  @ApiOperation({ summary: 'Reject a submitted proof (buyer only)' })
+  @ApiResponse({ status: 200, description: 'Milestone reverted to PENDING' })
+  @ApiResponse({ status: 400, description: 'Missing or invalid reasonCode, or note required for OTHER' })
+  @ApiResponse({ status: 403, description: 'Only the buyer may reject proofs' })
+  @ApiResponse({ status: 404, description: 'Shipment or milestone not found' })
+  @ApiResponse({ status: 409, description: 'Milestone not in PROOF_SUBMITTED status' })
+  rejectProof(
+    @Param('shipmentId') shipmentId: string,
+    @Param('index', ParseIntPipe) index: number,
+    @Body() dto: RejectProofDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const callerAddress: string = user?.stellarAddress ?? user?.sub;
+    return this.milestonesService.rejectProof(
+      shipmentId,
+      index,
+      callerAddress,
+      dto.reasonCode,
+      dto.note,
+    );
+  }
+
+
   @Post(':index/confirm')
   @HttpCode(HttpStatus.OK)
   @UseGuards(ShipmentParticipantGuard)
@@ -379,7 +407,7 @@ export class MilestonesController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     const callerAddress: string = user?.stellarAddress ?? user?.sub;
-    return this.milestonesService.bulkRejectFromApi(shipmentId, callerAddress, dto.indices, dto.reason);
+    return this.milestonesService.bulkRejectFromApi(shipmentId, callerAddress, dto.indices, dto.reasonCode, dto.note);
   }
 
   /**
