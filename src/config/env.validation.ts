@@ -85,6 +85,11 @@ export const envValidationSchema = Joi.object({
 
   // Email
   EMAIL_WEBHOOK_SECRET: Joi.string().optional(),
+  TELEGRAM_ENABLED: Joi.boolean().default(false),
+  TELEGRAM_BOT_TOKEN: Joi.string()
+    .allow('')
+    .when('TELEGRAM_ENABLED', { is: true, then: Joi.string().required().min(1) })
+    .default(''),
   MAX_JSON_DEPTH: Joi.number().integer().min(1).default(20),
   SMTP_HOST: Joi.string().required(),
   SMTP_PORT: Joi.number().integer().min(1).max(65535).default(587),

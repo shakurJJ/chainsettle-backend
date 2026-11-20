@@ -14,6 +14,7 @@ import { PushNotificationService } from './push-notification.service';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 import { DEFAULT_LOCALE, I18nService } from '../../i18n/i18n.service';
 import { SmsProviderFactory } from '../../common/providers/sms.provider';
+import { TelegramService } from './telegram.service';
 
 type ChannelPrefs = {
   inApp: boolean;
@@ -22,6 +23,7 @@ type ChannelPrefs = {
   sms?: boolean;
   discord?: boolean;
   push?: boolean;
+  telegram?: boolean;
 };
 type PreferenceMap = Record<NotificationType, ChannelPrefs>;
 export type DigestFrequency = "instant" | "daily" | "weekly";
@@ -54,6 +56,14 @@ export const SMS_ALLOWED_TYPES: NotificationType[] = [
   NotificationType.MILESTONE_OVERDUE,
 ];
 
+const TELEGRAM_DEFAULT_TYPES: NotificationType[] = [
+  NotificationType.DISPUTE_RAISED,
+  NotificationType.DISPUTE_RESOLVED,
+  NotificationType.PAYMENT_RELEASED,
+  NotificationType.MILESTONE_OVERDUE,
+  NotificationType.SYSTEM_ALERT,
+];
+
 // Max SMS per user per 24-hour window
 const SMS_RATE_LIMIT = 10;
 
@@ -68,6 +78,7 @@ function buildDefaultPreferences(): PreferenceMap {
       sms: smsDefault,
       discord: discordDefault,
       push: true,
+      telegram: TELEGRAM_DEFAULT_TYPES.includes(type),
     };
     return acc;
   }, {} as PreferenceMap);
@@ -75,6 +86,7 @@ function buildDefaultPreferences(): PreferenceMap {
 
 function normalizeChannelPrefs(
   raw: Partial<ChannelPrefs> | undefined,
+  type?: NotificationType,
 ): ChannelPrefs {
   return {
     inApp: raw?.inApp ?? true,
@@ -83,6 +95,9 @@ function normalizeChannelPrefs(
     sms: raw?.sms ?? false,
     discord: raw?.discord ?? false,
     push: raw?.push ?? true,
+    telegram:
+      raw?.telegram ??
+      (type !== undefined && TELEGRAM_DEFAULT_TYPES.includes(type)),
   };
 }
 
@@ -100,6 +115,7 @@ export class NotificationsService {
     @Optional() private readonly webhooks: WebhooksService,
     @Optional() private readonly smsProviderFactory: SmsProviderFactory,
     @Optional() private readonly webPush: WebPushService,
+    @Optional() private readonly telegram: TelegramService,
   ) {
     this.transporter = nodemailer.createTransport({
       host: this.config.get("SMTP_HOST"),
@@ -121,8 +137,8 @@ export class NotificationsService {
    * Creates an in-app notification for a user (by their Stellar address)
    * and optionally sends an email if they have one registered.
    * Both channels are gated on the user's NotificationPreference record.
-   * When a Slack webhook URL is configured and the type opts into Slack,
-   * a formatted message is also posted to that channel.
+   * Optional Slack, Discord, SMS, push, and Telegram channels are sent when
+   * their per-type preference and channel configuration allow delivery.
    */
   async notifyUser(
     stellarAddress: string,
@@ -143,10 +159,10 @@ export class NotificationsService {
         return;
       }
 
-      const { preferences: prefs, slackWebhookUrl, discordWebhookUrl } = await this.getOrCreatePreferenceRecord(user.id);
+      const { preferences: prefs, slackWebhookUrl, discordWebhookUrl, telegramChatId } = await this.getOrCreatePreferenceRecord(user.id);
       const quietHours = (prefs as StoredPreferences)._quietHours;
       const deliverAfter = type === NotificationType.SYSTEM_ALERT && data?.urgent === true ? null : this.getQuietHoursEnd(new Date(), quietHours);
-      const { inApp, email: emailEnabled, slack: slackEnabled, sms: smsEnabled, discord: discordEnabled, push: pushEnabled } = normalizeChannelPrefs(prefs[type]);
+      const { inApp, email: emailEnabled, slack: slackEnabled, sms: smsEnabled, discord: discordEnabled, push: pushEnabled, telegram: telegramEnabled } = normalizeChannelPrefs(prefs[type], type);
 
       if (!inApp) return;
 
@@ -205,7 +221,7 @@ export class NotificationsService {
       }
 
       // Send Discord notification if enabled and webhook is configured
-      if (discordEnabled && discordWebhookUrl) {
+      if (!deliverAfter && discordEnabled && discordWebhookUrl) {
         await this.sendDiscordMessage(
           discordWebhookUrl,
           type,
@@ -213,6 +229,10 @@ export class NotificationsService {
           message,
           data,
         );
+      }
+
+      if (!deliverAfter && telegramEnabled && telegramChatId) {
+        await this.telegram?.sendMessage(telegramChatId, `ChainSettle — ${title}\n\n${message}`);
       }
 
       this.gateway?.pushToUser(user.id, notification);
@@ -410,6 +430,7 @@ export class NotificationsService {
     preferences: PreferenceMap;
     slackWebhookUrl: string | null;
     discordWebhookUrl: string | null;
+    telegramChatId: string | null;
   }> {
     const record = await this.prisma.notificationPreference.upsert({
       where: { userId },
@@ -420,6 +441,7 @@ export class NotificationsService {
       preferences: record.preferences as PreferenceMap,
       slackWebhookUrl: record.slackWebhookUrl ?? null,
       discordWebhookUrl: record.discordWebhookUrl ?? null,
+      telegramChatId: record.telegramChatId ?? null,
     };
   }
 
@@ -502,12 +524,19 @@ export class NotificationsService {
   }
 
   async getPreferencesResponse(userId: string) {
-    const { preferences, slackWebhookUrl, discordWebhookUrl } =
+    const { preferences, slackWebhookUrl, discordWebhookUrl, telegramChatId } =
       await this.getOrCreatePreferenceRecord(userId);
     const stored = preferences as StoredPreferences;
     const { _meta, _quietHours, ...typePreferences } = stored;
+    const resolvedTypePreferences = Object.values(NotificationType).reduce(
+      (resolved, type) => ({
+        ...resolved,
+        [type]: normalizeChannelPrefs(typePreferences[type], type),
+      }),
+      {} as PreferenceMap,
+    );
     return {
-      ...typePreferences,
+      ...resolvedTypePreferences,
       digestFrequency: _meta?.digestFrequency ?? DEFAULT_DIGEST_FREQUENCY,
       quietHours: _quietHours ?? {
         enabled: false,
@@ -517,6 +546,7 @@ export class NotificationsService {
       },
       slackWebhookUrl,
       discordWebhookUrl,
+      telegramLinked: telegramChatId !== null,
     };
   }
 

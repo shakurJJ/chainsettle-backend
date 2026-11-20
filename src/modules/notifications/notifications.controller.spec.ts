@@ -2,14 +2,21 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { NotificationsController } from './notifications.controller';
 import { NotificationsService } from './notifications.service';
 import { WebPushService } from './web-push.service';
+import { TelegramService } from './telegram.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { BadRequestException } from '@nestjs/common';
+
+const mockTelegramService = {
+  createLink: jest.fn(),
+  unlink: jest.fn(),
+};
 
 describe('NotificationsController', () => {
   let controller: NotificationsController;
   let notificationsService: jest.Mocked<NotificationsService>;
 
   beforeEach(async () => {
+    jest.clearAllMocks();
     const mockNotificationsService = {
       buildDigest: jest.fn(),
       findForUser: jest.fn(),
@@ -36,6 +43,7 @@ describe('NotificationsController', () => {
       providers: [
         { provide: NotificationsService, useValue: mockNotificationsService },
         { provide: WebPushService, useValue: mockWebPushService },
+        { provide: TelegramService, useValue: mockTelegramService },
       ],
     })
       .overrideGuard(JwtAuthGuard)
@@ -48,6 +56,21 @@ describe('NotificationsController', () => {
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
+  });
+
+  it('creates a Telegram linking URL for the authenticated user', async () => {
+    const result = { link: 'https://t.me/example_bot?start=one-time-code', expiresAt: new Date() };
+    mockTelegramService.createLink.mockResolvedValue(result);
+
+    await expect(controller.createTelegramLink('user-123')).resolves.toBe(result);
+    expect(mockTelegramService.createLink).toHaveBeenCalledWith('user-123');
+  });
+
+  it('unlinks Telegram for the authenticated user', async () => {
+    mockTelegramService.unlink.mockResolvedValue({ unlinked: true });
+
+    await expect(controller.unlinkTelegram('user-123')).resolves.toEqual({ unlinked: true });
+    expect(mockTelegramService.unlink).toHaveBeenCalledWith('user-123');
   });
 
   describe('getDigestPreview', () => {

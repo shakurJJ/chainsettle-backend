@@ -9,6 +9,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 import { RegisterWebPushDto } from './dto/register-web-push.dto';
 import { SnoozeNotificationDto } from './dto/snooze-notification.dto';
+import { TelegramService } from './telegram.service';
 
 @ApiTags('notifications')
 @ApiBearerAuth()
@@ -18,6 +19,7 @@ export class NotificationsController {
   constructor(
     private readonly notificationsService: NotificationsService,
     private readonly webPushService: WebPushService,
+    private readonly telegramService: TelegramService,
   ) {}
 
   @Get()
@@ -72,6 +74,20 @@ export class NotificationsController {
   @ApiOperation({ summary: 'Update notification preferences (partial merge)' })
   updatePreferences(@CurrentUser('id') userId: string, @Body() dto: UpdatePreferencesDto) {
     return this.notificationsService.updatePreferences(userId, dto);
+  }
+
+  @Post('telegram/link')
+  @Throttle({ default: { limit: 5, ttl: 60 * 60 * 1000 } })
+  @ApiOperation({ summary: 'Generate a one-time Telegram account-linking URL' })
+  createTelegramLink(@CurrentUser('id') userId: string) {
+    return this.telegramService.createLink(userId);
+  }
+
+  @Delete('telegram/link')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Unlink the Telegram account from notifications' })
+  unlinkTelegram(@CurrentUser('id') userId: string) {
+    return this.telegramService.unlink(userId);
   }
 
   @Post('test')

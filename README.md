@@ -33,7 +33,7 @@ The backend is the **bridge between the Stellar blockchain and the frontend**. I
 >
 > For definitions of domain terms used throughout the codebase (shipment, milestone, arbiter, proof, dispute, escalation, reconciliation, reputation) see [docs/glossary.md](./docs/glossary.md).
 >
-> For how notifications travel from domain events to in-app, email, Slack, FCM push, and webhook channels — including preferences, digests, and the delivery pipeline — see [docs/notifications.md](./docs/notifications.md).
+> For how notifications travel from domain events to in-app, email, Slack, Discord, Telegram, FCM push, and webhook channels — including preferences, digests, and the delivery pipeline — see [docs/notifications.md](./docs/notifications.md).
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -131,8 +131,10 @@ All endpoints are prefixed with `/api/v1` (URI versioning; see [API Versioning](
 | `GET` | `/notifications` | ✓ | Get user notifications |
 | `PATCH` | `/notifications/:id/read` | ✓ | Mark notification as read |
 | `PATCH` | `/notifications/read-all` | ✓ | Mark all as read |
-| `GET` | `/notifications/preferences` | ✓ | Get channel preferences (+ Slack webhook) |
-| `PATCH` | `/notifications/preferences` | ✓ | Update preferences / Slack webhook URL |
+| `GET` | `/notifications/preferences` | ✓ | Get channel preferences and linked-channel status |
+| `PATCH` | `/notifications/preferences` | ✓ | Update per-type channel preferences / Slack webhook URL |
+| `POST` | `/notifications/telegram/link` | ✓ | Generate a one-time Telegram account-link URL |
+| `DELETE` | `/notifications/telegram/link` | ✓ | Unlink the Telegram account |
 
 ### Health
 | Method | Path | Auth | Description |
