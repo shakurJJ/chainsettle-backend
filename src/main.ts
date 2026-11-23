@@ -18,6 +18,139 @@ import { createWinstonLogger } from './common/logger/winston.logger';
 import * as fs from 'fs';
 import * as path from 'path';
 
+// ── Secrets provider (#666) ─────────────────────────────────────────────────
+// SECRETS_PROVIDER selects where secret values are loaded from at startup:
+//   env   (default) — plain environment variables, no external calls
+//   aws             — AWS Secrets Manager
+//   vault           — HashiCorp Vault (KV v2)
+// SECRETS_KEYS is a comma-separated list of keys to resolve. Resolved values
+// are written into process.env before Nest's ConfigModule/Joi validation runs.
+// Values are cached and refreshed on an interval for rotated secrets. Secret
+// values are never logged.
+type SecretsProvider = 'env' | 'aws' | 'vault';
+
+interface SecretsCache {
+  values: Record<string, string>;
+  loadedAt: number;
+}
+
+const secretsCache: SecretsCache = { values: {}, loadedAt: 0 };
+
+function getSecretsProvider(): SecretsProvider {
+  const raw = (process.env.SECRETS_PROVIDER ?? 'env').trim().toLowerCase();
+  if (raw === 'aws' || raw === 'vault' || raw === 'env') {
+    return raw;
+  }
+  throw new Error(
+    `Invalid SECRETS_PROVIDER "${raw}" — expected one of: env, aws, vault`,
+  );
+}
+
+function getSecretKeys(): string[] {
+  return (process.env.SECRETS_KEYS ?? '')
+    .split(',')
+    .map((k) => k.trim())
+    .filter(Boolean);
+}
+
+async function fetchFromAws(keys: string[]): Promise<Record<string, string>> {
+  // Lazy require so the dependency is only needed when the aws provider is used.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const {
+    SecretsManagerClient,
+    GetSecretValueCommand,
+  } = require('@aws-sdk/client-secrets-manager');
+  const client = new SecretsManagerClient({
+    region: process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION,
+  });
+  const resolved: Record<string, string> = {};
+  for (const key of keys) {
+    const res = await client.send(new GetSecretValueCommand({ SecretId: key }));
+    const value = res.SecretString ?? '';
+    if (!value) {
+      continue;
+    }
+    // A secret may be a JSON blob of multiple keys; merge those in.
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        for (const [k, v] of Object.entries(parsed)) {
+          resolved[k] = String(v);
+        }
+        continue;
+      }
+    } catch {
+      // Not JSON — treat as a single value keyed by the secret id.
+    }
+    resolved[key] = value;
+  }
+  return resolved;
+}
+
+async function fetchFromVault(keys: string[]): Promise<Record<string, string>> {
+  const address = process.env.VAULT_ADDR;
+  const token = process.env.VAULT_TOKEN;
+  const mount = process.env.VAULT_MOUNT ?? 'secret';
+  if (!address || !token) {
+    throw new Error('VAULT_ADDR and VAULT_TOKEN are required for the vault secrets provider');
+  }
+  const resolved: Record<string, string> = {};
+  for (const key of keys) {
+    const url = `${address.replace(/\/$/, '')}/v1/${mount}/data/${key}`;
+    const res = await fetch(url, { headers: { 'X-Vault-Token': token } });
+    if (!res.ok) {
+      throw new Error(`Vault read failed for "${key}": ${res.status}`);
+    }
+    const body: any = await res.json();
+    const data = body?.data?.data ?? {};
+    for (const [k, v] of Object.entries(data)) {
+      resolved[k] = String(v);
+    }
+  }
+  return resolved;
+}
+
+async function resolveSecrets(): Promise<void> {
+  const provider = getSecretsProvider();
+  if (provider === 'env') {
+    return;
+  }
+  const keys = getSecretKeys();
+  if (keys.length === 0) {
+    return;
+  }
+  const values =
+    provider === 'aws' ? await fetchFromAws(keys) : await fetchFromVault(keys);
+  for (const [k, v] of Object.entries(values)) {
+    process.env[k] = v;
+  }
+  secretsCache.values = values;
+  secretsCache.loadedAt = Date.now();
+}
+
+function scheduleSecretsRefresh(logger: Logger): void {
+  const provider = getSecretsProvider();
+  if (provider === 'env') {
+    return;
+  }
+  const intervalMs = Number(process.env.SECRETS_REFRESH_INTERVAL_MS ?? 0);
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    return;
+  }
+  const timer = setInterval(() => {
+    resolveSecrets()
+      .then(() => logger.log('Secrets refreshed from provider', 'SecretsProvider'))
+      .catch((err) =>
+        logger.error(
+          `Secrets refresh failed: ${err?.message ?? err}`,
+          err?.stack,
+          'SecretsProvider',
+        ),
+      );
+  }, intervalMs);
+  timer.unref?.();
+}
+
 async function bootstrap() {
   const winstonLogger = createWinstonLogger();
 
@@ -32,12 +165,18 @@ async function bootstrap() {
     );
   });
 
+  // Resolve secrets from the configured provider before Nest boots so that
+  // ConfigModule/Joi validation sees the resolved values.
+  await resolveSecrets();
+
   const app = await NestFactory.create(AppModule, {
     logger: winstonLogger,
     // Body parsing is handled by createBodyLimitMiddleware (per-route limits, #433)
     bodyParser: false,
   });
   const logger = winstonLogger;
+
+  scheduleSecretsRefresh(logger);
 
   // 100 KB JSON default, larger limits only for routes in BODY_LIMIT_ROUTES,
   // JSON nesting depth guard, 413 in the standard error format (#433).
