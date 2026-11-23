@@ -279,6 +279,68 @@ export class MilestonesService {
     };
   }
 
+  async submitDisputeRationale(
+    shipmentId: string,
+    milestoneIndex: number,
+    writtenBy: string,
+    rationale: string,
+    ipfsCid?: string,
+  ) {
+    const milestone = await this.prisma.milestone.findUnique({
+      where: { shipmentId_milestoneIndex: { shipmentId, milestoneIndex }, deletedAt: null },
+      include: {
+        shipment: true,
+        disputeRationale: true,
+      },
+    });
+
+    if (!milestone) {
+      throw new NotFoundException(`Milestone ${milestoneIndex} not found on shipment ${shipmentId}`);
+    }
+
+    if (milestone.shipment.arbiterAddress !== writtenBy) {
+      throw new ForbiddenException('Only the assigned arbiter can write the dispute rationale');
+    }
+
+    if (milestone.status !== MilestoneStatus.RESOLVED) {
+      throw new ConflictException('The dispute rationale can only be written after the dispute is resolved');
+    }
+
+    if (milestone.disputeRationale) {
+      throw new ConflictException('The dispute rationale is immutable and has already been submitted');
+    }
+
+    let stored;
+    try {
+      stored = await this.prisma.disputeRationale.create({
+        data: {
+          milestoneId: milestone.id,
+          writtenBy,
+          rationale,
+          ipfsCid: ipfsCid ?? null,
+        },
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new ConflictException('The dispute rationale is immutable and has already been submitted');
+      }
+      throw error;
+    }
+
+    for (const address of [milestone.shipment.buyerAddress, milestone.shipment.supplierAddress]) {
+      await this.notifications.notifyUser(
+        address,
+        NotificationType.DISPUTE_RESOLVED,
+        'Arbiter dispute rationale posted',
+        `The arbiter posted a rationale for the resolved dispute on milestone ${milestoneIndex} (shipment ${shipmentId}).`,
+        { shipmentId, milestoneIndex, rationaleId: stored.id },
+      );
+    }
+
+    this.logger.log(`Dispute rationale stored: ${stored.id} for ${shipmentId}[${milestoneIndex}]`);
+    return stored;
+  }
+
   /**
    * Buyer registers a milestone confirmation transaction hash after signing
    * it in Freighter. Mirrors the on-chain `handleMilestoneConfirmed` event
@@ -558,14 +620,18 @@ export class MilestonesService {
   async getDisputeDetail(shipmentId: string, milestoneIndex: number) {
     const milestone = await this.prisma.milestone.findUnique({
       where: { shipmentId_milestoneIndex: { shipmentId, milestoneIndex }, deletedAt: null },
+      include: { disputeRationale: true },
     });
 
     if (!milestone) {
       throw new NotFoundException(`Milestone ${milestoneIndex} not found on shipment ${shipmentId}`);
     }
 
-    if (milestone.status !== MilestoneStatus.DISPUTED) {
-      throw new ConflictException(`Milestone ${milestoneIndex} is not currently disputed`);
+    if (
+      milestone.status !== MilestoneStatus.DISPUTED &&
+      milestone.status !== MilestoneStatus.RESOLVED
+    ) {
+      throw new ConflictException(`Milestone ${milestoneIndex} has no dispute`);
     }
 
     const evidence = await this.prisma.disputeEvidence.findMany({
@@ -587,6 +653,15 @@ export class MilestonesService {
       status: milestone.status,
       disputeEscalatedAt: milestone.disputeEscalatedAt,
       resolvedAt: String(milestone.status) === String(MilestoneStatus.RESOLVED) ? milestone.updatedAt : undefined,
+      rationale: milestone.disputeRationale
+        ? {
+            writtenBy: milestone.disputeRationale.writtenBy,
+            rationale: milestone.disputeRationale.rationale,
+            ipfsCid: milestone.disputeRationale.ipfsCid,
+            createdAt: milestone.disputeRationale.createdAt,
+            updatedAt: milestone.disputeRationale.updatedAt,
+          }
+        : null,
       evidence: evidence.map((item) => ({
         ...item,
         ipfsUrl: item.ipfsCid ? this.ipfs.getGatewayUrl(item.ipfsCid) : null,

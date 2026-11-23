@@ -321,6 +321,7 @@ model Milestone {
   // Relations
   shipment        Shipment          @relation(fields: [shipmentId], references: [id])
   disputeEvidence DisputeEvidence[]
+  disputeRationale DisputeRationale?
   proofSubmissions ProofSubmission[]
   settlementProposals SettlementProposal[]
   checklistItems MilestoneChecklistItem[]
@@ -407,6 +408,21 @@ model DisputeEvidence {
   @@index([milestoneId])
   @@index([submittedBy])
   @@map("dispute_evidence")
+}
+
+model DisputeRationale {
+  id          String   @id @default(uuid())
+  milestoneId String   @unique
+  writtenBy   String
+  rationale   String   @db.Text
+  ipfsCid     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  milestone Milestone @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
+
+  @@index([writtenBy])
+  @@map("dispute_rationale")
 }
 
 model ChainEvent {
@@ -611,9 +627,12 @@ model AuditLog {
 model NotificationPreference {
   id              String   @id @default(uuid())
   userId          String   @unique
-  preferences     Json     // Record<NotificationType, { inApp: boolean; email: boolean; slack: boolean; sms: boolean; discord: boolean }>
+  preferences     Json     // Record<NotificationType, channel flags including inApp, email, slack, sms, discord, push and telegram>
   slackWebhookUrl String?  // Incoming Slack webhook URL; null disables Slack delivery
   discordWebhookUrl String? // Incoming Discord webhook URL; null disables Discord delivery
+  telegramChatId   String?  @unique
+  telegramLinkCodeHash String? @unique
+  telegramLinkExpiresAt DateTime?
   smsSentCount    Int      @default(0)   // SMS sent this rolling 24h window
   smsWindowStart  DateTime @default(now()) // Start of current 24h rate-limit window
   createdAt       DateTime @default(now())
@@ -969,4 +988,3 @@ model OrganizationMember {
   @@index([userId])
   @@map("organization_members")
 }
-
