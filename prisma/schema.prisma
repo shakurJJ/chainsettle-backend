@@ -91,6 +91,14 @@ enum KycStatus {
   REJECTED
 }
 
+enum ProofRejectionReason {
+  ILLEGIBLE
+  WRONG_DOCUMENT
+  INCOMPLETE
+  MISMATCHED_QUANTITY
+  OTHER
+}
+
 // ============================================================
 // MODELS
 // ============================================================
@@ -246,10 +254,32 @@ model Shipment {
 
   isDraft          Boolean         @default(false) // true when created via CSV bulk import; no on-chain backing yet
 
+  lineItems        ShipmentLineItem[]
+
   @@index([buyerAddress, status, createdAt])
   @@index([supplierAddress, status, createdAt])
   @@index([updatedAt])
   @@map("shipments")
+}
+
+/// Structured goods in a shipment — replaces free-text description for reporting
+/// and invoice matching. Created/updated while isDraft=true or status=ACTIVE/DRAFT.
+model ShipmentLineItem {
+  id         String   @id @default(uuid())
+  shipmentId String
+  sku        String?  @db.VarChar(100)
+  name       String   @db.VarChar(255)
+  quantity   Decimal  @db.Decimal(18, 6)
+  unit       String   @default("unit") @db.VarChar(50)  // e.g. "kg", "pcs", "box"
+  unitPrice  Decimal  @db.Decimal(18, 6)                // in the shipment's token units (human-readable, not stroops)
+  currency   String   @default("USDC") @db.VarChar(10)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  @@index([shipmentId])
+  @@map("shipment_line_items")
 }
 
 model Contact {
@@ -339,13 +369,15 @@ model DeadlineExtensionRequest {
 }
 
 model ProofSubmission {
-  id          String   @id @default(uuid())
-  milestoneId String
-  ipfsCid     String   // IPFS CID of the uploaded proof
-  submittedBy String   // Stellar address of whoever uploaded
-  sha256      String?  // hex SHA-256 of the uploaded file (#394); null for pre-migration rows
-  fileSize    Int?     // size in bytes of the uploaded file (#394)
-  createdAt   DateTime @default(now())
+  id             String                @id @default(uuid())
+  milestoneId    String
+  ipfsCid        String                // IPFS CID of the uploaded proof
+  submittedBy    String                // Stellar address of whoever uploaded
+  sha256         String?               // hex SHA-256 of the uploaded file (#394); null for pre-migration rows
+  fileSize       Int?                  // size in bytes of the uploaded file (#394)
+  rejectionCode  ProofRejectionReason? // structured reason code set when the buyer rejects this proof
+  rejectionNote  String?               // free-text note; required when rejectionCode is OTHER
+  createdAt      DateTime              @default(now())
 
   // Relations
   milestone Milestone @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
@@ -353,6 +385,7 @@ model ProofSubmission {
   @@index([milestoneId])
   @@index([submittedBy])
   @@index([sha256])
+  @@index([rejectionCode])
   @@map("proof_submissions")
 }
 

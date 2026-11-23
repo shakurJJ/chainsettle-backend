@@ -544,3 +544,8 @@ npm run sbom
 ## License
 
 MIT
+
+## Handsoff notes
+
+<!-- handsoff-issue-675 -->
+- #675: Add pause, resume and skip-next to recurring shipment schedules
