@@ -16,7 +16,7 @@ import { MetricsService } from '../../common/metrics/metrics.service';
 import { StellarService } from '../../common/stellar/stellar.service';
 import { FxRateService } from '../../common/fx/fx-rate.service';
 import { AppendMilestoneDto } from './dto/append-milestone.dto';
-import { MilestoneStatus, NotificationType, DisputeRole, ArbiterStatus } from '@prisma/client';
+import { MilestoneStatus, NotificationType, DisputeRole, ArbiterStatus, ProofRejectionReason } from '@prisma/client';
 import { createHash } from 'crypto';
 
 /** Hex SHA-256 of a proof file's bytes (#394). */
@@ -872,13 +872,15 @@ export class MilestonesService {
    * Rejects a submitted proof, reverting the milestone to PENDING.
    * Only the shipment buyer may call this. Milestone must be PROOF_SUBMITTED.
    * The proofHash is cleared (the value lives on in ProofSubmission history).
-   * Notifies the supplier with the buyer's reason.
+   * Stamps the most-recent ProofSubmission with the structured reason code and
+   * optional note, then notifies the supplier.
    */
   async rejectProof(
     shipmentId: string,
     milestoneIndex: number,
     buyerAddress: string,
-    reason: string,
+    reasonCode: ProofRejectionReason,
+    note?: string,
   ) {
     const shipment = await this.prisma.shipment.findUnique({
       where: { id: shipmentId },
@@ -900,25 +902,47 @@ export class MilestonesService {
       );
     }
 
-    const updated = await this.prisma.milestone.update({
-      where: { shipmentId_milestoneIndex: { shipmentId, milestoneIndex } },
-      data: {
-        status: MilestoneStatus.PENDING,
-        proofHash: null,
-      },
+    // Find the latest proof submission to stamp with the rejection reason.
+    const latestProof = await this.prisma.proofSubmission.findFirst({
+      where: { milestoneId: milestone.id },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
     });
 
+    const [updated] = await this.prisma.$transaction([
+      this.prisma.milestone.update({
+        where: { shipmentId_milestoneIndex: { shipmentId, milestoneIndex } },
+        data: {
+          status: MilestoneStatus.PENDING,
+          proofHash: null,
+        },
+      }),
+      ...(latestProof
+        ? [
+            this.prisma.proofSubmission.update({
+              where: { id: latestProof.id },
+              data: {
+                rejectionCode: reasonCode,
+                rejectionNote: note ?? null,
+              },
+            }),
+          ]
+        : []),
+    ]);
+
     this.logger.log(
-      `Proof rejected for ${shipmentId}[${milestoneIndex}] by buyer ${buyerAddress}`,
+      `Proof rejected for ${shipmentId}[${milestoneIndex}] by buyer ${buyerAddress} (${reasonCode})`,
     );
+
+    const reasonLabel = note ? `${reasonCode} — ${note}` : reasonCode;
 
     // Notify supplier with the rejection reason
     await this.notifications.notifyUser(
       shipment.supplierAddress,
       NotificationType.PROOF_REJECTED,
       'Proof rejected — resubmission requested',
-      `Your proof for milestone ${milestoneIndex} ("${milestone.name}") on shipment ${shipmentId} was rejected. Reason: ${reason}`,
-      { shipmentId, milestoneIndex, reason },
+      `Your proof for milestone ${milestoneIndex} ("${milestone.name}") on shipment ${shipmentId} was rejected. Reason: ${reasonLabel}`,
+      { shipmentId, milestoneIndex, reasonCode, note },
     );
 
     return updated;
@@ -934,7 +958,8 @@ export class MilestonesService {
     shipmentId: string,
     buyerAddress: string,
     indices: number[],
-    reason: string,
+    reasonCode: ProofRejectionReason,
+    note?: string,
   ) {
     const shipment = await this.prisma.shipment.findUnique({
       where: { id: shipmentId },
@@ -982,18 +1007,43 @@ export class MilestonesService {
     const updatedByIndex = new Map<number, unknown>();
 
     if (toReject.length > 0) {
-      const updated = await this.prisma.$transaction(
-        toReject.map((milestoneIndex) =>
-          this.prisma.milestone.update({
-            where: { shipmentId_milestoneIndex: { shipmentId, milestoneIndex } },
-            data: { status: MilestoneStatus.PENDING, proofHash: null },
-          }),
-        ),
-      );
+      // Fetch the latest ProofSubmission id for each milestone to stamp with the reason code.
+      const latestProofByMilestone = new Map<number, string>();
+      for (const milestoneIndex of toReject) {
+        const ms = byIndex.get(milestoneIndex)!;
+        const latest = await this.prisma.proofSubmission.findFirst({
+          where: { milestoneId: ms.id },
+          orderBy: { createdAt: 'desc' },
+          select: { id: true },
+        });
+        if (latest) latestProofByMilestone.set(milestoneIndex, latest.id);
+      }
 
-      updated.forEach((m, i) => {
+      const milestoneUpdates = toReject.map((milestoneIndex) =>
+        this.prisma.milestone.update({
+          where: { shipmentId_milestoneIndex: { shipmentId, milestoneIndex } },
+          data: { status: MilestoneStatus.PENDING, proofHash: null },
+        }),
+      );
+      const proofUpdates = toReject
+        .filter((idx) => latestProofByMilestone.has(idx))
+        .map((milestoneIndex) =>
+          this.prisma.proofSubmission.update({
+            where: { id: latestProofByMilestone.get(milestoneIndex)! },
+            data: {
+              rejectionCode: reasonCode,
+              rejectionNote: note ?? null,
+            },
+          }),
+        );
+
+      const txResults = await this.prisma.$transaction([...milestoneUpdates, ...proofUpdates]);
+      // Only the first toReject.length results are milestone rows.
+      txResults.slice(0, toReject.length).forEach((m, i) => {
         updatedByIndex.set(toReject[i], m);
       });
+
+      const reasonLabel = note ? `${reasonCode} — ${note}` : reasonCode;
 
       for (const milestoneIndex of toReject) {
         const milestone = byIndex.get(milestoneIndex)!;
@@ -1001,8 +1051,8 @@ export class MilestonesService {
           shipment.supplierAddress,
           NotificationType.PROOF_REJECTED,
           'Proof rejected — resubmission requested',
-          `Your proof for milestone ${milestoneIndex} ("${milestone.name}") on shipment ${shipmentId} was rejected. Reason: ${reason}`,
-          { shipmentId, milestoneIndex, reason },
+          `Your proof for milestone ${milestoneIndex} ("${milestone.name}") on shipment ${shipmentId} was rejected. Reason: ${reasonLabel}`,
+          { shipmentId, milestoneIndex, reasonCode, note },
         );
         results.push({
           milestoneIndex,
@@ -1012,7 +1062,7 @@ export class MilestonesService {
       }
 
       this.logger.log(
-        `Bulk proof rejection on ${shipmentId} by buyer ${buyerAddress}: indices [${toReject.join(', ')}]`,
+        `Bulk proof rejection on ${shipmentId} by buyer ${buyerAddress}: indices [${toReject.join(', ')}] (${reasonCode})`,
       );
     }
 

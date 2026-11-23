@@ -91,6 +91,14 @@ enum KycStatus {
   REJECTED
 }
 
+enum ProofRejectionReason {
+  ILLEGIBLE
+  WRONG_DOCUMENT
+  INCOMPLETE
+  MISMATCHED_QUANTITY
+  OTHER
+}
+
 // ============================================================
 // MODELS
 // ============================================================
@@ -338,13 +346,15 @@ model DeadlineExtensionRequest {
 }
 
 model ProofSubmission {
-  id          String   @id @default(uuid())
-  milestoneId String
-  ipfsCid     String   // IPFS CID of the uploaded proof
-  submittedBy String   // Stellar address of whoever uploaded
-  sha256      String?  // hex SHA-256 of the uploaded file (#394); null for pre-migration rows
-  fileSize    Int?     // size in bytes of the uploaded file (#394)
-  createdAt   DateTime @default(now())
+  id             String                @id @default(uuid())
+  milestoneId    String
+  ipfsCid        String                // IPFS CID of the uploaded proof
+  submittedBy    String                // Stellar address of whoever uploaded
+  sha256         String?               // hex SHA-256 of the uploaded file (#394); null for pre-migration rows
+  fileSize       Int?                  // size in bytes of the uploaded file (#394)
+  rejectionCode  ProofRejectionReason? // structured reason code set when the buyer rejects this proof
+  rejectionNote  String?               // free-text note; required when rejectionCode is OTHER
+  createdAt      DateTime              @default(now())
 
   // Relations
   milestone Milestone @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
@@ -352,6 +362,7 @@ model ProofSubmission {
   @@index([milestoneId])
   @@index([submittedBy])
   @@index([sha256])
+  @@index([rejectionCode])
   @@map("proof_submissions")
 }
 
