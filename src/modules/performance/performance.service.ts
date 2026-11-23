@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { MilestoneStatus, ShipmentStatus } from '@prisma/client';
+import { MilestoneStatus, ProofRejectionReason, ShipmentStatus } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisService } from '../../common/redis/redis.service';
 import { StellarService } from '../../common/stellar/stellar.service';
@@ -28,6 +28,11 @@ export interface PerformanceStats {
   totalVolumeUsd: number | null;
   /** False if some token had no cached FX rate and was left out of the volume. */
   volumeComplete: boolean;
+  /**
+   * Count of proof rejections grouped by reason code.
+   * Only codes that have at least one rejection appear in the map.
+   */
+  rejectionsByReason: Partial<Record<ProofRejectionReason, number>>;
   computedAt: string;
 }
 
@@ -142,7 +147,12 @@ export class PerformanceService {
             dueAt: true,
             confirmedAt: true,
             disputeEscalatedAt: true,
-            proofSubmissions: { select: { createdAt: true } },
+            proofSubmissions: {
+              select: {
+                createdAt: true,
+                rejectionCode: true,
+              },
+            },
           },
         },
       },
@@ -155,6 +165,7 @@ export class PerformanceService {
     let proofToConfirmMs = 0;
     let proofToConfirmCount = 0;
     const volumeByToken = new Map<string, number>();
+    const rejectionsByReason: Partial<Record<ProofRejectionReason, number>> = {};
 
     for (const s of shipments) {
       if (s.status === ShipmentStatus.COMPLETED) {
@@ -192,6 +203,13 @@ export class PerformanceService {
             proofToConfirmCount++;
           }
         }
+
+        // Tally rejection reason codes from proof submission history.
+        for (const p of m.proofSubmissions) {
+          if (p.rejectionCode) {
+            rejectionsByReason[p.rejectionCode] = (rejectionsByReason[p.rejectionCode] ?? 0) + 1;
+          }
+        }
       }
       if (disputed) disputedShipments++;
     }
@@ -220,6 +238,7 @@ export class PerformanceService {
       ),
       totalVolumeUsd: round(totalVolumeUsd),
       volumeComplete,
+      rejectionsByReason,
       computedAt: new Date().toISOString(),
     };
   }
