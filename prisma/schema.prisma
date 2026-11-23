@@ -254,10 +254,32 @@ model Shipment {
 
   isDraft          Boolean         @default(false) // true when created via CSV bulk import; no on-chain backing yet
 
+  lineItems        ShipmentLineItem[]
+
   @@index([buyerAddress, status, createdAt])
   @@index([supplierAddress, status, createdAt])
   @@index([updatedAt])
   @@map("shipments")
+}
+
+/// Structured goods in a shipment — replaces free-text description for reporting
+/// and invoice matching. Created/updated while isDraft=true or status=ACTIVE/DRAFT.
+model ShipmentLineItem {
+  id         String   @id @default(uuid())
+  shipmentId String
+  sku        String?  @db.VarChar(100)
+  name       String   @db.VarChar(255)
+  quantity   Decimal  @db.Decimal(18, 6)
+  unit       String   @default("unit") @db.VarChar(50)  // e.g. "kg", "pcs", "box"
+  unitPrice  Decimal  @db.Decimal(18, 6)                // in the shipment's token units (human-readable, not stroops)
+  currency   String   @default("USDC") @db.VarChar(10)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  @@index([shipmentId])
+  @@map("shipment_line_items")
 }
 
 model Contact {

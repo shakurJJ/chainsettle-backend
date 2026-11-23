@@ -38,6 +38,7 @@ export const SHIPMENT_DETAIL_FIELDS: readonly string[] = [
   'events',
   'trackingUpdates',
   'approvals',
+  'lineItems',
 ];
 
 /**
