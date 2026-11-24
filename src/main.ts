@@ -234,6 +234,16 @@ async function bootstrap() {
     expressApp.disable('x-powered-by');
   }
 
+  // Trusted proxy setting (#656): req.ip only honours X-Forwarded-For when set.
+  // Accepts Express values: "true", a hop count, or a comma-separated IP/CIDR list.
+  const trustProxy = process.env.TRUST_PROXY?.trim();
+  if (trustProxy && expressApp?.set) {
+    expressApp.set(
+      'trust proxy',
+      trustProxy === 'true' ? true : /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy,
+    );
+  }
+
   // CORS — strict origin allowlist.
   app.enableCors({
     origin:

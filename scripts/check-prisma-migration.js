@@ -39,105 +39,43 @@ if (!fs.existsSync(migrationsDir)) {
 }
 
 /**
- * Read the schema file hash and the set of committed, dated migration
- * folders. We only consider migration directories that contain a
- * migration.sql file, which is the real marker of a committed Prisma
- * migration in this repository.
+ * Run a git command and return trimmed stdout (exits on git failure).
  */
-const schemaStat = fs.statSync(schemaPath);
-const schemaMtimeMs = schemaStat.mtimeMs;
-
-const committedMigrationFolders = fs
-  .readdirSync(migrationsDir)
-  .filter((entry) => {
-    const full = path.join(migrationsDir, entry);
-    return fs.statSync(full).isDirectory() && fs.existsSync(path.join(full, 'migration.sql'));
-  })
-  .sort();
-
-const migrationIds = committedMigrationFolders.join('\n');
-const migrationsHash = require('crypto')
-  .createHash('sha256')
-  .update(migrationIds, 'utf8')
-  .digest('hex');
-
-/** The current state of the working tree (schema + migrations found by git). */
-function currentTreeState() {
-  const schemaDiff = spawnSync(
-    'git',
-    ['hash-object', schemaPath],
-    { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
-  );
-
-  const migrationDiff = spawnSync(
-    'git',
-    ['ls-tree', '--name-only', 'HEAD', '--', 'prisma/migrations'],
-    { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
-  );
-
-  if (schemaDiff.status !== 0 || migrationDiff.status !== 0) {
-    console.error('Failed to read the committed Git state. Make sure git is available.');
-    console.error(`schemaDiff.status=${schemaDiff.status}`);
-    if (schemaDiff.stderr) console.error(schemaDiff.stderr);
-    if (migrationDiff.stderr) console.error(migrationDiff.stderr);
+function git(args) {
+  const res = spawnSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  if (res.status !== 0) {
+    console.error(`git ${args.join(' ')} failed. Make sure git is available.`);
+    if (res.stderr) console.error(res.stderr);
     process.exit(1);
   }
-
-  const schemaHash = schemaDiff.stdout.trim();
-  const migrationFiles = migrationDiff.stdout
-    .split('\n')
-    .filter(Boolean)
-    .sort();
-
-  return { schemaHash, migrationFiles };
+  return res.stdout.trim();
 }
 
-const { schemaHash, migrationFiles } = currentTreeState();
-const migrationIdsForTree = migrationFiles
-  .filter((file) => file.endsWith('/migration.sql'))
-  .map((file) => path.basename(path.dirname(file)))
-  .sort()
-  .join('\n');
+/**
+ * Compare the working tree (staged + unstaged + untracked) against BASE_REF
+ * (default HEAD). In CI set BASE_REF to the PR base, e.g. origin/main.
+ */
+const baseRef = process.env.BASE_REF || 'HEAD';
+const diffBase = baseRef === 'HEAD' ? 'HEAD' : git(['merge-base', baseRef, 'HEAD']);
 
-const treeMigrationHash = require('crypto')
-  .createHash('sha256')
-  .update(migrationIdsForTree, 'utf8')
-  .digest('hex');
+const schemaChanged =
+  git(['diff', '--name-only', diffBase, '--', 'prisma/schema.prisma']).length > 0;
 
-if (schemaHash === treeMigrationHash) {
-  // Schema and committed migrations are in sync. If the hash were the same,
-  // the committed migration list is also the same (we hash the sorted list
-  // of migration files). We still copy the working-tree migration set into
-  // the bundle so a future "schema-only" reference hash is stable, but no
-  // new comparison pair is needed here.
+const migrationAtBase = new Set(
+  git(['ls-tree', '-r', '--name-only', diffBase, '--', 'prisma/migrations'])
+    .split('\n')
+    .filter((f) => f.endsWith('/migration.sql')),
+);
+
+const newMigrations = fs
+  .readdirSync(migrationsDir)
+  .filter((entry) => fs.existsSync(path.join(migrationsDir, entry, 'migration.sql')))
+  .map((entry) => `prisma/migrations/${entry}/migration.sql`)
+  .filter((file) => !migrationAtBase.has(file));
+
+if (!schemaChanged || newMigrations.length > 0) {
   console.log('✓ prisma/schema.prisma is in sync with prisma/migrations/');
-  console.log(`  schema: ${schemaHash}`);
-  console.log(`  migrations: ${treeMigrationHash}`);
-
-  // Write the current tree state into a stable artifact next to this script
-  // so the check can be run repeatedly without re-running git.
-  const stateDir = path.join(root, '.prisma-migration-state');
-  try {
-    fs.mkdirSync(stateDir, { recursive: true });
-  } catch (err) {
-    // Best-effort; the artifact is not part of the repository.
-  }
-  fs.writeFileSync(
-    path.join(stateDir, 'schema-hash.txt'),
-    `${schemaHash}\n`,
-    { encoding: 'utf8' }
-  );
-  fs.writeFileSync(
-    path.join(stateDir, 'migrations-hash.txt'),
-    `${treeMigrationHash}\n`,
-    { encoding: 'utf8' }
-  );
-  fs.writeFileSync(
-    path.join(stateDir, 'migration-files.txt'),
-    migrationFiles.join('\n'),
-    { encoding: 'utf8' }
-  );
-
+  if (schemaChanged) console.log('  new migration(s): ' + newMigrations.join(', '));
   process.exit(0);
 }
 
@@ -164,9 +102,7 @@ console.error('');
 console.error('  Related docs: docs/testing.md, docs/deployment.md,');
 console.error('  docs/adr/0004-prisma-postgresql.md');
 console.error('');
-console.error('  Schema (new):  ', schemaHash.substring(0, 12));
-console.error('  Migrations:    ', treeMigrationHash.substring(0, 12));
-console.error('  Committed:     ' + migrationFiles.join('\n                '));
+console.error('  Compared against: ' + baseRef);
 console.error('');
 
 process.exit(1);
