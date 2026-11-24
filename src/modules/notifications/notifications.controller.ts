@@ -97,6 +97,13 @@ export class NotificationsController {
     return this.notificationsService.sendTestNotification(userId);
   }
 
+  @Post('teams/test')
+  @Throttle({ default: { limit: 1, ttl: 5 * 60 * 1000 } })
+  @ApiOperation({ summary: 'Test the configured Microsoft Teams webhook' })
+  sendTeamsTestNotification(@CurrentUser('id') userId: string) {
+    return this.notificationsService.sendTeamsTestNotification(userId);
+  }
+
   @Get('digest-preview')
   @ApiOperation({ summary: 'Preview the next scheduled email digest' })
   async getDigestPreview(@CurrentUser('id') userId: string) {

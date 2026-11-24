@@ -23,6 +23,7 @@ function allEnabled() {
         inApp: true,
         email: true,
         slack: true,
+        teams: true,
         telegram: TELEGRAM_DEFAULT_TYPES.has(t),
       },
     }),
@@ -45,6 +46,7 @@ const telegramNotification = { sendMessage: jest.fn().mockResolvedValue(undefine
 function buildPrisma(
   prefOverride?: object,
   slackWebhookUrl: string | null = null,
+  teamsWebhookUrl: string | null = null,
 ): any {
   return {
     user: {
@@ -62,11 +64,13 @@ function buildPrisma(
       upsert: jest.fn().mockResolvedValue({
         preferences: prefOverride ?? allEnabled(),
         slackWebhookUrl,
+        teamsWebhookUrl,
         telegramChatId: '123456',
       }),
       update: jest.fn().mockResolvedValue({
         preferences: prefOverride ?? allEnabled(),
         slackWebhookUrl,
+        teamsWebhookUrl,
         telegramChatId: '123456',
       }),
     },
@@ -397,6 +401,154 @@ describe("NotificationsService — preferences", () => {
       expect(global.fetch).not.toHaveBeenCalled();
       expect(prisma.notification.create).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it("persists and returns the Teams webhook URL", async () => {
+    const prisma = buildPrisma();
+    const service = await buildService(prisma);
+
+    await service.updatePreferences("user-1", {
+      teamsWebhookUrl: "https://tenant.webhook.office.com/webhookb2/id",
+    });
+
+    expect(prisma.notificationPreference.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          teamsWebhookUrl: "https://tenant.webhook.office.com/webhookb2/id",
+        }),
+      }),
+    );
+  });
+});
+
+describe("NotificationsService — Teams channel", () => {
+  const originalFetch = global.fetch;
+  const teamsWebhookUrl =
+    "https://tenant.webhook.office.com/webhookb2/id";
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    jest.clearAllMocks();
+  });
+
+  it("posts a Teams Adaptive Card when Teams is enabled", async () => {
+    const prisma = buildPrisma(undefined, null, teamsWebhookUrl);
+    const service = await buildService(prisma);
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => "1",
+    }) as any;
+
+    await service.notifyUser(
+      "GABC",
+      NotificationType.PROOF_SUBMITTED,
+      "Proof in",
+      "A shipment proof was submitted",
+      { shipmentId: "ship-1", milestoneIndex: 0 },
+    );
+
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    const payload = JSON.parse(options.body);
+    expect(url).toBe(teamsWebhookUrl);
+    expect(payload.attachments[0].contentType).toBe(
+      "application/vnd.microsoft.card.adaptive",
+    );
+    expect(payload.attachments[0].content).toMatchObject({
+      type: "AdaptiveCard",
+      body: expect.arrayContaining([
+        expect.objectContaining({
+          type: "FactSet",
+          facts: expect.arrayContaining([
+            { title: "Shipment", value: "ship-1" },
+            { title: "Milestone", value: "0" },
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  it("does not block notification creation when Teams delivery fails", async () => {
+    const slackWebhookUrl = "https://hooks.slack.com/services/T/B/X";
+    const prisma = buildPrisma(undefined, slackWebhookUrl, teamsWebhookUrl);
+    const service = await buildService(prisma);
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => "ok",
+      })
+      .mockRejectedValueOnce(new Error("network unavailable")) as any;
+
+    const notification = await service.notifyUser(
+      "GABC",
+      NotificationType.PROOF_SUBMITTED,
+      "Proof in",
+      "msg",
+    );
+
+    expect(notification).toBe(mockNotification);
+    expect(prisma.notification.create).toHaveBeenCalledTimes(1);
+    expect(global.fetch).toHaveBeenCalledWith(
+      slackWebhookUrl,
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("sends a test card to the configured Teams webhook", async () => {
+    const prisma = buildPrisma(undefined, null, teamsWebhookUrl);
+    const service = await buildService(prisma);
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => "1",
+    }) as any;
+
+    await expect(service.sendTeamsTestNotification("user-1")).resolves.toEqual({
+      success: true,
+    });
+    expect(global.fetch).toHaveBeenCalledWith(
+      teamsWebhookUrl,
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("retries a rate-limited Teams webhook once", async () => {
+    const service = await buildService(buildPrisma());
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        headers: { get: () => "0" },
+        text: async () => "rate limited",
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => "1",
+      }) as any;
+
+    await expect(
+      service.sendTeamsMessage(
+        teamsWebhookUrl,
+        NotificationType.SYSTEM_ALERT,
+        "Test",
+        "Message",
+      ),
+    ).resolves.toBe(true);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("requires a configured Teams webhook for the test route", async () => {
+    const service = await buildService(buildPrisma());
+    global.fetch = jest.fn() as any;
+
+    await expect(service.sendTeamsTestNotification("user-1")).rejects.toThrow(
+      "Configure a Teams webhook URL first",
+    );
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 });
 

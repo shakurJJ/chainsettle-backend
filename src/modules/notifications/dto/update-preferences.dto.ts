@@ -12,13 +12,13 @@ export class UpdatePreferencesDto {
   quietHours?: { enabled: boolean; start: string; end: string; timezone: string };
   @ApiProperty({
     description: 'Partial map of NotificationType to channel flags',
-    example: { PROOF_SUBMITTED: { inApp: true, email: false, slack: true, sms: false, discord: true, telegram: false } },
+    example: { PROOF_SUBMITTED: { inApp: true, email: false, slack: true, sms: false, discord: true, teams: true, telegram: false } },
     required: false,
   })
   @IsOptional()
   @IsObject()
   preferences?: Partial<
-    Record<NotificationType, { inApp: boolean; email: boolean; slack?: boolean; sms?: boolean; discord?: boolean; telegram?: boolean }>
+    Record<NotificationType, { inApp: boolean; email: boolean; slack?: boolean; sms?: boolean; discord?: boolean; teams?: boolean; telegram?: boolean }>
   >;
 
   @ApiProperty({
@@ -56,4 +56,22 @@ export class UpdatePreferencesDto {
   })
   @IsString()
   discordWebhookUrl?: string | null;
+
+  @ApiProperty({
+    description:
+      'Microsoft Teams Incoming Webhook URL for milestone/shipment events. Pass null or empty string to remove.',
+    required: false,
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== '')
+  @IsUrl({ require_tld: false, protocols: ['https'] })
+  @Matches(
+    /^https:\/\/(?:[a-z0-9-]+\.webhook\.office\.com|outlook\.office\.com|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.logic\.azure\.com|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.environment\.api\.powerplatform\.com)(?::443)?\/(?:webhook(?:b2)?|workflows|powerautomate\/automations)\//i,
+    {
+      message: 'Teams webhook URL must be a valid Microsoft Teams webhook URL',
+    },
+  )
+  @IsString()
+  teamsWebhookUrl?: string | null;
 }

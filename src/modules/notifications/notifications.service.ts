@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 import * as fs from 'fs';
@@ -22,6 +22,7 @@ type ChannelPrefs = {
   slack?: boolean;
   sms?: boolean;
   discord?: boolean;
+  teams?: boolean;
   push?: boolean;
   telegram?: boolean;
 };
@@ -77,6 +78,7 @@ function buildDefaultPreferences(): PreferenceMap {
       slack: true,
       sms: smsDefault,
       discord: discordDefault,
+      teams: false,
       push: true,
       telegram: TELEGRAM_DEFAULT_TYPES.includes(type),
     };
@@ -94,6 +96,7 @@ function normalizeChannelPrefs(
     slack: raw?.slack ?? true,
     sms: raw?.sms ?? false,
     discord: raw?.discord ?? false,
+    teams: raw?.teams ?? false,
     push: raw?.push ?? true,
     telegram:
       raw?.telegram ??
@@ -137,7 +140,7 @@ export class NotificationsService {
    * Creates an in-app notification for a user (by their Stellar address)
    * and optionally sends an email if they have one registered.
    * Both channels are gated on the user's NotificationPreference record.
-   * Optional Slack, Discord, SMS, push, and Telegram channels are sent when
+   * Optional Slack, Discord, Teams, SMS, push, and Telegram channels are sent when
    * their per-type preference and channel configuration allow delivery.
    */
   async notifyUser(
@@ -159,10 +162,10 @@ export class NotificationsService {
         return;
       }
 
-      const { preferences: prefs, slackWebhookUrl, discordWebhookUrl, telegramChatId } = await this.getOrCreatePreferenceRecord(user.id);
+      const { preferences: prefs, slackWebhookUrl, discordWebhookUrl, teamsWebhookUrl, telegramChatId } = await this.getOrCreatePreferenceRecord(user.id);
       const quietHours = (prefs as StoredPreferences)._quietHours;
       const deliverAfter = type === NotificationType.SYSTEM_ALERT && data?.urgent === true ? null : this.getQuietHoursEnd(new Date(), quietHours);
-      const { inApp, email: emailEnabled, slack: slackEnabled, sms: smsEnabled, discord: discordEnabled, push: pushEnabled, telegram: telegramEnabled } = normalizeChannelPrefs(prefs[type], type);
+      const { inApp, email: emailEnabled, slack: slackEnabled, sms: smsEnabled, discord: discordEnabled, teams: teamsEnabled, push: pushEnabled, telegram: telegramEnabled } = normalizeChannelPrefs(prefs[type], type);
 
       if (!inApp) return;
 
@@ -228,6 +231,21 @@ export class NotificationsService {
           title,
           message,
           data,
+        );
+      }
+
+      if (!deliverAfter && teamsEnabled && teamsWebhookUrl) {
+        void this.sendTeamsMessage(
+          teamsWebhookUrl,
+          type,
+          title,
+          message,
+          data,
+        ).catch((error) =>
+          this.logger.error(
+            `Teams notification dispatch error for ${type}`,
+            (error as Error).message,
+          ),
         );
       }
 
@@ -421,6 +439,26 @@ export class NotificationsService {
     );
   }
 
+  async sendTeamsTestNotification(userId: string) {
+    const { teamsWebhookUrl } = await this.getOrCreatePreferenceRecord(userId);
+    if (!teamsWebhookUrl) {
+      throw new BadRequestException('Configure a Teams webhook URL first');
+    }
+
+    const sent = await this.sendTeamsMessage(
+      teamsWebhookUrl,
+      NotificationType.SYSTEM_ALERT,
+      'Test Notification',
+      'This is a test notification to verify your Microsoft Teams webhook is working correctly.',
+    );
+    if (!sent) {
+      throw new ServiceUnavailableException(
+        'The Microsoft Teams webhook test could not be delivered',
+      );
+    }
+    return { success: true };
+  }
+
   async getOrCreatePreferences(userId: string): Promise<PreferenceMap> {
     const record = await this.getOrCreatePreferenceRecord(userId);
     return record.preferences;
@@ -430,6 +468,7 @@ export class NotificationsService {
     preferences: PreferenceMap;
     slackWebhookUrl: string | null;
     discordWebhookUrl: string | null;
+    teamsWebhookUrl: string | null;
     telegramChatId: string | null;
   }> {
     const record = await this.prisma.notificationPreference.upsert({
@@ -441,6 +480,7 @@ export class NotificationsService {
       preferences: record.preferences as PreferenceMap,
       slackWebhookUrl: record.slackWebhookUrl ?? null,
       discordWebhookUrl: record.discordWebhookUrl ?? null,
+      teamsWebhookUrl: record.teamsWebhookUrl ?? null,
       telegramChatId: record.telegramChatId ?? null,
     };
   }
@@ -489,6 +529,7 @@ export class NotificationsService {
       preferences: StoredPreferences;
       slackWebhookUrl?: string | null;
       discordWebhookUrl?: string | null;
+      teamsWebhookUrl?: string | null;
     } = {
       preferences: merged,
     };
@@ -503,6 +544,12 @@ export class NotificationsService {
         dto.discordWebhookUrl === "" || dto.discordWebhookUrl === null
           ? null
           : dto.discordWebhookUrl;
+    }
+    if (dto.teamsWebhookUrl !== undefined) {
+      data.teamsWebhookUrl =
+        dto.teamsWebhookUrl === "" || dto.teamsWebhookUrl === null
+          ? null
+          : dto.teamsWebhookUrl;
     }
 
     await this.prisma.notificationPreference.update({
@@ -524,7 +571,7 @@ export class NotificationsService {
   }
 
   async getPreferencesResponse(userId: string) {
-    const { preferences, slackWebhookUrl, discordWebhookUrl, telegramChatId } =
+    const { preferences, slackWebhookUrl, discordWebhookUrl, teamsWebhookUrl, telegramChatId } =
       await this.getOrCreatePreferenceRecord(userId);
     const stored = preferences as StoredPreferences;
     const { _meta, _quietHours, ...typePreferences } = stored;
@@ -546,6 +593,7 @@ export class NotificationsService {
       },
       slackWebhookUrl,
       discordWebhookUrl,
+      teamsWebhookUrl,
       telegramLinked: telegramChatId !== null,
     };
   }
@@ -1303,6 +1351,99 @@ ${type}`,
         `Discord notification failed for ${type}`,
         (error as Error).message,
       );
+    }
+  }
+
+  /**
+   * Posts an Adaptive Card to a Microsoft Teams Incoming Webhook.
+   * Failures are logged and returned so they never interrupt other channels.
+   */
+  async sendTeamsMessage(
+    webhookUrl: string,
+    type: NotificationType,
+    title: string,
+    message: string,
+    data?: Record<string, any>,
+  ): Promise<boolean> {
+    const shipmentId = data?.shipmentId ? String(data.shipmentId) : undefined;
+    const milestoneIndex =
+      data?.milestoneIndex !== undefined
+        ? String(data.milestoneIndex)
+        : undefined;
+    const facts = [
+      ...(shipmentId ? [{ title: 'Shipment', value: shipmentId }] : []),
+      ...(milestoneIndex !== undefined
+        ? [{ title: 'Milestone', value: milestoneIndex }]
+        : []),
+      { title: 'Type', value: type },
+    ];
+    const payload = {
+      type: 'message',
+      attachments: [
+        {
+          contentType: 'application/vnd.microsoft.card.adaptive',
+          contentUrl: null,
+          content: {
+            $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
+            type: 'AdaptiveCard',
+            version: '1.4',
+            body: [
+              {
+                type: 'TextBlock',
+                text: `ChainSettle — ${title}`,
+                weight: 'Bolder',
+                size: 'Medium',
+                wrap: true,
+              },
+              { type: 'TextBlock', text: message, wrap: true },
+              { type: 'FactSet', facts },
+            ],
+          },
+        },
+      ],
+    };
+
+    const post = () =>
+      fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+    try {
+      let response = await post();
+      if (response.status === 429) {
+        const retryAfter = response.headers.get('retry-after');
+        const retryAfterSeconds = retryAfter ? Number(retryAfter) : NaN;
+        const retryAt = retryAfter ? Date.parse(retryAfter) : NaN;
+        const waitMs = Number.isFinite(retryAfterSeconds)
+          ? retryAfterSeconds * 1000
+          : Number.isFinite(retryAt)
+            ? Math.max(0, retryAt - Date.now())
+            : 5000;
+        this.logger.warn(
+          `Teams webhook rate limited, waiting ${waitMs}ms before retry`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        response = await post();
+      }
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        this.logger.error(
+          `Teams webhook failed (${response.status}): ${body || response.statusText}`,
+        );
+        return false;
+      }
+
+      this.logger.log(`Teams notification sent for ${type}: ${title}`);
+      return true;
+    } catch (error) {
+      this.logger.error(
+        `Teams notification failed for ${type}`,
+        (error as Error).message,
+      );
+      return false;
     }
   }
 }
