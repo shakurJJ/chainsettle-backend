@@ -40,6 +40,7 @@ import { InvitationsModule } from './modules/invitations/invitations.module';
 import { GraphqlModule } from './modules/graphql/graphql.module';
 import { AdminDashboardModule } from './modules/admin-dashboard/admin-dashboard.module';
 import { AdminDisputesModule } from './modules/admin-dashboard/admin-disputes.module';
+import { ReportsModule } from './modules/reports/reports.module';
 import { SettlementProposalsModule } from './modules/milestones/settlement-proposals.module';
 
 @Module({
@@ -102,6 +103,7 @@ import { SettlementProposalsModule } from './modules/milestones/settlement-propo
     GraphqlModule,
     AdminDashboardModule,
     AdminDisputesModule,
+    ReportsModule,
     SettlementProposalsModule,
   ],
   providers: [

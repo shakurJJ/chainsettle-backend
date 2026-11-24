@@ -1,7 +1,7 @@
 import { HttpStatus } from '@nestjs/common';
 import { json, urlencoded } from 'express';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
-import { buildErrorBody } from '../filters/http-exception.filter';
+import { buildErrorBody, PROBLEM_JSON } from '../filters/http-exception.filter';
 
 /** Default JSON body limit applied to every route (#433). */
 export const DEFAULT_BODY_LIMIT = '100kb';
@@ -85,7 +85,10 @@ export function createBodyLimitMiddleware(options: BodyLimitOptions = {}): Reque
   };
 
   const sendError = (req: Request, res: Response, status: number, message: string) =>
-    res.status(status).json(buildErrorBody(status, req.originalUrl ?? req.url, message));
+    res
+      .status(status)
+      .type(PROBLEM_JSON)
+      .send(JSON.stringify(buildErrorBody(status, req.originalUrl ?? req.url, message)));
 
   return (req: Request, res: Response, next: NextFunction) => {
     const limit = resolveBodyLimit(req.method, req.path, routes, defaultLimit);

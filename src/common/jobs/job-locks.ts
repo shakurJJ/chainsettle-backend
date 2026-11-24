@@ -10,6 +10,7 @@ export const JOB_LOCK_KEYS = {
   'shipment-archival': 'chainsettle:shipment-archival:lock',
   'shipment-reminder': 'chainsettle:shipment-reminders:lock',
   'recurring-schedule': 'chainsettle:recurring-schedules:lock',
+  'audit-log-archival': 'chainsettle:audit-log-archival:lock',
 } as const;
 
 export type ManuallyRunnableJob = keyof typeof JOB_LOCK_KEYS;
