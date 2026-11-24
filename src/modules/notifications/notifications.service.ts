@@ -15,6 +15,12 @@ import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 import { DEFAULT_LOCALE, I18nService } from '../../i18n/i18n.service';
 import { SmsProviderFactory } from '../../common/providers/sms.provider';
 import { TelegramService } from './telegram.service';
+import { QueueService } from '../../common/queue/queue.service';
+import {
+  JOB_SEND_EMAIL,
+  QUEUE_EMAILS,
+  SendEmailJobData,
+} from '../../common/queue/queue.constants';
 
 type ChannelPrefs = {
   inApp: boolean;
@@ -116,6 +122,7 @@ export class NotificationsService {
     @Optional() private readonly smsProviderFactory: SmsProviderFactory,
     @Optional() private readonly webPush: WebPushService,
     @Optional() private readonly telegram: TelegramService,
+    @Optional() private readonly queue?: QueueService,
   ) {
     this.transporter = nodemailer.createTransport({
       host: this.config.get("SMTP_HOST"),
@@ -949,7 +956,83 @@ export class NotificationsService {
     }
   }
 
+  /**
+   * Queues an email on the Redis-backed `emails` queue (#661) and returns
+   * immediately; the worker performs the SMTP call. Falls back to sending
+   * inline when the queue is disabled or Redis rejects the job, so a queue
+   * outage never silently drops a notification.
+   */
   async sendEmail(
+    to: string,
+    subject: string,
+    text: string,
+    html?: string,
+    type?: NotificationType,
+    data?: Record<string, any>,
+    locale: string = DEFAULT_LOCALE,
+    userId?: string,
+  ): Promise<boolean> {
+    if (this.queue?.isEnabled()) {
+      try {
+        await this.queue.add<SendEmailJobData>(QUEUE_EMAILS, JOB_SEND_EMAIL, {
+          to,
+          subject,
+          text,
+          html,
+          type,
+          data,
+          locale,
+          userId,
+        });
+        return true;
+      } catch (error) {
+        this.logger.error(
+          `Failed to enqueue email to ${to}; sending inline instead`,
+          (error as Error).message,
+        );
+      }
+    }
+
+    return this.sendEmailNow(
+      to,
+      subject,
+      text,
+      html,
+      type,
+      data,
+      locale,
+      userId,
+    );
+  }
+
+  /**
+   * Worker entry point for a queued email (#661). Throws when delivery fails
+   * so BullMQ retries it with back-off.
+   */
+  async deliverQueuedEmail(job: SendEmailJobData): Promise<void> {
+    // Never send to addresses that hard-bounced or complained (#434).
+    if (await this.isEmailSuppressed(job.to)) {
+      this.logger.warn(
+        `Queued email to ${job.to} skipped — address is on the suppression list`,
+      );
+      return;
+    }
+
+    const sent = await this.sendEmailNow(
+      job.to,
+      job.subject,
+      job.text,
+      job.html,
+      job.type,
+      job.data,
+      job.locale ?? DEFAULT_LOCALE,
+      job.userId,
+    );
+
+    if (!sent) throw new Error(`Email to ${job.to} was not delivered`);
+  }
+
+  private async sendEmailNow(
     to: string,
     subject: string,
     text: string,

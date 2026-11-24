@@ -15,6 +15,7 @@ import { IpfsModule } from './common/ipfs/ipfs.module';
 import { TokenRegistryModule } from './common/token-registry/token-registry.module';
 import { RedisThrottlerStorageService } from './common/throttler/redis-throttler-storage.service';
 import { MetricsModule } from './common/metrics/metrics.module';
+import { QueueModule } from './common/queue/queue.module';
 import { HttpMetricsInterceptor } from './common/interceptors/http-metrics.interceptor';
 import { TimeoutInterceptor } from './common/interceptors/timeout.interceptor';
 import { TimeoutGuard } from './common/guards/timeout.guard';
@@ -82,6 +83,9 @@ import { SettlementProposalsModule } from './modules/milestones/settlement-propo
     IpfsModule,
     TokenRegistryModule,
     MetricsModule,
+    // Redis-backed BullMQ queues for webhooks, email and exports (#661).
+    // Imported before feature modules so their processors can register workers.
+    QueueModule,
     FxModule,
 
     // Feature modules

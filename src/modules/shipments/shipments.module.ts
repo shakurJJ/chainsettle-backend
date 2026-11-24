@@ -16,6 +16,7 @@ import { WebhooksModule } from '../webhooks/webhooks.module';
 import { OutboxModule } from '../outbox/outbox.module';
 import { RedisModule } from '../../common/redis/redis.module';
 import { AuthModule } from '../auth/auth.module';
+import { ShipmentsExportProcessor } from './shipments-export.processor';
 
 @Module({
   imports: [NotificationsModule, WebhooksModule, OutboxModule, RedisModule, AuditLogsModule, AuthModule],
@@ -29,6 +30,7 @@ import { AuthModule } from '../auth/auth.module';
     ShipmentRemindersService,
     ShipmentReminderJob,
     LateDeliveryJob,
+    ShipmentsExportProcessor,
   ],
   exports: [ShipmentsService, ShipmentApprovalsService, SavedFiltersService, LateDeliveryJob],
 })

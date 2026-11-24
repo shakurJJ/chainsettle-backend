@@ -18,6 +18,9 @@ import {
   ForbiddenException,
   BadRequestException,
   ConflictException,
+  NotFoundException,
+  Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { Response } from 'express';
 import {
@@ -57,6 +60,15 @@ import { ShipmentRemindersService } from './shipment-reminders.service';
 import { CreateShipmentReminderDto } from './dto/shipment-reminder.dto';
 import { AuthService } from '../auth/auth.service';
 import { SUPPORTED_CURRENCIES } from '../../common/fx/fx-rate.service';
+import { QueueService } from '../../common/queue/queue.service';
+import {
+  exportResultKey,
+  JOB_SHIPMENTS_EXPORT,
+  QUEUE_EXPORTS,
+  ShipmentsExportJobData,
+  ShipmentsExportResult,
+} from '../../common/queue/queue.constants';
+import { ExportShipmentsDto } from './dto/export-shipments.dto';
 
 @ApiTags('shipments')
 @ApiBearerAuth()
@@ -70,6 +82,7 @@ export class ShipmentsController {
     private readonly redis: RedisService,
     private readonly reminders: ShipmentRemindersService,
     private readonly authService: AuthService,
+    @Optional() private readonly queue?: QueueService,
   ) { }
 
   /**
@@ -278,6 +291,108 @@ export class ShipmentsController {
       res.setHeader('Content-Disposition', `attachment; filename="chainsettle-export-${timestamp}.csv"`);
       res.end(csv);
     }
+  }
+
+  /**
+   * POST /api/v1/shipments/export
+   * Queue a CSV/PDF export on the Redis-backed `exports` queue and return
+   * immediately with a job id (#661). Poll GET /shipments/export/:jobId, then
+   * download a finished export from GET /shipments/export/:jobId/download.
+   */
+  @Post('export')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @Throttle({ default: { limit: 5, ttl: 60 * 60 * 1000 } })
+  @ApiOperation({ summary: 'Queue a shipment export (CSV or PDF)' })
+  @ApiResponse({ status: 202, description: 'Export queued; poll the job for status' })
+  @ApiResponse({ status: 503, description: 'Export queue is unavailable' })
+  async queueExport(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: ExportShipmentsDto,
+  ) {
+    if (!this.queue?.isEnabled()) {
+      throw new ServiceUnavailableException('Export queue is unavailable');
+    }
+
+    const job = await this.queue.add<ShipmentsExportJobData>(
+      QUEUE_EXPORTS,
+      JOB_SHIPMENTS_EXPORT,
+      {
+        userId: user.id,
+        stellarAddress: user.stellarAddress,
+        isAdmin: user.role === UserRole.ADMIN,
+        format: dto.format ?? 'csv',
+      },
+    );
+
+    if (!job) throw new ServiceUnavailableException('Export queue is unavailable');
+
+    return { jobId: job.id, status: 'queued' };
+  }
+
+  /** GET /api/v1/shipments/export/:jobId — status of a queued export. */
+  @Get('export/:jobId')
+  @ApiOperation({ summary: 'Get the status of a queued shipment export' })
+  @ApiResponse({ status: 200, description: 'Export job state and result metadata' })
+  @ApiResponse({ status: 404, description: 'Export job not found' })
+  async getExportStatus(
+    @Param('jobId') jobId: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const job = await this.getOwnedExportJob(jobId, user);
+    const state = await job.getState();
+    return {
+      jobId,
+      state,
+      format: job.data.format,
+      result: state === 'completed' ? job.returnvalue : null,
+      failedReason: state === 'failed' ? job.failedReason : null,
+    };
+  }
+
+  /** GET /api/v1/shipments/export/:jobId/download — download a finished export. */
+  @Get('export/:jobId/download')
+  @ApiOperation({ summary: 'Download a finished shipment export' })
+  @ApiResponse({ status: 200, description: 'Export file (CSV or PDF)' })
+  @ApiResponse({ status: 404, description: 'Export job or result not found' })
+  @ApiResponse({ status: 409, description: 'Export is still running' })
+  async downloadExport(
+    @Param('jobId') jobId: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Res() res: Response,
+  ) {
+    const job = await this.getOwnedExportJob(jobId, user);
+    const state = await job.getState();
+
+    if (state !== 'completed') {
+      throw new ConflictException(`Export is not ready (state: ${state})`);
+    }
+
+    const encoded = await this.redis.get(exportResultKey(jobId));
+    if (!encoded) {
+      throw new NotFoundException(
+        'Export result has expired; request a new export',
+      );
+    }
+
+    const result = job.returnvalue as ShipmentsExportResult;
+    res.setHeader('Content-Type', result.contentType);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${result.filename}"`,
+    );
+    return res.end(Buffer.from(encoded, 'base64'));
+  }
+
+  private async getOwnedExportJob(jobId: string, user: AuthenticatedUser) {
+    const job = await this.queue?.getJob<ShipmentsExportJobData>(
+      QUEUE_EXPORTS,
+      jobId,
+    );
+    if (!job) throw new NotFoundException('Export job not found');
+    if (job.data.userId !== user.id && user.role !== UserRole.ADMIN) {
+      throw new ForbiddenException('Not your export job');
+    }
+    return job;
   }
 
 

@@ -17,6 +17,13 @@ export const OUTBOX_EVENTS_COUNTER = 'chainsettle_outbox_events_total';
 /** Undispatched outbox rows - labels: status (PENDING|PROCESSING|DISPATCHED|FAILED) */
 export const OUTBOX_BACKLOG_GAUGE = 'chainsettle_outbox_backlog';
 
+/** BullMQ queue depth by state - labels: queue, state */
+export const QUEUE_DEPTH_GAUGE = 'chainsettle_queue_depth';
+/** Jobs finished by a queue worker - labels: queue, result (completed|failed) */
+export const QUEUE_JOBS_COUNTER = 'chainsettle_queue_jobs_total';
+/** Job processing duration - labels: queue */
+export const QUEUE_JOB_DURATION_HISTOGRAM = 'chainsettle_queue_job_duration_seconds';
+
 /** Cron job duration histogram - labels: job */
 export const JOB_DURATION_HISTOGRAM = 'chainsettle_job_duration_seconds';
 /** Cron job runs counter - labels: job, result (success|failure|skipped) */
@@ -43,6 +50,10 @@ export class MetricsService {
     private readonly jobRuns: Counter<string>,
     @InjectMetric(OUTBOX_EVENTS_COUNTER)
     private readonly outboxEvents: Counter<string>,
+    @InjectMetric(QUEUE_JOBS_COUNTER)
+    private readonly queueJobs: Counter<string>,
+    @InjectMetric(QUEUE_JOB_DURATION_HISTOGRAM)
+    private readonly queueJobDuration: Histogram<string>,
   ) {}
 
   /**
@@ -65,6 +76,18 @@ export class MetricsService {
   /** Records one outbox delivery outcome (#660). */
   recordOutboxEvent(result: 'dispatched' | 'retried' | 'dead_lettered'): void {
     this.outboxEvents.inc({ result });
+  }
+
+  /** Records one finished BullMQ job (#661). */
+  recordQueueJob(
+    queue: string,
+    result: 'completed' | 'failed',
+    durationSeconds: number,
+  ): void {
+    this.queueJobs.inc({ queue, result });
+    if (Number.isFinite(durationSeconds) && durationSeconds >= 0) {
+      this.queueJobDuration.observe({ queue }, durationSeconds);
+    }
   }
 
   incrementEventsProcessed(eventName: string): void {
