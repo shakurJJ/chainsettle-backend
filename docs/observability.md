@@ -25,6 +25,20 @@ Defined in `src/common/metrics/metrics.service.ts` and registered in
 | `chainsettle_http_request_duration_seconds` | Histogram | `method`, `route`, `status` | Per-route HTTP latency (buckets: 5 ms → 5 s) |
 | `chainsettle_job_duration_seconds` | Histogram | `job` | Duration of cron job executions (buckets: 100 ms → 5 min) |
 | `chainsettle_job_runs_total` | Counter | `job`, `result` | Total cron job executions (`success`, `failure`, `skipped`) |
+| `chainsettle_outbox_events_total` | Counter | `result` | Outbox deliveries (`dispatched`, `retried`, `dead_lettered`) |
+| `chainsettle_outbox_backlog` | Gauge | `status` | Outbox rows currently in each status (`PENDING`, `PROCESSING`, `DISPATCHED`, `FAILED`) |
+
+### Transactional outbox (#660)
+
+Webhook events are written to `outbox_events` in the same database transaction as the
+notification or comment that produced them, then delivered by `OutboxDispatcherJob` every
+10 seconds under a Redis lock. Delivery is at-least-once: rows are claimed with
+`FOR UPDATE SKIP LOCKED` and completed with a conditional update, so a row already marked
+`DISPATCHED` is never delivered again. Failed deliveries back off exponentially and are
+parked as `FAILED` after 8 attempts.
+
+A rising `chainsettle_outbox_backlog{status="PENDING"}` means the dispatcher is stopped or
+falling behind; a non-zero `FAILED` series needs operator attention.
 
 ### Dead-letter queue (DLQ)
 

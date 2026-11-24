@@ -9,7 +9,7 @@ import { WebPushService } from './web-push.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationType } from '@prisma/client';
 import { NotificationsGateway } from './notifications.gateway';
-import { WebhooksService } from '../webhooks/webhooks.service';
+import { OutboxService } from '../outbox/outbox.service';
 import { PushNotificationService } from './push-notification.service';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 import { DEFAULT_LOCALE, I18nService } from '../../i18n/i18n.service';
@@ -112,7 +112,7 @@ export class NotificationsService {
     private readonly config: ConfigService,
     private readonly i18n: I18nService,
     @Optional() private readonly gateway: NotificationsGateway,
-    @Optional() private readonly webhooks: WebhooksService,
+    @Optional() private readonly outbox: OutboxService,
     @Optional() private readonly smsProviderFactory: SmsProviderFactory,
     @Optional() private readonly webPush: WebPushService,
     @Optional() private readonly telegram: TelegramService,
@@ -166,15 +166,24 @@ export class NotificationsService {
 
       if (!inApp) return;
 
-      const notification = await this.prisma.notification.create({
-        data: {
-          userId: user.id,
-          type,
-          title,
-          message,
-          data: data ?? {},
-          ...(deliverAfter ? { deliverAfter } : {}),
-        },
+      // The notification and its webhook event commit together, so a crash
+      // between commit and delivery cannot drop the event (#660).
+      const notification = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.notification.create({
+          data: {
+            userId: user.id,
+            type,
+            title,
+            message,
+            data: data ?? {},
+            ...(deliverAfter ? { deliverAfter } : {}),
+          },
+        });
+        await this.outbox?.enqueue(tx, type, {
+          notificationId: created.id,
+          ...(data ?? {}),
+        });
+        return created;
       });
 
       if (!deliverAfter && emailEnabled && user.email) {
@@ -251,12 +260,6 @@ export class NotificationsService {
           );
       }
 
-      this.webhooks
-        ?.dispatch(type, { notificationId: notification.id, ...(data ?? {}) })
-        .catch((err) =>
-          this.logger.error("Webhook dispatch error", err.message),
-        );
-
       return notification;
     } catch (error) {
       this.logger.error(`Failed to notify ${stellarAddress}`, error.message);
@@ -298,18 +301,25 @@ export class NotificationsService {
 
       if (!inApp) return;
 
-      const notification = await this.prisma.notification.create({
-        data: {
-          userId: user.id,
-          type,
-          title,
-          message,
+      const notification = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.notification.create({
           data: {
-            ...(data ?? {}),
-            ...(deliverAfter ? { forceEmail: true } : {}),
+            userId: user.id,
+            type,
+            title,
+            message,
+            data: {
+              ...(data ?? {}),
+              ...(deliverAfter ? { forceEmail: true } : {}),
+            },
+            ...(deliverAfter ? { deliverAfter } : {}),
           },
-          ...(deliverAfter ? { deliverAfter } : {}),
-        },
+        });
+        await this.outbox?.enqueue(tx, type, {
+          notificationId: created.id,
+          ...(data ?? {}),
+        });
+        return created;
       });
 
       // Force email delivery regardless of digest preference when the user has an email
@@ -330,12 +340,6 @@ export class NotificationsService {
       }
 
       this.gateway?.pushToUser(user.id, notification);
-
-      this.webhooks
-        ?.dispatch(type, { notificationId: notification.id, ...(data ?? {}) })
-        .catch((err) =>
-          this.logger.error("Webhook dispatch error", err.message),
-        );
 
       return notification;
     } catch (error) {

@@ -1,7 +1,7 @@
 import { Global, Logger, Module } from '@nestjs/common';
 import { PrometheusModule } from '@willsoto/nestjs-prometheus';
 import { makeCounterProvider, makeGaugeProvider, makeHistogramProvider } from '@willsoto/nestjs-prometheus';
-import { ShipmentStatus } from '@prisma/client';
+import { OutboxStatus, ShipmentStatus } from '@prisma/client';
 import { Gauge } from 'prom-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MetricsService } from './metrics.service';
@@ -16,6 +16,8 @@ import {
   DISPUTE_RESOLUTION_TIME_HISTOGRAM,
   JOB_DURATION_HISTOGRAM,
   JOB_RUNS_COUNTER,
+  OUTBOX_EVENTS_COUNTER,
+  OUTBOX_BACKLOG_GAUGE,
 } from './metrics.service';
 import { resolveBuildInfo } from '../build-info';
 
@@ -39,6 +41,26 @@ export async function collectShipmentsByStatus(this: Gauge<string>, prisma: Pris
     }
   } catch (err) {
     logger.warn(`Failed to refresh ${SHIPMENTS_BY_STATUS_GAUGE}: ${err.message}`);
+  }
+}
+
+/**
+ * Refreshes chainsettle_outbox_backlog on every scrape (#660): how many outbox
+ * events are still waiting to be dispatched, grouped by status. A growing
+ * PENDING series means the dispatcher is down or falling behind.
+ */
+export async function collectOutboxBacklog(this: Gauge<string>, prisma: PrismaService) {
+  try {
+    const rows = await prisma.outboxEvent.groupBy({
+      by: ['status'],
+      _count: { _all: true },
+    });
+    const counts = new Map(rows.map((row) => [row.status, row._count._all]));
+    for (const status of Object.values(OutboxStatus)) {
+      this.set({ status }, counts.get(status) ?? 0);
+    }
+  } catch (err) {
+    logger.warn(`Failed to refresh ${OUTBOX_BACKLOG_GAUGE}: ${err.message}`);
   }
 }
 
@@ -95,6 +117,18 @@ export async function collectOpenDisputes(this: Gauge<string>, prisma: PrismaSer
       name: JOB_RUNS_COUNTER,
       help: 'Total number of cron job executions',
       labelNames: ['job', 'result'],
+    }),
+    makeCounterProvider({
+      name: OUTBOX_EVENTS_COUNTER,
+      help: 'Total outbox events delivered, by outcome',
+      labelNames: ['result'],
+    }),
+    makeGaugeProvider({
+      name: OUTBOX_BACKLOG_GAUGE,
+      help: 'Current outbox events awaiting dispatch, by status',
+      labelNames: ['status'],
+      inject: [PrismaService],
+      collect: collectOutboxBacklog,
     }),
     makeGaugeProvider({
       name: SHIPMENTS_BY_STATUS_GAUGE,

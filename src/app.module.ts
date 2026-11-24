@@ -31,6 +31,7 @@ import { HealthModule } from './modules/health/health.module';
 import { AuditLogsModule } from './modules/audit-logs/audit-logs.module';
 import { AuditLogInterceptor } from './modules/audit-logs/audit-log.interceptor';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
+import { OutboxModule } from './modules/outbox/outbox.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { ChainModule } from './modules/chain/chain.module';
 import { KycModule } from './modules/kyc/kyc.module';
@@ -94,6 +95,7 @@ import { SettlementProposalsModule } from './modules/milestones/settlement-propo
     HealthModule,
     AuditLogsModule,
     WebhooksModule,
+    OutboxModule,
     ChainModule,
     KycModule,
     ArbitersModule,

@@ -8,8 +8,8 @@ jest.mock("../notifications/notifications.service", () => ({
 jest.mock("../organizations/organizations.service", () => ({
   OrganizationsService: class OrganizationsService {},
 }));
-jest.mock("../webhooks/webhooks.service", () => ({
-  WebhooksService: class WebhooksService {},
+jest.mock("../outbox/outbox.service", () => ({
+  OutboxService: class OutboxService {},
 }));
 
 const BUYER = "G" + "B".repeat(55);
@@ -30,7 +30,7 @@ describe("CommentsService — threaded replies (#299)", () => {
   let service: CommentsService;
   let prisma: any;
   let notifications: any;
-  let webhooks: any;
+  let outbox: any;
 
   beforeEach(() => {
     prisma = {
@@ -47,20 +47,22 @@ describe("CommentsService — threaded replies (#299)", () => {
           ),
         update: jest.fn().mockResolvedValue({}),
       },
-      $transaction: jest.fn((ops: Promise<any>[]) => Promise.all(ops)),
     };
+    prisma.$transaction = jest.fn((arg: any) =>
+      typeof arg === "function" ? arg(prisma) : Promise.all(arg),
+    );
     notifications = {
       notifyUser: jest.fn().mockResolvedValue(undefined),
       notifyUserWithForcedEmail: jest.fn().mockResolvedValue(undefined),
     };
-    webhooks = {
-      dispatch: jest.fn().mockResolvedValue(undefined),
+    outbox = {
+      enqueue: jest.fn().mockResolvedValue({}),
     };
     service = new CommentsService(
       prisma,
       notifications as any,
       undefined,
-      webhooks as any,
+      outbox as any,
     );
   });
 
@@ -267,7 +269,7 @@ describe("CommentsService — SHIPMENT_COMMENT_CREATED webhook (#537)", () => {
   let service: CommentsService;
   let prisma: any;
   let notifications: any;
-  let webhooks: any;
+  let outbox: any;
 
   beforeEach(() => {
     prisma = {
@@ -284,28 +286,32 @@ describe("CommentsService — SHIPMENT_COMMENT_CREATED webhook (#537)", () => {
           ),
         update: jest.fn().mockResolvedValue({}),
       },
-      $transaction: jest.fn((ops: Promise<any>[]) => Promise.all(ops)),
     };
+    prisma.$transaction = jest.fn((arg: any) =>
+      typeof arg === "function" ? arg(prisma) : Promise.all(arg),
+    );
     notifications = {
       notifyUser: jest.fn().mockResolvedValue(undefined),
       notifyUserWithForcedEmail: jest.fn().mockResolvedValue(undefined),
     };
-    webhooks = {
-      dispatch: jest.fn().mockResolvedValue(undefined),
+    outbox = {
+      enqueue: jest.fn().mockResolvedValue({}),
     };
     service = new CommentsService(
       prisma,
       notifications as any,
       undefined,
-      webhooks as any,
+      outbox as any,
     );
   });
 
-  it("dispatches SHIPMENT_COMMENT_CREATED once with the documented payload", async () => {
+  it("enqueues SHIPMENT_COMMENT_CREATED in the same transaction as the comment", async () => {
     await service.create("SHIP-1", "user-1", BUYER, { body: "hello world" });
 
-    expect(webhooks.dispatch).toHaveBeenCalledTimes(1);
-    expect(webhooks.dispatch).toHaveBeenCalledWith(
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(outbox.enqueue).toHaveBeenCalledTimes(1);
+    expect(outbox.enqueue).toHaveBeenCalledWith(
+      prisma,
       NotificationType.SHIPMENT_COMMENT_CREATED,
       {
         shipmentId: "SHIP-1",
@@ -320,30 +326,27 @@ describe("CommentsService — SHIPMENT_COMMENT_CREATED webhook (#537)", () => {
   it("truncates the body excerpt to 200 characters", async () => {
     await service.create("SHIP-1", "user-1", BUYER, { body: "x".repeat(500) });
 
-    const payload = webhooks.dispatch.mock.calls[0][1];
+    const payload = outbox.enqueue.mock.calls[0][2];
     expect(payload.bodyExcerpt).toHaveLength(200);
     expect(payload.bodyExcerpt).toBe("x".repeat(200));
   });
 
-  it("does not dispatch when comment creation is rejected", async () => {
+  it("does not enqueue an outbox event when comment creation is rejected", async () => {
     const outsider = "G" + "O".repeat(55);
 
     await expect(
       service.create("SHIP-1", "outsider-1", outsider, { body: "hi" }),
     ).rejects.toBeInstanceOf(ForbiddenException);
 
-    expect(webhooks.dispatch).not.toHaveBeenCalled();
+    expect(outbox.enqueue).not.toHaveBeenCalled();
   });
 
-  it("still creates the comment when webhook dispatch fails", async () => {
-    webhooks.dispatch.mockRejectedValue(new Error("endpoint down"));
+  it("fails the transaction when the outbox insert fails, so comment and event stay consistent", async () => {
+    outbox.enqueue.mockRejectedValue(new Error("outbox insert failed"));
 
-    const comment = await service.create("SHIP-1", "user-1", BUYER, {
-      body: "hello",
-    });
-
-    expect(comment.id).toBe("comment-1");
-    expect(prisma.shipmentComment.create).toHaveBeenCalledTimes(1);
+    await expect(
+      service.create("SHIP-1", "user-1", BUYER, { body: "hello" }),
+    ).rejects.toThrow("outbox insert failed");
   });
 
   it("still creates the comment when no webhook service is wired", async () => {

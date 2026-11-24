@@ -446,6 +446,40 @@ model ChainEvent {
   @@map("chain_events")
 }
 
+enum OutboxStatus {
+  PENDING
+  PROCESSING
+  DISPATCHED
+  FAILED
+}
+
+/// Transactional outbox (#660). Event rows are written in the same transaction
+/// as the state change that produced them, then delivered by
+/// OutboxDispatcherJob. A crash between commit and delivery cannot lose an
+/// event because the row is already durable.
+model OutboxEvent {
+  id           String       @id @default(uuid())
+  type         String // event type, e.g. a NotificationType value
+  payload      Json
+  status       OutboxStatus @default(PENDING)
+  attempts     Int          @default(0)
+  /// Optional producer-supplied key that makes enqueueing idempotent.
+  dedupeKey    String?      @unique
+  lastError    String?
+  /// Earliest time the dispatcher may pick this row up (retry back-off).
+  availableAt  DateTime     @default(now())
+  /// Set while a dispatcher holds the row; stale locks are reclaimed.
+  lockedAt     DateTime?
+  lockedBy     String?
+  dispatchedAt DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([status, availableAt])
+  @@index([createdAt])
+  @@map("outbox_events")
+}
+
 model Notification {
   id         String           @id @default(uuid())
   userId     String

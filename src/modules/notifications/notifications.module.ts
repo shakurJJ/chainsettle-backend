@@ -6,7 +6,7 @@ import { NotificationsController } from './notifications.controller';
 import { NotificationsGateway } from './notifications.gateway';
 import { NotificationDigestJob } from './notification-digest.job';
 import { NotificationCleanupJob } from './notification-cleanup.job';
-import { WebhooksModule } from '../webhooks/webhooks.module';
+import { OutboxModule } from '../outbox/outbox.module';
 import { PushNotificationService } from './push-notification.service';
 import { WebPushService } from './web-push.service';
 import { TelegramService } from './telegram.service';
@@ -21,7 +21,7 @@ import { TelegramService } from './telegram.service';
         signOptions: { expiresIn: config.get<string>('JWT_EXPIRES_IN', '7d') },
       }),
     }),
-    WebhooksModule,
+    OutboxModule,
   ],
   providers: [NotificationsService, NotificationsGateway, NotificationDigestJob, PushNotificationService, WebPushService, TelegramService],
   controllers: [NotificationsController],
