@@ -15,6 +15,7 @@ import {
   IsNumberString,
   IsPositive,
   IsNumber,
+  IsUUID,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
@@ -76,6 +77,16 @@ export class MilestoneDto {
 }
 
 export class CreateShipmentDto {
+  @ApiProperty({
+    required: false,
+    description:
+      'Organization the creator acts for. Its default token, arbiter and milestones ' +
+      'fill any of those fields omitted from the request (#646).',
+  })
+  @IsOptional()
+  @IsUUID()
+  organizationId?: string;
+
   @ApiProperty({ example: 'SHIP-2026-001' })
   @IsString()
   @IsNotEmpty()

@@ -3,5 +3,5 @@
 # If schema.prisma changed without a matching migration under prisma/migrations/,
 # refuse the commit so the schema/migration drift never reaches main.
 # The hook is safe to run in CI as well (idempotent, no side effects).
-node "$(dirname "$0")/../scripts/check-prisma-migration.js" \\
+node "$(dirname "$0")/../scripts/check-prisma-migration.js" \
   || { echo "Commit blocked: prisma/schema.prisma changed without a matching" >&2; echo "migration under prisma/migrations/. Run" >&2; echo "  npx prisma migrate dev --name <desc>" >&2; echo "to create the migration, then add it together with the schema change." >&2; exit 1; }

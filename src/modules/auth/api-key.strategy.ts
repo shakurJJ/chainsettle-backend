@@ -54,7 +54,9 @@ export class ApiKeyStrategy extends PassportStrategy(Strategy, 'api-key') {
       throw new UnauthorizedException('API_KEY_EXPIRED');
     }
 
-    if (apiKey.user?.deactivatedAt) {
+    // Org-owned keys (#647) belong to the organization, so they keep working
+    // after the creating member leaves or is deactivated.
+    if (!apiKey.organizationId && apiKey.user?.deactivatedAt) {
       throw new UnauthorizedException('Account has been deactivated');
     }
 
@@ -85,6 +87,8 @@ export class ApiKeyStrategy extends PassportStrategy(Strategy, 'api-key') {
     return {
       ...apiKey.user,
       _apiKeyScopes: apiKey.scopes as string[],
+      // Present only for organization-owned keys; access checks use org scope.
+      _apiKeyOrganizationId: apiKey.organizationId ?? undefined,
     };
   }
 }

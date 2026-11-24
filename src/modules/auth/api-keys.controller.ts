@@ -56,7 +56,7 @@ export class ApiKeysController {
   })
   async list(@CurrentUser() user: { id: string }) {
     const keys = await this.prisma.apiKey.findMany({
-      where: { userId: user.id, revokedAt: null },
+      where: { userId: user.id, organizationId: null, revokedAt: null },
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,
@@ -157,7 +157,7 @@ export class ApiKeysController {
     const existing = await this.prisma.apiKey.findUnique({ where: { id } });
 
     // Return 404 (not 403) even for ownership mismatches to avoid enumeration.
-    if (!existing || existing.userId !== user.id) {
+    if (!existing || existing.userId !== user.id || existing.organizationId) {
       throw new NotFoundException('API key not found');
     }
 
@@ -250,7 +250,8 @@ export class ApiKeysController {
   ) {
     const apiKey = await this.prisma.apiKey.findUnique({ where: { id } });
 
-    if (!apiKey || apiKey.revokedAt !== null) {
+    // Organization-owned keys are managed via /organizations/:id/api-keys (#647).
+    if (!apiKey || apiKey.revokedAt !== null || apiKey.organizationId) {
       throw new NotFoundException('API key not found');
     }
 

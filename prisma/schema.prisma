@@ -730,9 +730,12 @@ model ApiKey {
   revokedAt   DateTime?          // null = active, set = revoked
   rotatedFromId   String?        // ID of the predecessor key this was rotated from
   gracePeriodEndsAt DateTime?    // when set, the revoked predecessor key is still valid until this time
+  organizationId    String?      // set for organization-owned keys (#647); userId is then the creator
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
+  @@index([organizationId])
   @@index([keyHash])
   @@index([userId])
   @@index([expiresAt])
@@ -968,8 +971,12 @@ model Organization {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// Default shipment settings (tokenAddress, arbiterAddress, milestones) applied when omitted (#646)
+  defaults  Json?
+
   creator User                 @relation("OrganizationCreator", fields: [createdBy], references: [id])
   members OrganizationMember[]
+  apiKeys ApiKey[]
 
   @@map("organizations")
 }
