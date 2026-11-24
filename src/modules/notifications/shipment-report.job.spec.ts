@@ -153,6 +153,38 @@ describe('ShipmentReportJob', () => {
     expect(result).toEqual({ sent: 1, skipped: 0 });
   });
 
+  it('runs both cadences when Monday falls on the 1st', async () => {
+    const weeklyUser = {
+      id: 'weekly',
+      email: 'weekly@example.com',
+      locale: 'en',
+    };
+    const monthlyUser = {
+      id: 'monthly',
+      email: 'monthly@example.com',
+      locale: 'en',
+    };
+    prisma.user.findMany.mockResolvedValue([weeklyUser, monthlyUser]);
+    notifications.getReportFrequency.mockImplementation((id: string) =>
+      Promise.resolve(id === 'weekly' ? 'weekly' : 'monthly'),
+    );
+    const mondayFirst = new Date('2026-06-01T09:00:00.000Z');
+
+    const result = await job.executeScheduledReports(mondayFirst);
+
+    expect(reports.buildForUser).toHaveBeenCalledWith(
+      'weekly',
+      'weekly',
+      mondayFirst,
+    );
+    expect(reports.buildForUser).toHaveBeenCalledWith(
+      'monthly',
+      'monthly',
+      mondayFirst,
+    );
+    expect(result).toEqual({ sent: 2, skipped: 0 });
+  });
+
   it('skips a monthly subscriber on a non-1st day', async () => {
     prisma.user.findMany.mockResolvedValue([user]);
     notifications.getReportFrequency.mockResolvedValue('monthly');

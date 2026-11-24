@@ -313,6 +313,28 @@ describe('ShipmentReportService.buildForUser', () => {
     expect(result!.html).toContain('2026-10-01 → 2026-11-01');
   });
 
+  it('covers the full previous month when run on the 1st', async () => {
+    const prisma = {
+      user: {
+        findUnique: jest.fn().mockResolvedValue({ stellarAddress: ADDRESS }),
+      },
+      shipment: {
+        findMany: jest.fn().mockResolvedValue([shipment({ milestones: [] })]),
+      },
+    };
+    // The job's monthly gate fires on the 1st; the window must be the month
+    // that just ended, not a partial current month.
+    const firstOfMonth = new Date('2026-12-01T09:00:00.000Z');
+
+    const result = await serviceWith(prisma).buildForUser(
+      'user-1',
+      'monthly',
+      firstOfMonth,
+    );
+
+    expect(result!.html).toContain('2026-11-01 → 2026-12-01');
+  });
+
   it('uses a rolling 7-day window for a weekly report', async () => {
     const prisma = {
       user: {
