@@ -51,7 +51,7 @@ export class ChainController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({ summary: 'Relay a signed transaction and track its status' })
   submit(@Body() dto: SubmitTransactionDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.relay.submit(dto.signedXdr, user);
+    return this.relay.submit(dto.signedXdr, user, dto.sponsor === true);
   }
 
   @Get('ledger/:number')

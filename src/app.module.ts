@@ -33,6 +33,7 @@ import { AuditLogInterceptor } from './modules/audit-logs/audit-log.interceptor'
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { ChainModule } from './modules/chain/chain.module';
+import { DevModule } from './modules/dev/dev.module';
 import { KycModule } from './modules/kyc/kyc.module';
 import { ArbitersModule } from './modules/arbiters/arbiters.module';
 import { FeatureFlagsModule } from './modules/feature-flags/feature-flags.module';
@@ -95,6 +96,7 @@ import { SettlementProposalsModule } from './modules/milestones/settlement-propo
     AuditLogsModule,
     WebhooksModule,
     ChainModule,
+    DevModule,
     KycModule,
     ArbitersModule,
     InvitationsModule,

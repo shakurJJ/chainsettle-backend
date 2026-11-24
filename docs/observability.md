@@ -25,6 +25,18 @@ Defined in `src/common/metrics/metrics.service.ts` and registered in
 | `chainsettle_http_request_duration_seconds` | Histogram | `method`, `route`, `status` | Per-route HTTP latency (buckets: 5 ms → 5 s) |
 | `chainsettle_job_duration_seconds` | Histogram | `job` | Duration of cron job executions (buckets: 100 ms → 5 min) |
 | `chainsettle_job_runs_total` | Counter | `job`, `result` | Total cron job executions (`success`, `failure`, `skipped`) |
+| `chainsettle_escrow_locked_amount` | Gauge | `token` | Value currently held in escrow (human units): `SUM(totalAmount - releasedAmount)` over ACTIVE shipments. Refreshed every `ESCROW_METRICS_REFRESH_MS` (default 60 s) and shortly after each processed chain event |
+| `chainsettle_contract_ttl_ledgers_remaining` | Gauge | `entry` | Ledgers left before a Soroban storage entry (`instance`, `shipment:<id>`) is archived. See [contract TTL runbook](runbooks/contract-ttl.md) |
+| `chainsettle_sponsored_fees_stroops_total` | Counter | — | Fees paid by the platform fee-bump sponsor account |
+
+#### Verifying the escrow gauge
+
+The gauge should match:
+
+```sql
+SELECT "tokenSymbol", SUM("totalAmount" - "releasedAmount") / POWER(10, MAX("tokenDecimals"))
+FROM shipments WHERE status = 'ACTIVE' GROUP BY "tokenSymbol";
+```
 
 ### Dead-letter queue (DLQ)
 
