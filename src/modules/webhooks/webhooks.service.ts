@@ -792,16 +792,7 @@ export class WebhooksService {
     });
 
     if (payloadCheck.exceedsLimit) {
-      await this.prisma.webhookDelivery.update({
-        where: { id: delivery.id },
-        data: {
-          statusCode: null,
-          responseBody: `Payload exceeds max size (${payloadCheck.bytes}/${this.maxPayloadBytes} bytes)`,
-          nextRetryAt: null,
-          permanentlyFailedAt: new Date(),
-        },
-      });
-      this.recordDeliveryMetric(Date.now(), null);
+      await this.failOversizedPayload(delivery.id, payloadCheck);
 
       this.logger.warn(
         `[webhook] Delivery ${delivery.id} not sent for endpoint ${ep.id}: payload exceeds configured max of ${this.maxPayloadBytes} bytes`,
@@ -876,16 +867,7 @@ export class WebhooksService {
     );
 
     if (payloadCheck.exceedsLimit) {
-      await this.prisma.webhookDelivery.update({
-        where: { id: delivery.id },
-        data: {
-          statusCode: null,
-          responseBody: `Payload exceeds max size (${payloadCheck.bytes}/${this.maxPayloadBytes} bytes)`,
-          nextRetryAt: null,
-          permanentlyFailedAt: new Date(),
-        },
-      });
-      this.recordDeliveryMetric(Date.now(), null);
+      await this.failOversizedPayload(delivery.id, payloadCheck);
       return { retryable: false };
     }
 
@@ -895,6 +877,23 @@ export class WebhooksService {
       payloadCheck,
       maxAttempts,
     );
+  }
+
+  /** Marks a delivery whose payload exceeds the configured limit as failed. */
+  private async failOversizedPayload(
+    deliveryId: string,
+    payloadCheck: { bytes: number },
+  ): Promise<void> {
+    await this.prisma.webhookDelivery.update({
+      where: { id: deliveryId },
+      data: {
+        statusCode: null,
+        responseBody: `Payload exceeds max size (${payloadCheck.bytes}/${this.maxPayloadBytes} bytes)`,
+        nextRetryAt: null,
+        permanentlyFailedAt: new Date(),
+      },
+    });
+    this.recordDeliveryMetric(Date.now(), null);
   }
 
   /** Sends a delivery, updates its row and reports whether a retry is warranted. */

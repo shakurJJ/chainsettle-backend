@@ -61,11 +61,10 @@ export class QueueService implements OnModuleDestroy {
   private readonly logger = new Logger(QueueService.name);
   private readonly queues = new Map<QueueName, Queue>();
   private readonly workers: Worker[] = [];
-  private readonly workerConnections: Redis[] = [];
+  private readonly connections: Redis[] = [];
   private readonly policies: Record<QueueName, JobQueuePolicy>;
   private readonly prefix: string;
   private readonly enabled: boolean;
-  private connection?: Redis;
 
   constructor(
     private readonly config: ConfigService,
@@ -82,20 +81,13 @@ export class QueueService implements OnModuleDestroy {
       return;
     }
 
-    this.connection = new Redis(this.redisUrl(), {
-      // BullMQ requires blocking connections to retry forever.
-      maxRetriesPerRequest: null,
-      enableReadyCheck: false,
-    });
-    this.connection.on('error', (err) =>
-      this.logger.error(`Queue Redis connection error: ${err.message}`),
-    );
+    const connection = this.createConnection();
 
     for (const name of QUEUE_NAMES) {
       this.queues.set(
         name,
         new Queue(name, {
-          connection: this.connection,
+          connection,
           prefix: this.prefix,
           defaultJobOptions: this.jobOptions(name),
         }),
@@ -111,6 +103,22 @@ export class QueueService implements OnModuleDestroy {
 
   private redisUrl(): string {
     return this.config.get<string>('REDIS_URL', 'redis://localhost:6379');
+  }
+
+  /**
+   * BullMQ requires blocking connections that retry forever, so every queue
+   * and worker connection is created here and closed on shutdown.
+   */
+  private createConnection(label = ''): Redis {
+    const connection = new Redis(this.redisUrl(), {
+      maxRetriesPerRequest: null,
+      enableReadyCheck: false,
+    });
+    connection.on('error', (err) =>
+      this.logger.error(`${label}Redis connection error: ${err.message}`),
+    );
+    this.connections.push(connection);
+    return connection;
   }
 
   private jobOptions(name: QueueName): JobsOptions {
@@ -205,16 +213,7 @@ export class QueueService implements OnModuleDestroy {
   ): Worker<T> | null {
     if (!this.enabled) return null;
 
-    const connection = new Redis(this.redisUrl(), {
-      maxRetriesPerRequest: null,
-      enableReadyCheck: false,
-    });
-    connection.on('error', (err) =>
-      this.logger.error(
-        `[queue:${name}] Redis connection error: ${err.message}`,
-      ),
-    );
-    this.workerConnections.push(connection);
+    const connection = this.createConnection(`[queue:${name}] `);
 
     const worker = new Worker<T>(name, processor, {
       connection,
@@ -272,22 +271,15 @@ export class QueueService implements OnModuleDestroy {
       ),
     );
     await Promise.all(
-      this.workerConnections.map((connection) =>
+      this.connections.map((connection) =>
         connection
           .quit()
           .catch((err) =>
             this.logger.warn(
-              `Failed to close worker connection: ${err.message}`,
+              `Failed to close Redis connection: ${err.message}`,
             ),
           ),
       ),
     );
-    if (this.connection) {
-      await this.connection
-        .quit()
-        .catch((err) =>
-          this.logger.warn(`Failed to close queue connection: ${err.message}`),
-        );
-    }
   }
 }

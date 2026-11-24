@@ -303,17 +303,18 @@ export class ShipmentsController {
   @HttpCode(HttpStatus.ACCEPTED)
   @Throttle({ default: { limit: 5, ttl: 60 * 60 * 1000 } })
   @ApiOperation({ summary: 'Queue a shipment export (CSV or PDF)' })
-  @ApiResponse({ status: 202, description: 'Export queued; poll the job for status' })
+  @ApiResponse({
+    status: 202,
+    description: 'Export queued; poll the job for status',
+  })
   @ApiResponse({ status: 503, description: 'Export queue is unavailable' })
   async queueExport(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: ExportShipmentsDto,
   ) {
-    if (!this.queue?.isEnabled()) {
-      throw new ServiceUnavailableException('Export queue is unavailable');
-    }
-
-    const job = await this.queue.add<ShipmentsExportJobData>(
+    // `add` returns null when the queue is disabled or Redis is unreachable,
+    // which is the only way this route is unavailable.
+    const job = await this.queue?.add<ShipmentsExportJobData>(
       QUEUE_EXPORTS,
       JOB_SHIPMENTS_EXPORT,
       {
@@ -324,7 +325,9 @@ export class ShipmentsController {
       },
     );
 
-    if (!job) throw new ServiceUnavailableException('Export queue is unavailable');
+    if (!job) {
+      throw new ServiceUnavailableException('Export queue is unavailable');
+    }
 
     return { jobId: job.id, status: 'queued' };
   }
@@ -332,7 +335,10 @@ export class ShipmentsController {
   /** GET /api/v1/shipments/export/:jobId — status of a queued export. */
   @Get('export/:jobId')
   @ApiOperation({ summary: 'Get the status of a queued shipment export' })
-  @ApiResponse({ status: 200, description: 'Export job state and result metadata' })
+  @ApiResponse({
+    status: 200,
+    description: 'Export job state and result metadata',
+  })
   @ApiResponse({ status: 404, description: 'Export job not found' })
   async getExportStatus(
     @Param('jobId') jobId: string,
@@ -394,7 +400,6 @@ export class ShipmentsController {
     }
     return job;
   }
-
 
   /**
    * POST /api/v1/shipments/bulk-status
