@@ -27,8 +27,12 @@ type ChannelPrefs = {
 };
 type PreferenceMap = Record<NotificationType, ChannelPrefs>;
 export type DigestFrequency = "instant" | "daily" | "weekly";
+export type ReportFrequency = "off" | "weekly" | "monthly";
 type StoredPreferences = PreferenceMap & {
-  _meta?: { digestFrequency?: DigestFrequency };
+  _meta?: {
+    digestFrequency?: DigestFrequency;
+    reportFrequency?: ReportFrequency;
+  };
   _quietHours?: {
     enabled: boolean;
     start: string;
@@ -47,6 +51,7 @@ type NotificationGroup = {
 };
 
 const DEFAULT_DIGEST_FREQUENCY: DigestFrequency = "daily";
+export const DEFAULT_REPORT_FREQUENCY: ReportFrequency = "off";
 
 // SMS is only allowed for these notification types
 export const SMS_ALLOWED_TYPES: NotificationType[] = [
@@ -484,6 +489,9 @@ export class NotificationsService {
     if (dto.digestFrequency) {
       merged._meta = { ...current._meta, digestFrequency: dto.digestFrequency };
     }
+    if (dto.reportFrequency) {
+      merged._meta = { ...merged._meta, reportFrequency: dto.reportFrequency };
+    }
 
     const data: {
       preferences: StoredPreferences;
@@ -523,6 +531,17 @@ export class NotificationsService {
     return prefs._meta?.digestFrequency ?? DEFAULT_DIGEST_FREQUENCY;
   }
 
+  /**
+   * Resolves the caller's opt-in cadence for the personal shipment report.
+   * Missing values mean 'off': reports are strictly opt-in.
+   */
+  async getReportFrequency(userId: string): Promise<ReportFrequency> {
+    const prefs = (await this.getOrCreatePreferences(
+      userId,
+    )) as StoredPreferences;
+    return prefs._meta?.reportFrequency ?? DEFAULT_REPORT_FREQUENCY;
+  }
+
   async getPreferencesResponse(userId: string) {
     const { preferences, slackWebhookUrl, discordWebhookUrl, telegramChatId } =
       await this.getOrCreatePreferenceRecord(userId);
@@ -538,6 +557,7 @@ export class NotificationsService {
     return {
       ...resolvedTypePreferences,
       digestFrequency: _meta?.digestFrequency ?? DEFAULT_DIGEST_FREQUENCY,
+      reportFrequency: _meta?.reportFrequency ?? DEFAULT_REPORT_FREQUENCY,
       quietHours: _quietHours ?? {
         enabled: false,
         start: "22:00",
