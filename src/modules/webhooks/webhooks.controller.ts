@@ -122,6 +122,21 @@ export class WebhooksController {
     return this.webhooksService.findOneWithSummary(userId, id);
   }
 
+  @Post(':id/verify')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Retry the challenge handshake for a pending webhook endpoint',
+    description:
+      'Sends a `webhook.verification` event with a random challenge. The endpoint must ' +
+      'echo the challenge in its response body (raw string or `{ "challenge": "..." }`). ' +
+      'Endpoints in PENDING_VERIFICATION receive no events.',
+  })
+  @ApiResponse({ status: 200, description: '{ verified: boolean, message: string }' })
+  @ApiResponse({ status: 404, description: 'Webhook endpoint not found' })
+  verify(@Param('id') id: string, @CurrentUser('id') userId: string) {
+    return this.webhooksService.verify(id, userId);
+  }
+
   @Delete(':id')
   @ApiOperation({ summary: 'Delete a webhook endpoint' })
   @ApiResponse({ status: 200, description: 'Endpoint deleted' })

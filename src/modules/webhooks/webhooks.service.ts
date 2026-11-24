@@ -6,11 +6,12 @@ import {
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import * as crypto from 'crypto';
-import axios, { AxiosError } from 'axios';
+import axios, { AxiosError, AxiosResponse } from 'axios';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AuditLogService } from '../audit-logs/audit-log.service';
-import { NotificationType, Prisma } from '@prisma/client';
+import { NotificationType, Prisma, WebhookEndpointStatus } from '@prisma/client';
 import { CreateWebhookDto } from './dto/create-webhook.dto';
+import { assertPublicWebhookUrl } from './url-guard';
 
 // ─── Retry policy ────────────────────────────────────────────────────────────
 //
@@ -69,7 +70,12 @@ function isRetryable(err: AxiosError | Error): boolean {
   return RETRYABLE_ERROR_CODES.has(code) || axiosErr.code === 'ECONNABORTED';
 }
 
-function buildBody(eventType: string, payload: Record<string, unknown>): string {
+/** Event type used for batched deliveries (#638). payload is an array of events. */
+export const BATCH_EVENT_TYPE = 'webhook.batch';
+export const VERIFICATION_EVENT_TYPE = 'webhook.verification';
+export const MAX_BATCH_SIZE = 100;
+
+function buildBody(eventType: string, payload: unknown): string {
   return JSON.stringify({ eventType, payload, timestamp: new Date().toISOString() });
 }
 
@@ -77,11 +83,41 @@ function signBody(secret: string, body: string): string {
   return `sha256=${crypto.createHmac('sha256', secret).update(body).digest('hex')}`;
 }
 
+/**
+ * POST a signed body to a webhook URL. Re-validates the target on every call
+ * (DNS rebinding protection, #636) and refuses to follow redirects.
+ */
+async function postSigned(url: string, body: string, signature: string): Promise<AxiosResponse> {
+  await assertPublicWebhookUrl(url);
+  return axios.post(url, body, {
+    headers: {
+      'Content-Type': 'application/json',
+      'X-ChainSettle-Signature': signature,
+    },
+    timeout: 10_000,
+    maxRedirects: 0,
+  });
+}
+
+type EndpointRef = {
+  id: string;
+  url: string;
+  secret: string;
+  batchSize?: number | null;
+  batchWindowMs?: number | null;
+};
+
 // ─── Service ─────────────────────────────────────────────────────────────────
 
 @Injectable()
 export class WebhooksService {
   private readonly logger = new Logger(WebhooksService.name);
+
+  /** In-memory batch buffers keyed by endpoint id (#638). */
+  private readonly batches = new Map<
+    string,
+    { ep: EndpointRef; events: unknown[]; timer: NodeJS.Timeout | null }
+  >();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -91,28 +127,104 @@ export class WebhooksService {
   // ── Registration ───────────────────────────────────────────────────────────
 
   async register(userId: string, dto: CreateWebhookDto) {
+    await assertPublicWebhookUrl(dto.url);
+
     const plaintext = crypto.randomBytes(32).toString('hex');
     const hashed = crypto.createHash('sha256').update(plaintext).digest('hex');
 
     const endpoint = await this.prisma.webhookEndpoint.create({
-      data: { userId, url: dto.url, secret: hashed, events: dto.events },
+      data: {
+        userId,
+        url: dto.url,
+        secret: hashed,
+        events: dto.events,
+        status: WebhookEndpointStatus.PENDING_VERIFICATION,
+        batchSize: dto.batchSize ?? null,
+        batchWindowMs: dto.batchSize ? dto.batchWindowMs ?? 5_000 : null,
+      },
     });
 
+    // Attempt the challenge handshake right away; failure leaves it pending (#637)
+    const verification = await this.runVerification(endpoint);
+
     // Plaintext secret returned once — never persisted
-    return { ...endpoint, secret: plaintext };
+    return {
+      ...endpoint,
+      status: verification.verified ? WebhookEndpointStatus.ACTIVE : endpoint.status,
+      secret: plaintext,
+      verification,
+    };
+  }
+
+  /** POST /webhooks/:id/verify — retry the challenge handshake. */
+  async verify(id: string, userId: string) {
+    const ep = await this.prisma.webhookEndpoint.findFirst({ where: { id, userId } });
+    if (!ep) throw new NotFoundException('Webhook endpoint not found');
+    if (ep.status === WebhookEndpointStatus.ACTIVE) {
+      return { verified: true, message: 'Webhook endpoint already verified' };
+    }
+    return this.runVerification(ep);
+  }
+
+  /**
+   * Sends a `webhook.verification` event carrying a random challenge. The
+   * receiver must echo the challenge in its response body (either the raw
+   * string or `{ "challenge": "..." }`). On success the endpoint becomes ACTIVE.
+   */
+  private async runVerification(ep: { id: string; url: string; secret: string }) {
+    const challenge = crypto.randomBytes(24).toString('hex');
+    const body = buildBody(VERIFICATION_EVENT_TYPE, { challenge, endpointId: ep.id });
+    try {
+      const res = await postSigned(ep.url, body, signBody(ep.secret, body));
+      const data = res.data;
+      const echoed =
+        (typeof data === 'string' && data.trim() === challenge) ||
+        (typeof data === 'object' && data !== null && (data as any).challenge === challenge);
+      if (!echoed) {
+        return { verified: false, message: 'Endpoint did not echo the verification challenge' };
+      }
+      await this.prisma.webhookEndpoint.update({
+        where: { id: ep.id },
+        data: { status: WebhookEndpointStatus.ACTIVE, verifiedAt: new Date() },
+      });
+      return { verified: true, message: 'Webhook endpoint verified' };
+    } catch (err) {
+      return {
+        verified: false,
+        message: `Verification request failed: ${(err as Error).message}`.slice(0, 500),
+      };
+    }
   }
 
   findForUser(userId: string) {
     return this.prisma.webhookEndpoint.findMany({
       where: { userId },
-      select: { id: true, url: true, events: true, active: true, createdAt: true },
+      select: {
+        id: true,
+        url: true,
+        events: true,
+        active: true,
+        status: true,
+        batchSize: true,
+        batchWindowMs: true,
+        createdAt: true,
+      },
     });
   }
 
   async findOneWithSummary(userId: string, id: string) {
     const endpoint = await this.prisma.webhookEndpoint.findFirst({
       where: { id, userId },
-      select: { id: true, url: true, events: true, active: true, createdAt: true },
+      select: {
+        id: true,
+        url: true,
+        events: true,
+        active: true,
+        status: true,
+        batchSize: true,
+        batchWindowMs: true,
+        createdAt: true,
+      },
     });
 
     if (!endpoint) throw new NotFoundException('Webhook endpoint not found');
@@ -175,14 +287,57 @@ export class WebhooksService {
 
   // ── Delivery ───────────────────────────────────────────────────────────────
 
-  /** Fan-out a platform event to all active subscribed endpoints. */
+  /**
+   * Fan-out a platform event to all active, verified, subscribed endpoints.
+   * Endpoints with batching enabled buffer the event instead (#638).
+   */
   async dispatch(eventType: NotificationType, payload: Record<string, unknown>) {
     const endpoints = await this.prisma.webhookEndpoint.findMany({
-      where: { active: true, events: { has: eventType } },
+      where: {
+        active: true,
+        status: WebhookEndpointStatus.ACTIVE,
+        events: { has: eventType },
+      },
     });
     await Promise.allSettled(
-      endpoints.map((ep) => this.deliverOnce(ep, eventType as string, payload)),
+      endpoints.map((ep) =>
+        ep.batchSize && ep.batchSize > 1
+          ? this.enqueueBatch(ep, eventType as string, payload)
+          : this.deliverOnce(ep, eventType as string, payload),
+      ),
     );
+  }
+
+  /** Buffer an event; flush when batchSize is reached or batchWindowMs elapses. */
+  private async enqueueBatch(ep: EndpointRef, eventType: string, payload: Record<string, unknown>) {
+    let batch = this.batches.get(ep.id);
+    if (!batch) {
+      batch = { ep, events: [], timer: null };
+      this.batches.set(ep.id, batch);
+    }
+    batch.ep = ep;
+    batch.events.push({ eventType, payload, timestamp: new Date().toISOString() });
+
+    const size = Math.min(ep.batchSize ?? 1, MAX_BATCH_SIZE);
+    if (batch.events.length >= size) {
+      await this.flushBatch(ep.id);
+    } else if (!batch.timer) {
+      batch.timer = setTimeout(() => {
+        this.flushBatch(ep.id).catch((err) =>
+          this.logger.error(`Batch flush failed for ${ep.id}`, (err as Error).message),
+        );
+      }, ep.batchWindowMs ?? 5_000);
+      batch.timer.unref?.();
+    }
+  }
+
+  private async flushBatch(endpointId: string) {
+    const batch = this.batches.get(endpointId);
+    if (!batch || batch.events.length === 0) return;
+    if (batch.timer) clearTimeout(batch.timer);
+    this.batches.delete(endpointId);
+    // One request, one signature over the whole array body
+    await this.deliverOnce(batch.ep, BATCH_EVENT_TYPE, batch.events);
   }
 
   async getDelivery(userId: string, endpointId: string, deliveryId: string) {
@@ -218,17 +373,11 @@ export class WebhooksService {
     });
     if (!delivery) throw new NotFoundException('Webhook delivery not found');
 
-    const body = buildBody(delivery.eventType, delivery.payload as Record<string, unknown>);
+    const body = buildBody(delivery.eventType, delivery.payload);
     const signature = signBody(endpoint.secret, body);
 
     try {
-      const res = await axios.post(endpoint.url, body, {
-        headers: {
-          'Content-Type': 'application/json',
-          'X-ChainSettle-Signature': signature,
-        },
-        timeout: 10_000,
-      });
+      const res = await postSigned(endpoint.url, body, signature);
 
       await this.prisma.webhookDelivery.update({
         where: { id: deliveryId },
@@ -294,11 +443,7 @@ export class WebhooksService {
   // ── Internal helpers ───────────────────────────────────────────────────────
 
   /** Initial delivery attempt called by dispatch(). Creates the delivery row. */
-  private async deliverOnce(
-    ep: { id: string; url: string; secret: string },
-    eventType: string,
-    payload: Record<string, unknown>,
-  ) {
+  private async deliverOnce(ep: EndpointRef, eventType: string, payload: unknown) {
     const body = buildBody(eventType, payload);
     const signature = signBody(ep.secret, body);
 
@@ -312,13 +457,7 @@ export class WebhooksService {
     });
 
     try {
-      const res = await axios.post(ep.url, body, {
-        headers: {
-          'Content-Type': 'application/json',
-          'X-ChainSettle-Signature': signature,
-        },
-        timeout: 10_000,
-      });
+      const res = await postSigned(ep.url, body, signature);
 
       await this.prisma.webhookDelivery.update({
         where: { id: delivery.id },
@@ -344,10 +483,7 @@ export class WebhooksService {
       attemptCount: number;
     },
   ) {
-    const body = buildBody(
-      delivery.eventType,
-      delivery.payload as Record<string, unknown>,
-    );
+    const body = buildBody(delivery.eventType, delivery.payload);
     const signature = signBody(ep.secret, body);
 
     // Bump attempt count immediately to avoid duplicate concurrent retries
@@ -360,13 +496,7 @@ export class WebhooksService {
     });
 
     try {
-      const res = await axios.post(ep.url, body, {
-        headers: {
-          'Content-Type': 'application/json',
-          'X-ChainSettle-Signature': signature,
-        },
-        timeout: 10_000,
-      });
+      const res = await postSigned(ep.url, body, signature);
 
       await this.prisma.webhookDelivery.update({
         where: { id: delivery.id },

@@ -271,11 +271,27 @@ model Notification {
   createdAt  DateTime         @default(now())
 
   // Relations
-  user User @relation(fields: [userId], references: [id])
+  user       User                   @relation(fields: [userId], references: [id])
+  deliveries NotificationDelivery[]
 
   @@index([userId])
   @@index([read])
   @@map("notifications")
+}
+
+/// One row per channel delivery attempt for a notification (email, slack, ...).
+model NotificationDelivery {
+  id             String   @id @default(uuid())
+  notificationId String
+  channel        String   // EMAIL | SLACK | IN_APP
+  status         String   // SUCCESS | FAILED
+  error          String?  // truncated error message
+  attemptedAt    DateTime @default(now())
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([notificationId])
+  @@map("notification_deliveries")
 }
 
 model EventCursor {
@@ -393,6 +409,11 @@ model NotificationPreference {
   @@map("notification_preferences")
 }
 
+enum WebhookEndpointStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+}
+
 model WebhookEndpoint {
   id         String    @id @default(uuid())
   userId     String
@@ -400,6 +421,12 @@ model WebhookEndpoint {
   secret     String    // SHA-256 hash of the plaintext signing secret
   events     String[]  // NotificationType values this endpoint subscribes to
   active     Boolean   @default(true)
+  /// PENDING_VERIFICATION endpoints receive no events until the challenge handshake passes.
+  status     WebhookEndpointStatus @default(ACTIVE)
+  verifiedAt DateTime?
+  /// Optional batching: deliver up to batchSize events (max 100) per request, flushed after batchWindowMs.
+  batchSize     Int?
+  batchWindowMs Int?
   createdAt  DateTime  @default(now())
 
   user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
