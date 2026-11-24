@@ -1,8 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { RedisService } from '../../common/redis/redis.service';
 import { NotificationsService } from './notifications.service';
 import { NotificationType } from '@prisma/client';
+import { runTrackedJob } from '../../common/jobs/job-tracker.util';
 
 @Injectable()
 export class NotificationDigestJob {
@@ -11,12 +13,36 @@ export class NotificationDigestJob {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    private readonly redis: RedisService,
   ) {}
+
+  @Cron('*/1 * * * *', { name: 'notification-deferred-delivery' })
+  async deliverDeferred() {
+    await runTrackedJob(
+      this.redis,
+      'notification-deferred-delivery',
+      async () => {
+        await this.notifications.deliverDeferredNotifications();
+      },
+      this.logger,
+    );
+  }
 
   // Runs daily; 'weekly' subscribers are only included when this lands on a
   // Monday (JS Date#getDay() === 1) — a fixed day chosen for simplicity.
-  @Cron('0 8 * * *')
+  @Cron('0 8 * * *', { name: 'notification-digest-daily' })
   async sendDailyDigests() {
+    await runTrackedJob(
+      this.redis,
+      'notification-digest-daily',
+      async () => {
+        await this.executeDailyDigests();
+      },
+      this.logger,
+    );
+  }
+
+  private async executeDailyDigests() {
     this.logger.log('Running daily notification digest job');
     const isWeeklyDigestDay = new Date().getDay() === 1;
 
@@ -34,6 +60,7 @@ export class NotificationDigestJob {
       try {
         const digestFrequency = await this.notifications.getDigestFrequency(user.id);
         if (digestFrequency === 'instant') continue;
+        if (await this.notifications.isQuietHours(user.id)) continue;
         if (digestFrequency === 'weekly' && !isWeeklyDigestDay) continue;
 
         const prefs = await this.notifications.getOrCreatePreferences(user.id);
@@ -46,7 +73,7 @@ export class NotificationDigestJob {
         const digest = await this.notifications.buildDigest(user.id);
         if (!digest) continue;
 
-        await this.notifications.sendEmail(user.email!, digest.subject, '', digest.html);
+        await this.notifications.sendEmail(user.email!, digest.subject, '', digest.html, undefined, undefined, undefined, user.id);
         sent++;
       } catch (err) {
         this.logger.error(`Digest failed for user ${user.id}`, err.message);

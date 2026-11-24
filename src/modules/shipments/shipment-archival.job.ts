@@ -1,31 +1,47 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Cron } from '@nestjs/schedule';
+import { SchedulerRegistry } from '@nestjs/schedule';
+import { CronJob } from 'cron';
 import { Prisma, ShipmentStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisService } from '../../common/redis/redis.service';
 
-const ARCHIVAL_LOCK_KEY = 'chainsettle:shipment-archival:lock';
+import { JOB_LOCK_KEYS } from '../../common/jobs/job-locks';
+
+const ARCHIVAL_LOCK_KEY = JOB_LOCK_KEYS['shipment-archival'];
 const ARCHIVAL_LOCK_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const BATCH_SIZE = 50;
+export const ARCHIVAL_CRON_JOB_NAME = 'shipment-archival';
+export const DEFAULT_ARCHIVAL_CRON = '0 3 * * *';
 
 /**
  * Moves COMPLETED/CANCELLED shipments older than SHIPMENT_ARCHIVAL_DAYS out of
  * the hot `shipments` table into `archived_shipments` (cold storage), retaining
  * a full JSON snapshot of milestones, events, comments, tracking, and notes.
+ *
+ * Runs on the SHIPMENT_ARCHIVAL_CRON schedule (default `0 3 * * *`), registered
+ * dynamically at module init so the env value is honoured.
  */
 @Injectable()
-export class ShipmentArchivalJob {
+export class ShipmentArchivalJob implements OnModuleInit {
   private readonly logger = new Logger(ShipmentArchivalJob.name);
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
     private readonly config: ConfigService,
+    private readonly schedulerRegistry: SchedulerRegistry,
   ) {}
 
-  @Cron('0 3 * * *') // override via SHIPMENT_ARCHIVAL_CRON is documented; Nest binds at boot from env if set before import
+  onModuleInit() {
+    const cronTime = this.config.get<string>('SHIPMENT_ARCHIVAL_CRON', DEFAULT_ARCHIVAL_CRON);
+    const job = new CronJob(cronTime, () => this.runArchival());
+    this.schedulerRegistry.addCronJob(ARCHIVAL_CRON_JOB_NAME, job);
+    job.start();
+    this.logger.log(`Shipment archival scheduled with cron "${cronTime}"`);
+  }
+
   async runArchival() {
     const token = randomUUID();
     const acquired = await this.redis.acquireLock(

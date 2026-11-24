@@ -1,0 +1,130 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Unit tests + coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      # Fails the job when coverage drops below coverageThreshold in package.json
+      - name: Run unit tests with coverage
+        run: npm run test:cov
+
+      - name: Write coverage summary
+        if: always() && hashFiles('coverage/coverage-summary.json') != ''
+        run: |
+          node -e '
+            const total = require("./coverage/coverage-summary.json").total;
+            const rows = ["statements", "branches", "functions", "lines"].map(
+              (k) => `| ${k} | ${total[k].pct}% | ${total[k].covered}/${total[k].total} |`,
+            );
+            console.log(["## Coverage", "", "| Metric | % | Covered |", "|---|---|---|", ...rows].join("\n"));
+          ' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: always() && hashFiles('coverage/lcov.info') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.run_id }}
+          path: |
+            coverage/lcov.info
+            coverage/coverage-summary.json
+          retention-days: 14
+
+  e2e:
+    name: E2E tests
+    runs-on: ubuntu-latest
+    # Service containers are created fresh for every run, so each run gets an
+    # isolated, empty database and Redis instance.
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: chainsettle
+          POSTGRES_PASSWORD: chainsettle
+          POSTGRES_DB: chainsettle_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U chainsettle -d chainsettle_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://chainsettle:chainsettle@localhost:5432/chainsettle_e2e
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: e2e-test-secret
+      # Chain calls go to the local mock Stellar RPC / Horizon (test/mocks/stellar-rpc-server.ts)
+      STELLAR_NETWORK: testnet
+      STELLAR_RPC_URL: http://127.0.0.1:8787
+      STELLAR_HORIZON_URL: http://127.0.0.1:8788
+      CHAINSETTTLE_CONTRACT_ID: CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+      USDC_TOKEN_ADDRESS: CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA
+      STELLAR_SECRET_KEY: SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+      SMTP_HOST: localhost
+      SMTP_USER: e2e
+      SMTP_PASS: e2e
+      EMAIL_FROM: noreply@chainsettle.test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Apply database migrations
+        run: npx prisma migrate deploy
+
+      - name: Start mock Stellar RPC
+        run: |
+          npm run dev:mock-chain > mock-chain.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8787/health > /dev/null; then
+              echo "Mock Stellar RPC is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Mock Stellar RPC failed to start"
+          cat mock-chain.log
+          exit 1
+
+      - name: Run e2e tests
+        run: npm run test:e2e

@@ -1,7 +1,8 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsBoolean, IsISO8601, IsOptional, IsString } from 'class-validator';
+import { IsBoolean, IsISO8601, IsOptional, IsString, IsIn } from 'class-validator';
 import { ShipmentStatus } from '@prisma/client';
+import { SUPPORTED_CURRENCIES } from '../../common/fx/fx-rate.service';
 
 export class FindAllShipmentsDto {
   @ApiPropertyOptional({ description: 'Filter by buyer wallet address' })
@@ -13,6 +14,13 @@ export class FindAllShipmentsDto {
   @IsOptional()
   @IsString()
   supplierAddress?: string;
+
+  @ApiPropertyOptional({
+    description: "Show shipments where any member of this organization is a participant (#435). Caller must be a member.",
+  })
+  @IsOptional()
+  @IsString()
+  organizationId?: string;
 
   @ApiPropertyOptional({ description: 'Filter by shipment status', enum: ShipmentStatus })
   @IsOptional()
@@ -46,6 +54,15 @@ export class FindAllShipmentsDto {
   @IsOptional()
   @IsString()
   cursor?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Comma-separated sparse fieldset, e.g. id,status,totalAmount. id is always included; unknown fields return 400.',
+    example: 'id,status,totalAmount',
+  })
+  @IsOptional()
+  @IsString()
+  fields?: string;
 
   @ApiPropertyOptional({ description: 'Search in description (full-text search)' })
   @IsOptional()
@@ -112,4 +129,31 @@ export class FindAllShipmentsDto {
   @IsBoolean()
   @Transform(({ value }) => value === 'true' || value === true)
   favorite?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      `Override the display currency for FX-converted values on this request. ` +
+      `Supported: ${SUPPORTED_CURRENCIES.join(', ')}. ` +
+      `Defaults to the user's saved displayCurrency preference (or USD if unset).`,
+    enum: SUPPORTED_CURRENCIES,
+    example: 'EUR',
+  })
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.toUpperCase() : value))
+  @IsIn([...SUPPORTED_CURRENCIES], {
+    message: `currency must be one of: ${SUPPORTED_CURRENCIES.join(', ')}`,
+  })
+  currency?: string;
+
+  @ApiPropertyOptional({
+    description: 'Filter shipments by computed risk level (LOW, MEDIUM, HIGH)',
+    enum: ['LOW', 'MEDIUM', 'HIGH'],
+    example: 'HIGH',
+  })
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.toUpperCase() : value))
+  @IsIn(['LOW', 'MEDIUM', 'HIGH'], {
+    message: 'riskLevel must be one of: LOW, MEDIUM, HIGH',
+  })
+  riskLevel?: 'LOW' | 'MEDIUM' | 'HIGH';
 }

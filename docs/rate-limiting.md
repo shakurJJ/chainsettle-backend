@@ -13,11 +13,18 @@ The global throttler guard (`RateLimitThrottlerGuard`,
 
 ## Default limit (all routes not listed below)
 
-| Setting | Value | Environment variable |
-|---------|-------|----------------------|
+| Tier | Value | Environment variable |
+|------|-------|----------------------|
+| Default / anonymous | 100 per window | `THROTTLE_LIMIT` (default `100`) |
+| KYC-verified user | 250 per window | `THROTTLE_LIMIT_VERIFIED` (default `250`) |
+| Admin user | 500 per window | `THROTTLE_LIMIT_ADMIN` (default `500`) |
 | Window | 60 seconds | `THROTTLE_TTL` (in seconds; default `60`) |
-| Max requests | 100 per key | `THROTTLE_LIMIT` (default `100`) |
 | Key | IP address | — |
+
+The effective limit is chosen from the authenticated user's record when one is present:
+- admin users receive the admin tier
+- verified users receive the verified tier
+- everyone else remains on the default tier
 
 ---
 
@@ -35,6 +42,56 @@ than IP, so each wallet address has its own independent counter.
 | `POST /api/v1/shipments/:id/milestones/:index/proof` | 3600 s (1 hour) | 5 | Stellar address | Proof file uploads; 5 uploads per hour per user |
 | `GET /api/v1/shipments/export` | 3600 s (1 hour) | 5 | IP | CSV/PDF bulk export |
 | `GET /api/v1/shipments/:id/export` | 3600 s (1 hour) | 10 | IP | Single shipment PDF export |
+
+---
+
+## Monthly request quotas per API key
+
+Rate limits stop bursts, but they do not stop sustained heavy use by a single integration.
+Each API key therefore also carries a **monthly request quota** that caps the total number of
+requests the key may make in a calendar month.
+
+| Concern | Behaviour |
+|---------|-----------|
+| Field | `monthlyQuota` on the `ApiKey` entity |
+| Default | `API_KEY_MONTHLY_QUOTA` (default `100000`) applied when a key is created without an explicit quota |
+| Counter | Redis key scoped to the API key **and** the current month, e.g. `apikey:quota:<keyId>:<YYYY-MM>` |
+| Reset | Automatic — the month is part of the Redis key, so a new month starts a fresh counter |
+| Enforcement | Requests over the quota are rejected with HTTP `429` and error code `API_KEY_QUOTA_EXCEEDED` |
+| Admin override | Admins can raise (or lower) a key's quota via the API key management endpoints |
+
+### Quota response headers
+
+Responses from API-key-authenticated routes include quota headers (CORS-exposed so browser
+clients can read them):
+
+| Header | Meaning |
+|--------|---------|
+| `X-Quota-Limit` | The key's monthly quota |
+| `X-Quota-Remaining` | Requests left in the current month (`0` when the quota is exhausted) |
+| `X-Quota-Reset` | Seconds until the quota resets at the start of the next month |
+
+### Quota 429 response body
+
+When the monthly quota is exhausted the response uses the same envelope as rate limiting, with
+a quota-specific error code:
+
+```json
+{
+  "success": false,
+  "statusCode": 429,
+  "timestamp": "2026-08-28T19:00:00.000Z",
+  "path": "/api/v1/shipments",
+  "message": "Monthly API key quota exceeded",
+  "code": "API_KEY_QUOTA_EXCEEDED"
+}
+```
+
+### Viewing usage
+
+Current-month usage for a key is exposed by the key usage endpoint, alongside the configured
+`monthlyQuota` and the remaining allowance, so integrators can monitor consumption before they
+hit the cap.
 
 ---
 
@@ -88,6 +145,9 @@ When the limit is exceeded the `ThrottlerExceptionFilter` returns:
 Read `X-RateLimit-Remaining` on each response and slow down proactively before it reaches `0`.
 When it does reach `0` on a non-`429` response, the next request will be blocked. Use
 `X-RateLimit-Reset` (or `Retry-After` on a `429`) to know exactly how many seconds to wait.
+
+For sustained integrations, also watch `X-Quota-Remaining` — it counts down over the whole
+month and only resets at the start of the next calendar month.
 
 A minimal back-off loop in pseudocode:
 

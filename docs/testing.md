@@ -208,13 +208,14 @@ They require no test framework — just `curl` and `jq`.
 
 ## 6. CI
 
-CI runs the following matrix on every push and pull request:
+`.github/workflows/test.yml` runs on every push and pull request:
 
-```
-1. npm run lint
-2. npm run test          # unit
-3. npm run test:e2e      # requires DB and Redis service containers
-```
+- **Unit tests + coverage** — `npm run test:cov`. The job fails if coverage drops below
+  `coverageThreshold.global` in `package.json`. `coverage/lcov.info` is uploaded as a
+  workflow artifact and a coverage table is added to the job summary.
+- **E2E tests** — `npm run test:e2e` against fresh Postgres 15 and Redis 7 service containers
+  (a new, isolated database per run). Migrations are applied with `npx prisma migrate deploy`
+  and chain calls go to the mock Stellar RPC (`npm run dev:mock-chain`).
 
 Load tests run on a separate weekly schedule via
 `.github/workflows/loadtest-weekly.yml` and are not part of the standard PR check.

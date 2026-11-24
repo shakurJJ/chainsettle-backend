@@ -1,0 +1,109 @@
+name: OpenAPI Lint
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'sdk/openapi.json'
+      - '.spectral.yml'
+      - '.github/workflows/openapi-lint.yml'
+  pull_request:
+    paths:
+      - 'sdk/openapi.json'
+      - '.spectral.yml'
+      - '.github/workflows/openapi-lint.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  lint-openapi:
+    name: Lint OpenAPI Spec with Spectral
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install Spectral
+        run: npm install -g @stoplight/spectral-cli@6
+
+      - name: Validate OpenAPI file exists
+        run: |
+          if [ ! -f sdk/openapi.json ]; then
+            echo "Error: sdk/openapi.json not found"
+            exit 1
+          fi
+          echo "OpenAPI spec found at sdk/openapi.json"
+
+      - name: Lint OpenAPI spec
+        run: spectral lint sdk/openapi.json --format stylish --ruleset .spectral.yml
+
+      - name: Lint OpenAPI spec (JSON output for PR comment)
+        if: github.event_name == 'pull_request'
+        id: spectral_json
+        continue-on-error: true
+        run: |
+          spectral lint sdk/openapi.json --format json --ruleset .spectral.yml > spectral-output.json || true
+          echo "results_exist=$(test -s spectral-output.json && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+
+      - name: Comment PR with lint results
+        if: github.event_name == 'pull_request' && steps.spectral_json.outputs.results_exist == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const results = JSON.parse(fs.readFileSync('spectral-output.json', 'utf8'));
+            
+            if (!results || results.length === 0) {
+              return;
+            }
+            
+            const errors = results.filter(r => r.severity === 0);
+            const warnings = results.filter(r => r.severity === 1);
+            const infos = results.filter(r => r.severity === 2);
+            
+            let comment = '## 🔍 OpenAPI Lint Results\n\n';
+            comment += `- **Errors**: ${errors.length}\n`;
+            comment += `- **Warnings**: ${warnings.length}\n`;
+            comment += `- **Info**: ${infos.length}\n\n`;
+            
+            if (errors.length > 0) {
+              comment += '### ❌ Errors\n\n';
+              errors.slice(0, 10).forEach(e => {
+                comment += `- **${e.code}** (line ${e.range?.start?.line || '?'}): ${e.message}\n`;
+                comment += `  \`${e.path?.join('.') || 'root'}\`\n\n`;
+              });
+              if (errors.length > 10) {
+                comment += `_...and ${errors.length - 10} more errors_\n\n`;
+              }
+            }
+            
+            if (warnings.length > 0) {
+              comment += '### ⚠️ Warnings\n\n';
+              warnings.slice(0, 5).forEach(w => {
+                comment += `- **${w.code}** (line ${w.range?.start?.line || '?'}): ${w.message}\n`;
+              });
+              if (warnings.length > 5) {
+                comment += `_...and ${warnings.length - 5} more warnings_\n\n`;
+              }
+            }
+            
+            comment += '\n---\n';
+            comment += '_Run `npx @stoplight/spectral-cli lint sdk/openapi.json` locally for full details_';
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });

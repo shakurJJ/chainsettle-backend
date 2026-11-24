@@ -5,6 +5,7 @@ import {
   InternalServerErrorException,
   OnModuleInit,
   ServiceUnavailableException,
+  UnsupportedMediaTypeException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'crypto';
@@ -12,6 +13,7 @@ import axios from 'axios';
 import * as FormData from 'form-data';
 import { RedisService } from '../redis/redis.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { mimeTypesMatch, normalizeMimeType, sniffMimeType } from './file-signature.util';
 
 export interface IpfsUploadLimits {
   maxSizeBytes: number;
@@ -123,6 +125,8 @@ export class IpfsService implements OnModuleInit {
    * @param originalName - Original filename (for Pinata metadata)
    * @param mimeType    - MIME type of the file
    * @returns The IPFS CID (v1, base32 encoded)
+   * @throws UnsupportedMediaTypeException when the file content does not match
+   *         an allowed type or the declared MIME type
    * @throws ServiceUnavailableException when IPFS node is unreachable
    * @throws InternalServerErrorException on upload failure
    */
@@ -145,6 +149,8 @@ export class IpfsService implements OnModuleInit {
       );
     }
 
+    this.assertContentMatchesType(fileBuffer, mimeType, limits.allowedMimeTypes);
+
     const hash = createHash('sha256').update(fileBuffer).digest('hex');
     const dedupKey = `ipfs:dedup:${hash}`;
     const cached = await this.redis.get(dedupKey);
@@ -164,39 +170,108 @@ export class IpfsService implements OnModuleInit {
       throw new ServiceUnavailableException('IPFS service is currently unavailable');
     }
 
-    try {
-      const form = new FormData();
-      form.append('file', fileBuffer, {
-        filename: originalName,
-        contentType: mimeType,
-      });
+    // ----------------------------------------------------------
+    // Upload with retry-with-exponential-backoff
+    // Only transient errors (network/timeout) are retried. Validation
+    // failures (bad status codes like 400/401/413) are non-retryable.
+    // ----------------------------------------------------------
+    const MAX_ATTEMPTS = 3;
+    const BASE_DELAY_MS = 200;
 
-      const pinataMetadata = JSON.stringify({ name: originalName });
-      form.append('pinataMetadata', pinataMetadata);
+    let lastError: Error | undefined;
 
-      const response = await axios.post<{ IpfsHash: string }>(
-        this.pinataUrl,
-        form,
-        {
-          headers: {
-            Authorization: `Bearer ${this.apiKey}`,
-            ...form.getHeaders(),
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const form = new FormData();
+        form.append('file', fileBuffer, {
+          filename: originalName,
+          contentType: mimeType,
+        });
+
+        const pinataMetadata = JSON.stringify({ name: originalName });
+        form.append('pinataMetadata', pinataMetadata);
+
+        const response = await axios.post<{ IpfsHash: string }>(
+          this.pinataUrl,
+          form,
+          {
+            headers: {
+              Authorization: `Bearer ${this.apiKey}`,
+              ...form.getHeaders(),
+            },
+            maxBodyLength: Infinity,
+            timeout: 60_000,
           },
-          maxBodyLength: Infinity,
-          timeout: 60_000,
-        },
-      );
+        );
 
-      const cid = response.data.IpfsHash;
-      this.logger.log(`File pinned to IPFS: ${cid} (${originalName})`);
-      const ttlDays = this.config.get<number>('IPFS_DEDUP_TTL_DAYS', 30);
-      await this.redis.set(dedupKey, cid, ttlDays * 86400);
-      return cid;
-    } catch (error) {
-      const detail = error.response?.data?.error?.details ?? error.message;
-      this.logger.error(`Failed to pin file to IPFS`, detail);
-      throw new InternalServerErrorException(
-        `IPFS upload failed: ${detail}`,
+        const cid = response.data.IpfsHash;
+        this.logger.log(`File pinned to IPFS: ${cid} (${originalName})`);
+        const ttlDays = this.config.get<number>('IPFS_DEDUP_TTL_DAYS', 30);
+        await this.redis.set(dedupKey, cid, ttlDays * 86400);
+        return cid;
+      } catch (error) {
+        const statusCode: number | undefined = error.response?.status;
+
+        // Non-transient errors (4xx client errors) are not retried
+        if (statusCode !== undefined && statusCode >= 400 && statusCode < 500) {
+          const detail = error.response?.data?.error?.details ?? error.message;
+          this.logger.error(`IPFS upload rejected (non-retryable ${statusCode}): ${detail}`);
+          throw new InternalServerErrorException(`IPFS upload failed: ${detail}`);
+        }
+
+        lastError = error as Error;
+        const detail = error.response?.data?.error?.details ?? error.message;
+
+        if (attempt < MAX_ATTEMPTS) {
+          const delay = BASE_DELAY_MS * 2 ** (attempt - 1);
+          this.logger.warn(
+            `IPFS upload attempt ${attempt}/${MAX_ATTEMPTS} failed (will retry in ${delay}ms): ${detail}`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        } else {
+          this.logger.error(
+            `IPFS upload failed after ${MAX_ATTEMPTS} attempts: ${detail}`,
+          );
+        }
+      }
+    }
+
+    const finalDetail = (lastError as any)?.response?.data?.error?.details ?? lastError?.message ?? 'unknown error';
+    throw new InternalServerErrorException(`IPFS upload failed: ${finalDetail}`);
+  }
+
+  /**
+   * Validates the file by its content (magic bytes) rather than the
+   * client-supplied Content-Type, before anything is pinned. Rejects with 415
+   * when the content is unrecognised, not an allowed type, or doesn't match
+   * the declared type (e.g. an executable renamed to invoice.pdf).
+   */
+  private assertContentMatchesType(
+    fileBuffer: Buffer,
+    declaredMimeType: string,
+    allowedMimeTypes: string[],
+  ): void {
+    const sniffed = sniffMimeType(fileBuffer);
+
+    if (!sniffed) {
+      this.logger.warn(`Rejected upload declared as ${declaredMimeType}: content type not recognised`);
+      throw new UnsupportedMediaTypeException(
+        `File content could not be identified as an allowed type. Allowed types: ${allowedMimeTypes.join(', ')}`,
+      );
+    }
+
+    const allowed = allowedMimeTypes.map(normalizeMimeType);
+    if (!allowed.includes(normalizeMimeType(sniffed))) {
+      this.logger.warn(`Rejected upload declared as ${declaredMimeType}: content is ${sniffed}`);
+      throw new UnsupportedMediaTypeException(
+        `File content is ${sniffed}, which is not allowed. Allowed types: ${allowedMimeTypes.join(', ')}`,
+      );
+    }
+
+    if (!mimeTypesMatch(declaredMimeType, sniffed)) {
+      this.logger.warn(`Rejected upload declared as ${declaredMimeType}: content is ${sniffed}`);
+      throw new UnsupportedMediaTypeException(
+        `File content (${sniffed}) does not match the declared type (${declaredMimeType})`,
       );
     }
   }

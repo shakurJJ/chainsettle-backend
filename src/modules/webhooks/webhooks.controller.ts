@@ -3,8 +3,10 @@ import {
   Post,
   Get,
   Delete,
+  Patch,
   Body,
   Param,
+  Query,
   UseGuards,
   HttpCode,
   HttpStatus,
@@ -15,12 +17,16 @@ import {
   ApiBearerAuth,
   ApiResponse,
   ApiProperty,
+  ApiQuery,
 } from '@nestjs/swagger';
 import { NotificationType } from '@prisma/client';
 import { WebhooksService } from './webhooks.service';
-import { CreateWebhookDto } from './dto/create-webhook.dto';
+import { CreateWebhookDto, ValidWebhookHeadersConstraint } from './dto/create-webhook.dto';
+import { UpdateWebhookDto } from './dto/update-webhook.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { useContainer } from 'class-validator';
+import { ModuleRef } from '@nestjs/core';
 
 // ── Response-shape documentation classes (Swagger only) ────────────────────
 
@@ -91,7 +97,12 @@ class DeliveryDetailDto {
 @UseGuards(JwtAuthGuard)
 @Controller('webhooks')
 export class WebhooksController {
-  constructor(private readonly webhooksService: WebhooksService) {}
+  constructor(
+    private readonly webhooksService: WebhooksService,
+    private readonly moduleRef: ModuleRef,
+  ) {
+    useContainer(moduleRef, { fallbackOnErrors: true });
+  }
 
   @Post()
   @ApiOperation({ summary: 'Register a webhook endpoint — returns plaintext secret once' })
@@ -105,6 +116,20 @@ export class WebhooksController {
   @ApiResponse({ status: 200, description: 'Array of endpoint summaries' })
   findAll(@CurrentUser('id') userId: string) {
     return this.webhooksService.findForUser(userId);
+  }
+
+  @Post('bulk-test')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Send a test ping to every active webhook owned by the caller",
+    description:
+      'Fans out a test ping to all active endpoints. Returns a per-endpoint ' +
+      'result (success/failure + latency) — an unreachable endpoint does not ' +
+      'prevent the others from being tested. Inactive endpoints are skipped.',
+  })
+  @ApiResponse({ status: 200, description: 'Per-endpoint test results' })
+  bulkTest(@CurrentUser('id') userId: string) {
+    return this.webhooksService.bulkTest(userId);
   }
 
   @Get('event-types')
@@ -137,12 +162,45 @@ export class WebhooksController {
     return this.webhooksService.verify(id, userId);
   }
 
+  @Patch(':id')
+  @ApiOperation({
+    summary: 'Update a webhook endpoint (url, events, headers, active)',
+    description:
+      'Partial update. Only supplied fields are changed. Pass headers: {} to clear custom headers. ' +
+      'Values are encrypted at rest and masked in responses.',
+  })
+  @ApiResponse({ status: 200, description: 'Endpoint updated' })
+  @ApiResponse({ status: 400, description: 'Reserved header or validation error' })
+  @ApiResponse({ status: 404, description: 'Webhook endpoint not found' })
+  update(
+    @Param('id') id: string,
+    @CurrentUser('id') userId: string,
+    @Body() dto: UpdateWebhookDto,
+  ) {
+    return this.webhooksService.update(userId, id, dto);
+  }
+
   @Delete(':id')
   @ApiOperation({ summary: 'Delete a webhook endpoint' })
   @ApiResponse({ status: 200, description: 'Endpoint deleted' })
   @ApiResponse({ status: 404, description: 'Webhook endpoint not found' })
   remove(@Param('id') id: string, @CurrentUser('id') userId: string) {
     return this.webhooksService.remove(id, userId);
+  }
+
+  @Get(':id/deliveries/failed')
+  @ApiOperation({ summary: 'List only the failed deliveries for a webhook endpoint' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiResponse({ status: 200, description: 'Paginated list of failed deliveries' })
+  @ApiResponse({ status: 404, description: 'Webhook endpoint not found' })
+  getFailedDeliveries(
+    @Param('id') id: string,
+    @CurrentUser('id') userId: string,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ) {
+    return this.webhooksService.getFailedDeliveries(userId, id, page, limit);
   }
 
   @Get(':id/deliveries/:deliveryId')

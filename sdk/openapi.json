@@ -189,6 +189,52 @@
         }
       }
     },
+    "/api/v1/shipments/{id}/risk": {
+      "get": {
+        "tags": ["shipments"],
+        "operationId": "ShipmentsController_getRisk",
+        "summary": "Get computed risk indicators and risk level for a shipment",
+        "security": [{ "bearer": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Shipment risk indicators and derived risk level",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "shipmentId": { "type": "string" },
+                    "level": { "type": "string", "enum": ["LOW", "MEDIUM", "HIGH"] },
+                    "reasons": { "type": "array", "items": { "type": "string" } },
+                    "indicators": {
+                      "type": "object",
+                      "properties": {
+                        "overdueMilestones": { "type": "integer" },
+                        "openDisputes": { "type": "integer" },
+                        "arbiterNotAccepted": { "type": "boolean" },
+                        "daysSinceLastActivity": { "type": "integer" },
+                        "unverifiedCounterparties": { "type": "integer" }
+                      }
+                    },
+                    "evaluatedAt": { "type": "string", "format": "date-time" }
+                  }
+                }
+              }
+            }
+          },
+          "403": { "description": "Forbidden: Not a shipment participant" },
+          "404": { "description": "Shipment not found" }
+        }
+      }
+    },
     "/api/v1/notifications": {
       "get": {
         "tags": ["notifications"],
@@ -281,6 +327,58 @@
         }
       }
     },
+    "/api/v1/admin/users/{id}/force-logout": {
+      "post": {
+        "tags": ["admin"],
+        "operationId": "AdminUsersController_forceLogout",
+        "summary": "Force logout a user everywhere",
+        "security": [{ "bearer": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revokeApiKeys": { "type": "boolean", "default": false }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "User force-logged out successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "message": { "type": "string" },
+                        "revokedSessionsCount": { "type": "number" },
+                        "revokedApiKeysCount": { "type": "number" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/users/me": {
       "get": {
         "tags": ["users"],
@@ -296,6 +394,155 @@
               }
             }
           }
+        }
+      }
+    },
+    "/api/v1/users/me/login-history": {
+      "get": {
+        "tags": ["users"],
+        "operationId": "UsersController_getLoginHistory",
+        "summary": "Get recent sign-in history with IP and user agent",
+        "security": [{ "bearer": [] }],
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "default": 20, "minimum": 1, "maximum": 100 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Login history records",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "string" },
+                          "timestamp": { "type": "string", "format": "date-time" },
+                          "ipAddress": { "type": "string", "nullable": true },
+                          "userAgent": { "type": "string" },
+                          "success": { "type": "boolean" },
+                          "isCurrentSession": { "type": "boolean" }
+                        }
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "nextCursor": { "type": "string", "nullable": true },
+                        "limit": { "type": "number" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/me/avatar": {
+      "put": {
+        "tags": ["users"],
+        "operationId": "UsersController_uploadAvatar",
+        "summary": "Upload profile picture via IPFS",
+        "security": [{ "bearer": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file"],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Avatar uploaded successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": { "type": "string" },
+                    "avatarCid": { "type": "string" },
+                    "avatarUrl": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "No file uploaded or unsupported MIME type" },
+          "413": { "description": "File size exceeds 2 MB limit" }
+        }
+      },
+      "delete": {
+        "tags": ["users"],
+        "operationId": "UsersController_deleteAvatar",
+        "summary": "Delete user profile avatar",
+        "security": [{ "bearer": [] }],
+        "responses": {
+          "200": {
+            "description": "Avatar deleted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{stellarAddress}": {
+      "get": {
+        "tags": ["users"],
+        "operationId": "UsersController_getPublicProfile",
+        "summary": "Get a public user profile by Stellar address",
+        "security": [{ "bearer": [] }],
+        "parameters": [
+          {
+            "name": "stellarAddress",
+            "required": true,
+            "in": "path",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Public user profile returned",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" }
+              }
+            }
+          },
+          "404": { "description": "User not found" }
         }
       }
     }

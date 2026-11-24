@@ -1,42 +1,176 @@
 import {
   Controller,
   Get,
-  Post,
   Patch,
+  Post,
+  Put,
   Delete,
-  Param,
   Body,
   Query,
   UseGuards,
-  ForbiddenException,
-  BadRequestException,
   HttpCode,
   HttpStatus,
+  Req,
+  Param,
+  UseInterceptors,
+  UploadedFile,
+  BadRequestException,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
-import { Throttle } from '@nestjs/throttler';
-import { UserRole } from '@prisma/client';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiParam,
+  ApiConsumes,
+  ApiBody,
+} from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 import { AuthService } from './auth.service';
+import { SessionService } from './session.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
-import { UpdateUserRoleDto } from './dto/update-user-role.dto';
+import { RevokeAllSessionsDto } from './dto/revoke-all-sessions.dto';
+import { SetPhoneDto, VerifyPhoneDto } from './dto/verify-phone.dto';
+import { LoginHistoryQueryDto } from './dto/login-history-query.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { AuthenticatedUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { BlockImpersonation } from '../../common/decorators/block-impersonation.decorator';
+import { AuditLogService } from '../audit-logs/audit-log.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '@prisma/client';
 
 @ApiTags('users')
 @Controller('users')
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth()
 export class UsersController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly sessionService: SessionService,
+    private readonly auditLogs: AuditLogService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   @Get('me')
   @ApiOperation({ summary: 'Get the authenticated user profile' })
-  @ApiResponse({ status: 200, description: 'Returns user profile' })
+  @ApiResponse({ status: 200, description: 'Returns user profile with avatarUrl' })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
-  getProfile(@CurrentUser() user: any) {
+  getProfile(@CurrentUser() user: AuthenticatedUser) {
     return this.authService.getProfile(user.id);
+  }
+
+  @Put('me/avatar')
+  @HttpCode(HttpStatus.OK)
+  @BlockImpersonation()
+  @ApiOperation({
+    summary: 'Upload profile picture via IPFS (max 2 MB, PNG/JPEG/WebP)',
+    description:
+      'Uploads an avatar image to IPFS and updates the authenticated user\'s avatarCid. ' +
+      'Limited to image/png, image/jpeg, and image/webp with a maximum file size of 2 MB.',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file'],
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+          description: 'Profile image file (PNG, JPEG, WebP, max 2 MB)',
+        },
+      },
+    },
+  })
+  @ApiResponse({ status: 200, description: 'Avatar uploaded successfully — returns avatarCid and avatarUrl' })
+  @ApiResponse({ status: 400, description: 'No file uploaded or unsupported MIME type' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 403, description: 'Blocked during impersonation' })
+  @ApiResponse({ status: 413, description: 'File size exceeds 2 MB limit' })
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: 2 * 1024 * 1024 },
+      fileFilter(_req, file, cb) {
+        const allowedMimes = ['image/png', 'image/jpeg', 'image/webp'];
+        if (!allowedMimes.includes(file.mimetype)) {
+          return cb(
+            new BadRequestException(
+              `Invalid file type: ${file.mimetype}. Allowed types: ${allowedMimes.join(', ')}`,
+            ),
+            false,
+          );
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  uploadAvatar(
+    @CurrentUser('id') userId: string,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.authService.uploadAvatar(userId, file);
+  }
+
+  @Delete('me/avatar')
+  @HttpCode(HttpStatus.OK)
+  @BlockImpersonation()
+  @ApiOperation({ summary: 'Delete user profile avatar' })
+  @ApiResponse({ status: 200, description: 'Avatar deleted successfully' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 403, description: 'Blocked during impersonation' })
+  deleteAvatar(@CurrentUser('id') userId: string) {
+    return this.authService.deleteAvatar(userId);
+  }
+
+  @Get('me/login-history')
+  @ApiOperation({
+    summary: 'Get recent sign-in history with IP and user agent',
+    description:
+      'Returns a paginated log of recent login attempts (both successful and failed) ' +
+      'for the authenticated user. IPv4 addresses are masked for privacy.',
+  })
+  @ApiResponse({ status: 200, description: 'Login history records' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  getLoginHistory(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: LoginHistoryQueryDto,
+  ) {
+    return this.authService.getLoginHistory(
+      user.id,
+      user.jti,
+      query?.cursor,
+      query?.limit,
+    );
+  }
+
+  @Get('me/sessions')
+  @ApiOperation({
+    summary: 'List active sessions for the authenticated user',
+    description:
+      'Returns metadata for every device/session currently authenticated against this account. ' +
+      'Raw token values are never included — only opaque session IDs and request metadata.',
+  })
+  @ApiResponse({ status: 200, description: 'Array of active session records' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  getSessions(@CurrentUser('id') userId: string) {
+    return this.authService.getSessions(userId);
+  }
+
+  @Post('me/sessions/:id/revoke')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Revoke a single active session for the authenticated user',
+    description:
+      'Deletes the selected session entry and adds its JWT to the revocation blocklist. ' +
+      'This invalidates only that device/session without logging out other active sessions.',
+  })
+  @ApiResponse({ status: 200, description: 'Session revoked successfully' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 404, description: 'Session not found' })
+  revokeSession(@CurrentUser('id') userId: string, @Param('id') sessionId: string) {
+    return this.authService.revokeSession(userId, sessionId);
   }
 
   @Patch('me')
@@ -46,150 +180,113 @@ export class UsersController {
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   @ApiResponse({ status: 403, description: 'Blocked during impersonation' })
   @ApiResponse({ status: 409, description: 'Email already in use' })
-  updateProfile(@CurrentUser() user: any, @Body() dto: UpdateProfileDto) {
+  updateProfile(@CurrentUser() user: AuthenticatedUser, @Body() dto: UpdateProfileDto) {
     return this.authService.updateProfile(user.id, dto);
   }
 
-  @Get('me/export')
-  @Throttle({ default: { limit: 3, ttl: 60 * 60 * 1000 } })
-  @ApiOperation({
-    summary: "Export the authenticated user's personal data (GDPR/CCPA)",
-    description:
-      'Returns a complete JSON bundle of the caller\'s own profile, shipments they are party to, ' +
-      'comments, notifications, and audit log entries. Other participants on shared records are only ' +
-      'ever identified by their public Stellar address — never their name or email.',
-  })
-  @ApiResponse({ status: 200, description: 'Full data export for the authenticated user' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
-  exportMyData(@CurrentUser('id') userId: string) {
-    return this.authService.exportUserData(userId);
-  }
-
-  @Delete('me')
-  @BlockImpersonation()
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({
-    summary: 'Deactivate the authenticated user account',
-    description:
-      'Soft-deactivates the account (sets deactivatedAt). The user row and historical data remain for referential integrity. Rejected if the user has any ACTIVE shipments as buyer, supplier, logistics, or arbiter.',
-  })
-  @ApiResponse({ status: 200, description: 'Account deactivated successfully' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  @ApiResponse({ status: 403, description: 'Blocked during impersonation' })
-  @ApiResponse({
-    status: 409,
-    description: 'User has active shipments that must be resolved or transferred first',
-  })
-  deactivateAccount(@CurrentUser() user: any) {
-    return this.authService.deactivateUser(user.id);
-  }
-
   /**
-   * GET /api/v1/admin/users
-   * Paginated user list with role and email verification filters.
-   * Restricted to ADMIN role.
+   * POST /users/me/sessions/revoke-all
+   *
+   * Revoke every active session for the authenticated user except the
+   * current one (unless includeCurrent: true is passed).
+   *
+   * After this call:
+   *  - Tokens from all other devices are added to the Redis blocklist
+   *    and will be rejected on their next request.
+   *  - The caller's own token continues to work (unless includeCurrent).
+   *  - An audit log entry is written.
+   *  - A SYSTEM_ALERT notification is sent.
    */
-  @Get('admin/users')
-  @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: '[Admin] List platform users with role and email verification filters' })
-  @ApiResponse({ status: 200, description: 'Paginated user list' })
-  @ApiResponse({ status: 403, description: 'Admin access required' })
-  @ApiQuery({ name: 'role', required: false, enum: UserRole })
-  @ApiQuery({ name: 'emailVerified', required: false, type: Boolean })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
-  @ApiQuery({ name: 'orderBy', required: false, enum: ['createdAt', 'name'] })
-  findAllUsers(
-    @CurrentUser() user: any,
-    @Query('role') role?: UserRole,
-    @Query('emailVerified') emailVerified?: string,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-    @Query('orderBy') orderBy?: 'createdAt' | 'name',
+  @Post('me/sessions/revoke-all')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Revoke all sessions except the current one (sign out of all other devices)' })
+  @ApiResponse({ status: 200, description: 'Sessions revoked — returns { revokedCount }' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async revokeAllSessions(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: RevokeAllSessionsDto,
+    @Req() req: any,
   ) {
-    if (user?.role !== UserRole.ADMIN) {
-      throw new ForbiddenException('Admin access required');
-    }
-    return this.authService.findAllUsers({
-      role,
-      emailVerified: emailVerified !== undefined ? emailVerified === 'true' : undefined,
-      page: page ? parseInt(page, 10) : undefined,
-      limit: limit ? parseInt(limit, 10) : undefined,
-      orderBy,
+    const currentJti: string = user.jti ?? '';
+    const includeCurrent = dto.includeCurrent ?? false;
+
+    const revokedCount = await this.sessionService.revokeAllSessions(
+      user.id,
+      currentJti,
+      includeCurrent,
+    );
+
+    // Audit log
+    await this.auditLogs.record({
+      actorId: user.id,
+      actorAddress: user.stellarAddress,
+      action: 'session.revoke_all',
+      resourceType: 'user',
+      resourceId: user.id,
+      metadata: { revokedCount, includeCurrent },
+      ipAddress: req.ip,
     });
+
+    // In-app + email notification
+    await this.notifications.notifyUser(
+      user.stellarAddress,
+      NotificationType.SYSTEM_ALERT,
+      'Security alert: sessions revoked',
+      `${revokedCount} active session(s) were signed out${includeCurrent ? ', including your current session' : ''}.`,
+      { revokedCount, includeCurrent },
+    );
+
+    return { revokedCount };
   }
 
   /**
-   * POST /api/v1/users/admin/:id/deactivate
-   * Admin-only suspension, bypassing the self-service active-shipment check.
+   * POST /users/me/phone
+   *
+   * Initiate phone number verification by sending an OTP.
+   * Accepts a phone number in E.164 format.
    */
-  @Post('admin/:id/deactivate')
-  @Roles(UserRole.ADMIN)
+  @Post('me/phone')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: '[Admin] Deactivate a user account, bypassing the active-shipment check' })
-  @ApiResponse({ status: 200, description: 'Account deactivated (or already deactivated)' })
-  @ApiResponse({ status: 400, description: 'Admins cannot deactivate their own account via this route' })
-  @ApiResponse({ status: 403, description: 'Admin access required' })
-  @ApiResponse({ status: 404, description: 'User not found' })
-  deactivateUserAsAdmin(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.authService.adminSetActive(id, false, user.id, user.stellarAddress);
+  @ApiOperation({ summary: 'Initiate phone number verification (send OTP)' })
+  @ApiResponse({ status: 200, description: 'Verification code sent' })
+  @ApiResponse({ status: 400, description: 'Invalid phone number format' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  sendPhoneVerification(@CurrentUser('id') userId: string, @Body() dto: SetPhoneDto) {
+    return this.authService.sendPhoneVerificationOtp(userId, dto.phoneNumber);
   }
 
   /**
-   * POST /api/v1/users/admin/:id/reactivate
+   * POST /users/me/phone/verify
+   *
+   * Verify phone number with the OTP sent to that number.
+   * On success, the phone number is marked as verified.
    */
-  @Post('admin/:id/reactivate')
-  @Roles(UserRole.ADMIN)
+  @Post('me/phone/verify')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: '[Admin] Reactivate a previously deactivated user account' })
-  @ApiResponse({ status: 200, description: 'Account reactivated (or already active)' })
-  @ApiResponse({ status: 403, description: 'Admin access required' })
-  @ApiResponse({ status: 404, description: 'User not found' })
-  reactivateUserAsAdmin(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.authService.adminSetActive(id, true, user.id, user.stellarAddress);
+  @ApiOperation({ summary: 'Verify phone number with OTP' })
+  @ApiResponse({ status: 200, description: 'Phone number verified successfully' })
+  @ApiResponse({ status: 400, description: 'Invalid or expired OTP' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  verifyPhone(@CurrentUser('id') userId: string, @Body() dto: VerifyPhoneDto) {
+    return this.authService.verifyPhone(userId, dto.otp);
   }
 
   /**
-   * GET /api/v1/users/admin/:id
-   * Registered after admin/users (list) so the literal segment isn't
-   * shadowed by this param route, and before :stellarAddress below.
+   * GET /users/:stellarAddress
+   *
+   * Returns the public-facing profile for any registered user identified by
+   * their Stellar address. Only non-sensitive fields are exposed: Stellar
+   * address, display name, organisation name, country code, role, and
+   * account creation date.
    */
-  @Get('admin/:id')
-  @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: '[Admin] Get full detail view of a single user' })
-  @ApiResponse({ status: 200, description: 'Full user record plus computed operational counts' })
-  @ApiResponse({ status: 403, description: 'Admin access required' })
-  @ApiResponse({ status: 404, description: 'User not found' })
-  getAdminUserDetail(@Param('id') id: string) {
-    return this.authService.getAdminUserDetail(id);
-  }
-
   @Get(':stellarAddress')
-  @ApiOperation({ summary: 'Get public profile by Stellar address' })
-  @ApiResponse({ status: 200, description: 'Returns public profile' })
-  @ApiResponse({ status: 400, description: 'Invalid Stellar address format' })
+  @ApiOperation({ summary: 'Get public profile for a user by Stellar address' })
+  @ApiParam({ name: 'stellarAddress', description: 'Stellar public key of the target user' })
+  @ApiResponse({ status: 200, description: 'Public user profile' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
   @ApiResponse({ status: 404, description: 'User not found' })
   getPublicProfile(@Param('stellarAddress') stellarAddress: string) {
-    if (!/^G[A-Z2-7]{55}$/.test(stellarAddress)) {
-      throw new BadRequestException('Invalid Stellar address format');
-    }
     return this.authService.getPublicProfile(stellarAddress);
   }
-
-  @Patch('admin/:id/role')
-  @ApiOperation({ summary: "[Admin] Change a user's role" })
-  @ApiResponse({ status: 200, description: 'Updated user profile' })
-  @ApiResponse({ status: 403, description: 'Admin access required' })
-  @ApiResponse({ status: 409, description: 'Admins cannot demote themselves' })
-  updateRole(
-    @Param('id') id: string,
-    @CurrentUser() user: any,
-    @Body() dto: UpdateUserRoleDto,
-  ) {
-    if (user?.role !== 'ADMIN') {
-      throw new ForbiddenException('Admin access required');
-    }
-    return this.authService.updateUserRole(id, user.id, user.stellarAddress, dto.role);
-  }
 }
+

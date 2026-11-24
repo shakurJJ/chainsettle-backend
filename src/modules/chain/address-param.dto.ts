@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsStellarAddress } from '../../../common/decorators/is-stellar-address.decorator';
+import { IsStellarAddress } from '../../common/decorators/is-stellar-address.decorator';
 
 /**
  * Path-param DTO for routes shaped like GET /chain/account/:address.

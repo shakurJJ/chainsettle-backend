@@ -5,3 +5,8 @@ dist/
 coverage/
 .DS_Store
 sbom.cdx.json
+
+.agents/
+issue.md
+skills-lock.json
+package-lock.json

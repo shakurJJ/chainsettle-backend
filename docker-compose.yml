@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: chainsettle-postgres
+    environment:
+      POSTGRES_USER: chainsetttle
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: chainsetttle_db
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U chainsetttle -d chainsetttle_db']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    container_name: chainsettle-redis
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Optional: Mock Stellar RPC for local frontend development
+  # Run `npm run dev:mock-chain` instead if you need this
+  # mock-stellar-rpc:
+  #   build:
+  #     context: ./test/mocks
+  #   container_name: chainsettle-mock-stellar
+  #   ports:
+  #     - '8787:8787'
+  #     - '8788:8788'
+
+volumes:
+  postgres_data:
+  redis_data:

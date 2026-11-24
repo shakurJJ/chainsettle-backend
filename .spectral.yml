@@ -1,0 +1,64 @@
+# Spectral OpenAPI linting rules for ChainSettle API
+# https://docs.stoplight.io/docs/spectral/
+
+extends: [[spectral:oas, all]]
+
+rules:
+  # ── Core OpenAPI compliance ────────────────────────────────────────────────
+  info-contact: error
+  info-description: error
+  operation-description: warn
+  operation-operationId: error
+  operation-summary: error
+  operation-tags: error
+  
+  # ── Security ───────────────────────────────────────────────────────────────
+  operation-security-defined: error
+  
+  # ── Response standards ─────────────────────────────────────────────────────
+  operation-success-response: error
+  operation-2xx-response: warn
+  operation-4xx-response: warn
+  
+  # ── Parameters ─────────────────────────────────────────────────────────────
+  parameter-description: warn
+  path-params: error
+  
+  # ── Schema quality ─────────────────────────────────────────────────────────
+  no-$ref-siblings: error
+  typed-enum: error
+  
+  # ── Relaxed rules for pragmatic API design ─────────────────────────────────
+  # We allow GET with request bodies for complex queries (e.g., GraphQL-like filtering)
+  operation-get-request-body: off
+  
+  # We use operationId for code generation; duplicates would break SDK generation
+  operation-operationId-unique: error
+  
+  # ── Custom rules ───────────────────────────────────────────────────────────
+  
+  # Enforce consistent error response schema across all error codes
+  consistent-error-response:
+    description: Error responses (4xx, 5xx) should use a consistent schema
+    severity: warn
+    given: $.paths[*][*].responses[?(@property.match(/^[45]\d{2}$/))]
+    then:
+      field: content.application/json.schema
+      function: truthy
+  
+  # Require examples for request bodies in POST/PUT/PATCH operations
+  request-body-examples:
+    description: POST/PUT/PATCH request bodies should include examples
+    severity: warn
+    given: $.paths[*][post,put,patch].requestBody.content[*].schema
+    then:
+      field: example
+      function: truthy
+  
+  # Ensure pagination parameters are consistently named
+  pagination-parameter-names:
+    description: Pagination should use 'page' and 'limit' parameters
+    severity: hint
+    given: $.paths[*].get.parameters[?(@.in == 'query' && (@.name == 'offset' || @.name == 'pageSize'))]
+    then:
+      function: falsy

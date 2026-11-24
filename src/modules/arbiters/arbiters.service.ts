@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { MilestoneStatus } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisService } from '../../common/redis/redis.service';
@@ -10,6 +10,13 @@ export interface ArbiterReputation {
   averageResolutionTimeHours: number | null;
   hasHistory: boolean;
   computedAt: string;
+  availability?: ArbiterAvailability;
+}
+
+export interface ArbiterAvailability {
+  isAway: boolean;
+  awayUntil: string | null;
+  awayMessage: string | null;
 }
 
 const CACHE_PREFIX = 'arbiter:reputation:';
@@ -31,9 +38,65 @@ export class ArbitersService {
    */
   async getReputation(arbiterAddress: string): Promise<ArbiterReputation> {
     const cached = await this.redis.getJson<ArbiterReputation>(CACHE_PREFIX + arbiterAddress);
-    if (cached) return cached;
+    const reputation = cached ?? (await this.computeReputation(arbiterAddress));
 
-    return this.computeReputation(arbiterAddress);
+    // Availability is never cached — it must reflect the arbiter's latest setting (#397).
+    return { ...reputation, availability: await this.getAvailability(arbiterAddress) };
+  }
+
+  /** Current away status for an arbiter address (#397). Unknown users are available. */
+  async getAvailability(arbiterAddress: string): Promise<ArbiterAvailability> {
+    const user = await this.prisma.user.findUnique({
+      where: { stellarAddress: arbiterAddress },
+      select: { arbiterAwayUntil: true, awayMessage: true },
+    });
+    return ArbitersService.toAvailability(user);
+  }
+
+  static toAvailability(
+    user: { arbiterAwayUntil: Date | null; awayMessage: string | null } | null | undefined,
+    now = new Date(),
+  ): ArbiterAvailability {
+    const awayUntil = user?.arbiterAwayUntil ?? null;
+    const isAway = !!awayUntil && awayUntil > now;
+    return {
+      isAway,
+      awayUntil: isAway ? awayUntil!.toISOString() : null,
+      awayMessage: isAway ? user?.awayMessage ?? null : null,
+    };
+  }
+
+  /**
+   * Set or clear the caller's away period (#397). Passing awayUntil = null
+   * (or omitting it) clears the away status and message.
+   */
+  async setAvailability(
+    userId: string,
+    awayUntil: string | null | undefined,
+    awayMessage: string | null | undefined,
+  ): Promise<ArbiterAvailability> {
+    let until: Date | null = null;
+    if (awayUntil) {
+      until = new Date(awayUntil);
+      if (until <= new Date()) {
+        throw new BadRequestException('awayUntil must be in the future');
+      }
+    }
+
+    const user = await this.prisma.user
+      .update({
+        where: { id: userId },
+        data: {
+          arbiterAwayUntil: until,
+          awayMessage: until ? awayMessage ?? null : null,
+        },
+        select: { arbiterAwayUntil: true, awayMessage: true },
+      })
+      .catch(() => {
+        throw new NotFoundException('User not found');
+      });
+
+    return ArbitersService.toAvailability(user);
   }
 
   /** Recomputes and caches the reputation snapshot for one arbiter address. */

@@ -21,6 +21,7 @@ const mockShipments = [
     tokenDecimals: DECIMALS,
     tokenSymbol: 'USDC',
     createdAt: new Date('2025-01-01T00:00:00Z'),
+    expectedDeliveryAt: new Date('2025-01-10T00:00:00Z'),
     milestones: [
       {
         id: 'm-1',
@@ -126,7 +127,7 @@ describe('ShipmentsService — export', () => {
       const [header] = csv.split('\n');
       expect(header).toBe(
         'shipmentId,buyerAddress,supplierAddress,logisticsAddress,arbiterAddress,' +
-        'totalAmount,releasedAmount,status,createdAt,' +
+        'totalAmount,releasedAmount,status,createdAt,expectedDeliveryAt,' +
         'milestoneName,milestoneIndex,paymentPercent,milestoneStatus,proofHash,confirmedAt',
       );
     });

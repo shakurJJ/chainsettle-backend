@@ -53,6 +53,10 @@ enum NotificationType {
   ARBITER_DECLINED
   TRACKING_UPDATED
   PROOF_REJECTED
+  DEADLINE_EXTENSION_REQUESTED
+  DEADLINE_EXTENSION_DECIDED
+  DELIVERY_DELAYED
+  SHIPMENT_COMMENT_CREATED
 }
 
 enum CommentVisibility {
@@ -64,6 +68,12 @@ enum CommentVisibility {
 enum DisputeRole {
   BUYER
   SUPPLIER
+}
+
+enum ExtensionRequestStatus {
+  PENDING
+  APPROVED
+  DENIED
 }
 
 enum UserRole {
@@ -81,6 +91,14 @@ enum KycStatus {
   REJECTED
 }
 
+enum ProofRejectionReason {
+  ILLEGIBLE
+  WRONG_DOCUMENT
+  INCOMPLETE
+  MISMATCHED_QUANTITY
+  OTHER
+}
+
 // ============================================================
 // MODELS
 // ============================================================
@@ -96,6 +114,21 @@ model User {
   deactivatedAt    DateTime? // set when the user deactivates their account (soft-delete)
   kycStatus        KycStatus @default(UNVERIFIED)
   kycReference     String?   // opaque verification reference/ID from the KYC provider — never raw identity documents
+  kycVerifiedAt    DateTime?
+  kycExpiresAt     DateTime?
+  kycReminder30dSentAt DateTime?
+  kycReminder7dSentAt  DateTime?
+  phoneNumber      String?   // E.164 format (e.g., +14155551234)
+  phoneVerified    Boolean   @default(false)
+  pendingPhone     String?   // pending verification change
+  avatarCid        String?   // IPFS CID of the user's profile avatar
+  /// Preferred display currency for converted shipment values.
+  /// Validated against SUPPORTED_CURRENCIES in FxRateService.
+  /// Defaults to 'USD' so existing users see no behaviour change.
+  displayCurrency  String    @default("USD")
+  /// Preferred language locale for notifications and emails (#543).
+  locale           String    @default("en")
+
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -113,12 +146,62 @@ model User {
   shipmentTemplates  ShipmentTemplate[] @relation("ShipmentTemplates")
   webhookEndpoints      WebhookEndpoint[]
   apiKeys     ApiKey[]
+  deviceTokens DeviceToken[]
   notificationPreference NotificationPreference?
+  webPushSubscriptions   WebPushSubscription[]
   shipmentWatchers ShipmentWatcher[] @relation("ShipmentWatchers")
   shipmentFavorites ShipmentFavorite[] @relation("ShipmentFavorites")
+  sentInvitations     ShipmentInvitation[] @relation("SentInvitations")
+  acceptedInvitations ShipmentInvitation[] @relation("AcceptedInvitations")
   savedFilters      SavedFilter[]      @relation("SavedFilters")
+  organizationMemberships OrganizationMember[]
+  createdOrganizations    Organization[]       @relation("OrganizationCreator")
+  announcementDismissals AnnouncementDismissal[]
+  contacts           Contact[]
+  shipmentReminders ShipmentReminder[] @relation("ShipmentReminders")
+  recurringSchedules RecurringSchedule[] @relation("RecurringSchedules")
 
+  @@index([kycExpiresAt])
   @@map("users")
+}
+
+enum AnnouncementSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+/// Admin-managed platform banner (#426). Shown while startsAt <= now < endsAt
+/// to users whose role is in audienceRoles (empty = everyone).
+model Announcement {
+  id            String               @id @default(uuid())
+  title         String
+  body          String
+  severity      AnnouncementSeverity @default(INFO)
+  startsAt      DateTime
+  endsAt        DateTime?
+  audienceRoles UserRole[]           @default([])
+  createdById   String?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  dismissals AnnouncementDismissal[]
+
+  @@index([startsAt, endsAt])
+  @@map("announcements")
+}
+
+model AnnouncementDismissal {
+  announcementId String
+  userId         String
+  dismissedAt    DateTime @default(now())
+
+  announcement Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([announcementId, userId])
+  @@index([userId])
+  @@map("announcement_dismissals")
 }
 
 model Shipment {
@@ -145,14 +228,11 @@ model Shipment {
   referenceNumber  String?         @unique // contract/PO reference for external systems
   metadata         Json?           // arbitrary key-value pairs (incoterms, port, etc)
   tags             String[]        @default([]) // searchable tags
+  expectedDeliveryAt DateTime?     // promised delivery date/time
 
-  /// Co-approvals required before any milestone on this shipment may be
-  /// confirmed. Null means the default single-approver flow.
-  requiredApprovals Int?
-
-  cancelledAt      DateTime?       // set when shipment is cancelled
-  refundTxHash     String?         // on-chain tx hash of the cancel/refund transaction
-  archivedAt       DateTime?       // set when buyer archives a completed/cancelled shipment
+  // Cancellation / refund tracking
+  cancelledAt      DateTime?       // set when shipment is cancelled on-chain
+  refundTxHash     String?         // tx hash of the on-chain cancellation
 
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
@@ -170,10 +250,53 @@ model Shipment {
   watchers  ShipmentWatcher[]
   favorites ShipmentFavorite[]
   approvals ShipmentApproval[]
+  reminders ShipmentReminder[]
 
   isDraft          Boolean         @default(false) // true when created via CSV bulk import; no on-chain backing yet
 
+  lineItems        ShipmentLineItem[]
+
+  @@index([buyerAddress, status, createdAt])
+  @@index([supplierAddress, status, createdAt])
+  @@index([updatedAt])
   @@map("shipments")
+}
+
+/// Structured goods in a shipment — replaces free-text description for reporting
+/// and invoice matching. Created/updated while isDraft=true or status=ACTIVE/DRAFT.
+model ShipmentLineItem {
+  id         String   @id @default(uuid())
+  shipmentId String
+  sku        String?  @db.VarChar(100)
+  name       String   @db.VarChar(255)
+  quantity   Decimal  @db.Decimal(18, 6)
+  unit       String   @default("unit") @db.VarChar(50)  // e.g. "kg", "pcs", "box"
+  unitPrice  Decimal  @db.Decimal(18, 6)                // in the shipment's token units (human-readable, not stroops)
+  currency   String   @default("USDC") @db.VarChar(10)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  @@index([shipmentId])
+  @@map("shipment_line_items")
+}
+
+model Contact {
+  id             String   @id @default(uuid())
+  ownerId        String
+  stellarAddress String
+  label          String
+  defaultRole    UserRole?
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, stellarAddress])
+  @@index([ownerId, label])
+  @@map("contacts")
 }
 
 model Milestone {
@@ -190,30 +313,79 @@ model Milestone {
   overdueNotifiedAt  DateTime?       // timestamp when overdue notification was sent (prevents re-notification)
   overdueReminder3dAt DateTime?       // timestamp when 3-day escalation notification was sent
   disputeEscalatedAt DateTime?       // set when the dispute has been escalated to admins (prevents re-escalation)
+  disputedAt         DateTime?       // when the milestone entered DISPUTED status
+  deletedAt          DateTime?       // soft-delete marker; set by DELETE /shipments/:id/milestones/:index (#306)
   createdAt          DateTime        @default(now())
   updatedAt          DateTime        @updatedAt
 
   // Relations
   shipment        Shipment          @relation(fields: [shipmentId], references: [id])
   disputeEvidence DisputeEvidence[]
+  disputeRationale DisputeRationale?
   proofSubmissions ProofSubmission[]
+  settlementProposals SettlementProposal[]
+  checklistItems MilestoneChecklistItem[]
+  extensionRequests DeadlineExtensionRequest[]
 
   @@unique([shipmentId, milestoneIndex])
+  @@index([dueAt])
   @@map("milestones")
 }
 
-model ProofSubmission {
-  id          String   @id @default(uuid())
+/// Proof expected for a milestone (e.g. "bill of lading"). Defined by the
+/// buyer while the milestone is PENDING; ticked off by supplier/logistics (#392).
+model MilestoneChecklistItem {
+  id          String    @id @default(uuid())
   milestoneId String
-  ipfsCid     String   // IPFS CID of the uploaded proof
-  submittedBy String   // Stellar address of whoever uploaded
-  createdAt   DateTime @default(now())
+  label       String    @db.VarChar(200)
+  required    Boolean   @default(true)
+  completedAt DateTime?
+  completedBy String?   // Stellar address
+  createdAt   DateTime  @default(now())
+
+  milestone Milestone @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
+
+  @@index([milestoneId])
+  @@map("milestone_checklist_items")
+}
+
+/// Supplier/logistics request to move a milestone's dueAt; decided by the buyer (#393).
+model DeadlineExtensionRequest {
+  id            String                 @id @default(uuid())
+  milestoneId   String
+  requestedBy   String                 // Stellar address
+  proposedDueAt DateTime
+  previousDueAt DateTime?
+  reason        String                 @db.VarChar(1000)
+  status        ExtensionRequestStatus @default(PENDING)
+  decidedAt     DateTime?
+  decidedBy     String?                // Stellar address
+  createdAt     DateTime               @default(now())
+
+  milestone Milestone @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
+
+  @@index([milestoneId, status])
+  @@map("deadline_extension_requests")
+}
+
+model ProofSubmission {
+  id             String                @id @default(uuid())
+  milestoneId    String
+  ipfsCid        String                // IPFS CID of the uploaded proof
+  submittedBy    String                // Stellar address of whoever uploaded
+  sha256         String?               // hex SHA-256 of the uploaded file (#394); null for pre-migration rows
+  fileSize       Int?                  // size in bytes of the uploaded file (#394)
+  rejectionCode  ProofRejectionReason? // structured reason code set when the buyer rejects this proof
+  rejectionNote  String?               // free-text note; required when rejectionCode is OTHER
+  createdAt      DateTime              @default(now())
 
   // Relations
   milestone Milestone @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
 
   @@index([milestoneId])
   @@index([submittedBy])
+  @@index([sha256])
+  @@index([rejectionCode])
   @@map("proof_submissions")
 }
 
@@ -236,6 +408,21 @@ model DisputeEvidence {
   @@index([milestoneId])
   @@index([submittedBy])
   @@map("dispute_evidence")
+}
+
+model DisputeRationale {
+  id          String   @id @default(uuid())
+  milestoneId String   @unique
+  writtenBy   String
+  rationale   String   @db.Text
+  ipfsCid     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  milestone Milestone @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
+
+  @@index([writtenBy])
+  @@map("dispute_rationale")
 }
 
 model ChainEvent {
@@ -266,9 +453,11 @@ model Notification {
   title      String
   message    String
   data       Json?            // extra context (shipmentId, amount, etc.)
-  read       Boolean          @default(false)
-  emailSent  Boolean          @default(false)
-  createdAt  DateTime         @default(now())
+  read         Boolean          @default(false)
+  emailSent    Boolean          @default(false)
+  deliverAfter DateTime?
+  snoozedUntil DateTime?        // set by the user; excluded from list while snoozedUntil > now()
+  createdAt    DateTime         @default(now())
 
   // Relations
   user       User                   @relation(fields: [userId], references: [id])
@@ -294,12 +483,61 @@ model NotificationDelivery {
   @@map("notification_deliveries")
 }
 
+
+enum SettlementProposalStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  WITHDRAWN
+}
+
+model SettlementProposal {
+  id              String                   @id @default(uuid())
+  milestoneId     String
+  proposedBy      String
+  supplierPercent Int
+  message         String?
+  status          SettlementProposalStatus @default(PENDING)
+  respondedAt     DateTime?
+  createdAt       DateTime                 @default(now())
+  milestone       Milestone                @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
+
+  @@index([milestoneId, status])
+  @@map("settlement_proposals")
+}
 model EventCursor {
   id                  String   @id
   lastProcessedLedger Int
   updatedAt           DateTime @updatedAt
 
   @@map("event_cursors")
+}
+
+enum BackfillStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+/// Tracks a single admin-initiated ledger-range event backfill.
+/// Only one row may be in PENDING or RUNNING state at a time.
+model BackfillRun {
+  id             String        @id @default(uuid())
+  status         BackfillStatus @default(PENDING)
+  fromLedger     Int
+  toLedger       Int
+  processedCount Int           @default(0)  // events successfully processed
+  errorCount     Int           @default(0)  // events that failed handler execution
+  currentLedger  Int?                       // last ledger polled (progress indicator)
+  errorSummary   Json?                      // array of { ledger, txHash, eventName, error }
+  startedAt      DateTime      @default(now())
+  completedAt    DateTime?
+  initiatedBy    String?                    // Stellar address of the admin who triggered it
+
+  @@index([status])
+  @@index([startedAt])
+  @@map("backfill_runs")
 }
 
 model FailedEvent {
@@ -327,15 +565,21 @@ model ShipmentComment {
   visibility    CommentVisibility @default(ALL)
   attachmentCid String?
   pinnedAt      DateTime?         // set when pinned; null when unpinned (max 3 per shipment)
+  parentCommentId String?         // set when this comment is a reply to another comment (#299)
+  milestoneIndex  Int?            // optional milestone this comment is scoped to (#396)
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
   deletedAt     DateTime?
 
-  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
-  author   User     @relation(fields: [authorId], references: [id])
+  shipment Shipment          @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  author   User              @relation(fields: [authorId], references: [id])
+  parent   ShipmentComment?  @relation("CommentReplies", fields: [parentCommentId], references: [id], onDelete: SetNull)
+  replies  ShipmentComment[] @relation("CommentReplies")
 
   @@index([shipmentId])
   @@index([authorId])
+  @@index([parentCommentId])
+  @@index([shipmentId, milestoneIndex])
   @@map("shipment_comments")
 }
 
@@ -399,8 +643,14 @@ model AuditLog {
 model NotificationPreference {
   id              String   @id @default(uuid())
   userId          String   @unique
-  preferences     Json     // Record<NotificationType, { inApp: boolean; email: boolean; slack: boolean }>
+  preferences     Json     // Record<NotificationType, channel flags including inApp, email, slack, sms, discord, push and telegram>
   slackWebhookUrl String?  // Incoming Slack webhook URL; null disables Slack delivery
+  discordWebhookUrl String? // Incoming Discord webhook URL; null disables Discord delivery
+  telegramChatId   String?  @unique
+  telegramLinkCodeHash String? @unique
+  telegramLinkExpiresAt DateTime?
+  smsSentCount    Int      @default(0)   // SMS sent this rolling 24h window
+  smsWindowStart  DateTime @default(now()) // Start of current 24h rate-limit window
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -420,6 +670,7 @@ model WebhookEndpoint {
   url        String
   secret     String    // SHA-256 hash of the plaintext signing secret
   events     String[]  // NotificationType values this endpoint subscribes to
+  headers    Json?     // Encrypted custom headers: { "name": "encrypted-value", ... }
   active     Boolean   @default(true)
   /// PENDING_VERIFICATION endpoints receive no events until the challenge handshake passes.
   status     WebhookEndpointStatus @default(ACTIVE)
@@ -478,13 +729,15 @@ model ShipmentTemplate {
   logisticsAddress  String?
   arbiterAddress    String?
   tokenAddress      String?
-  milestoneTemplates Json    // array of { name, paymentPercent, dueDays? }
+  milestoneTemplates Json    // array of { name, paymentPercent, dueDays?, checklist?: { label, required? }[] }
   isPublic          Boolean  @default(false)
+  deletedAt         DateTime? // soft-delete marker; set by DELETE /shipment-templates/:id (#306)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
   // Relations
   owner User @relation("ShipmentTemplates", fields: [ownerId], references: [id], onDelete: Cascade)
+  recurringSchedules RecurringSchedule[]
 
   @@index([ownerId])
   @@index([isPublic])
@@ -496,15 +749,49 @@ model ApiKey {
   userId      String
   keyHash     String    @unique  // SHA-256 hash of the plaintext key
   name        String             // human label e.g. "CI Pipeline"
+  scopes      String[]  @default(["read", "write"]) // allowed: "read", "write"
   lastUsedAt  DateTime?
+  expiresAt   DateTime?          // null = never expires; set = key expires at this time
+  expiryWarningSentAt DateTime?  // set when the 7-day warning notification was sent (prevents duplicates)
   createdAt   DateTime  @default(now())
   revokedAt   DateTime?          // null = active, set = revoked
+  rotatedFromId   String?        // ID of the predecessor key this was rotated from
+  gracePeriodEndsAt DateTime?    // when set, the revoked predecessor key is still valid until this time
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([keyHash])
   @@index([userId])
+  @@index([expiresAt])
+  @@index([gracePeriodEndsAt])
   @@map("api_keys")
+}
+
+model WebPushSubscription {
+  id        String   @id @default(uuid())
+  userId    String
+  endpoint  String   @unique // push service URL (acts as the device identity)
+  p256dh    String   // client public key (base64url)
+  auth      String   // auth secret (base64url)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("web_push_subscriptions")
+}
+
+model DeviceToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique // FCM registration token
+  platform  String   @default("fcm") // "fcm" (covers Android + iOS via FCM)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("device_tokens")
 }
 
 model AppConfig {
@@ -578,19 +865,6 @@ model ShipmentWatcher {
   @@map("shipment_watchers")
 }
 
-model ShipmentFavorite {
-  id         String   @id @default(uuid())
-  shipmentId String
-  userId     String
-  createdAt  DateTime @default(now())
-
-  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
-  user     User     @relation("ShipmentFavorites", fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([shipmentId, userId])
-  @@index([userId])
-  @@map("shipment_favorites")
-}
 
 /// Cold-storage copy of a COMPLETED/CANCELLED shipment moved out of the hot
 /// `shipments` table by the scheduled archival job. `payload` retains the full
@@ -615,4 +889,129 @@ model ArchivedShipment {
   @@index([archivedAt])
   @@index([terminalAt])
   @@map("archived_shipments")
+}
+
+/// Invitation for a counterparty who has no account yet (#379).
+/// Only the SHA-256 hash of the single-use token is stored.
+model ShipmentInvitation {
+  id           String    @id @default(uuid())
+  shipmentId   String?
+  templateId   String?
+  email        String
+  role         UserRole
+  tokenHash    String    @unique
+  invitedById  String
+  acceptedById String?
+  acceptedAt   DateTime?
+  expiresAt    DateTime
+  createdAt    DateTime  @default(now())
+
+  invitedBy  User  @relation("SentInvitations", fields: [invitedById], references: [id], onDelete: Cascade)
+  acceptedBy User? @relation("AcceptedInvitations", fields: [acceptedById], references: [id])
+
+  @@index([invitedById, createdAt])
+  @@map("shipment_invitations")
+}
+
+/// A personal follow-up a user sets on a shipment (#386). Private to its
+/// creator; delivered once by ShipmentReminderJob when `remindAt` passes.
+model ShipmentReminder {
+  id         String    @id @default(uuid())
+  shipmentId String
+  userId     String
+  remindAt   DateTime
+  message    String
+  sentAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  user     User     @relation("ShipmentReminders", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([shipmentId, userId])
+  @@index([sentAt, remindAt])
+  @@map("shipment_reminders")
+}
+
+enum RecurringInterval {
+  WEEKLY
+  MONTHLY
+}
+
+/// Creates a draft shipment from a template on a fixed cadence (#389).
+model RecurringSchedule {
+  id          String            @id @default(uuid())
+  ownerId     String
+  templateId  String
+  interval    RecurringInterval
+  totalAmount BigInt            // stroops; templates carry no amount
+  nextRunAt   DateTime
+  lastRunAt   DateTime?
+  active      Boolean           @default(true)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  owner    User             @relation("RecurringSchedules", fields: [ownerId], references: [id], onDelete: Cascade)
+  template ShipmentTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId])
+  @@index([templateId])
+  @@index([active, nextRunAt])
+  @@map("recurring_schedules")
+}
+
+// ============================================================
+// EMAIL SUPPRESSION (#434)
+// ============================================================
+
+enum EmailSuppressionReason {
+  BOUNCE
+  COMPLAINT
+}
+
+model EmailSuppression {
+  id        String                 @id @default(uuid())
+  email     String                 @unique // stored lower-cased
+  reason    EmailSuppressionReason
+  createdAt DateTime               @default(now())
+
+  @@map("email_suppressions")
+}
+
+// ============================================================
+// ORGANIZATIONS (#435)
+// ============================================================
+
+enum OrganizationRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  createdBy String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  creator User                 @relation("OrganizationCreator", fields: [createdBy], references: [id])
+  members OrganizationMember[]
+
+  @@map("organizations")
+}
+
+model OrganizationMember {
+  id        String           @id @default(uuid())
+  orgId     String
+  userId    String
+  role      OrganizationRole @default(MEMBER)
+  createdAt DateTime         @default(now())
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId])
+  @@index([userId])
+  @@map("organization_members")
 }

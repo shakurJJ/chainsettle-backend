@@ -25,4 +25,24 @@ export class UpdateTokenDto {
   @IsOptional()
   @IsBoolean()
   enabled?: boolean;
+
+  @ApiProperty({
+    description: 'Minimum shipment value in the token\'s smallest unit (e.g. stroops). Omit to leave unchanged; null clears it.',
+    required: false,
+    nullable: true,
+    example: '10000000',
+  })
+  @IsOptional()
+  @Matches(/^\d+$/, { message: 'minValue must be a non-negative integer string (smallest unit)' })
+  minValue?: string | null;
+
+  @ApiProperty({
+    description: 'Maximum shipment value in the token\'s smallest unit (e.g. stroops). Omit to leave unchanged; null clears it.',
+    required: false,
+    nullable: true,
+    example: '100000000000000',
+  })
+  @IsOptional()
+  @Matches(/^\d+$/, { message: 'maxValue must be a non-negative integer string (smallest unit)' })
+  maxValue?: string | null;
 }

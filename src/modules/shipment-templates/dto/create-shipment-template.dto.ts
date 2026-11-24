@@ -8,10 +8,25 @@ import {
   Min,
   Max,
   IsBoolean,
+  MaxLength,
+  ArrayMaxSize,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
 import { IsStellarAddress } from '../../../common/decorators/is-stellar-address.decorator';
+
+export class ChecklistItemTemplateDto {
+  @ApiProperty({ example: 'Bill of lading' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  label: string;
+
+  @ApiProperty({ required: false, default: true })
+  @IsOptional()
+  @IsBoolean()
+  required?: boolean;
+}
 
 export class MilestoneTemplateDto {
   @ApiProperty({ example: 'Goods Dispatched' })
@@ -30,6 +45,14 @@ export class MilestoneTemplateDto {
   @IsInt()
   @Min(0)
   dueDays?: number;
+
+  @ApiProperty({ required: false, type: [ChecklistItemTemplateDto], description: 'Checklist items copied onto the milestone when a shipment is created from this template' })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => ChecklistItemTemplateDto)
+  checklist?: ChecklistItemTemplateDto[];
 }
 
 export class CreateShipmentTemplateDto {
@@ -117,4 +140,10 @@ export class UpdateShipmentTemplateDto {
   @IsOptional()
   @IsBoolean()
   isPublic?: boolean;
+}
+
+export class UpdateTemplateVisibilityDto {
+  @ApiProperty({ example: true, description: 'Whether the template should be visible to all users' })
+  @IsBoolean()
+  isPublic: boolean;
 }

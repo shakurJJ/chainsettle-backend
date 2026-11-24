@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Controller,
   Get,
   Header,
@@ -6,12 +7,13 @@ import {
   Res,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
 import type { Response } from 'express';
 import { CalendarService } from './calendar.service';
+import { MilestonesService } from './milestones.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { Public } from '../../common/decorators/public.decorator';
-import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { AuthenticatedUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 
 /**
  * Per-user milestone calendar subscription.
@@ -25,7 +27,35 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 @ApiTags('milestones')
 @Controller('users/me/milestones')
 export class UserCalendarController {
-  constructor(private readonly calendar: CalendarService) {}
+  constructor(
+    private readonly calendar: CalendarService,
+    private readonly milestones: MilestonesService,
+  ) {}
+
+  /**
+   * GET /api/v1/users/me/milestones/upcoming?days=14&includeOverdue=false
+   * Milestones due soon across every ACTIVE shipment the caller participates in (#395).
+   */
+  @Get('upcoming')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'List your milestones due in the next N days across all shipments' })
+  @ApiQuery({ name: 'days', required: false, type: Number, description: 'Window in days (1-90, default 14)' })
+  @ApiQuery({ name: 'includeOverdue', required: false, type: Boolean })
+  @ApiResponse({ status: 200, description: 'Upcoming milestones sorted by dueAt ascending' })
+  @ApiResponse({ status: 400, description: 'days out of range' })
+  getUpcoming(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query('days') days?: string,
+    @Query('includeOverdue') includeOverdue?: string,
+  ) {
+    const window = days === undefined ? 14 : Number(days);
+    if (!Number.isInteger(window) || window < 1 || window > 90) {
+      throw new BadRequestException('days must be an integer between 1 and 90');
+    }
+    const callerAddress: string = user?.stellarAddress ?? user?.sub;
+    return this.milestones.getUpcomingForUser(callerAddress, window, includeOverdue === 'true');
+  }
 
   /**
    * GET /api/v1/users/me/milestones/calendar-token
@@ -36,7 +66,7 @@ export class UserCalendarController {
   @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Get a subscription token for your milestone calendar feed' })
   @ApiResponse({ status: 200, description: 'Subscription token and feed path' })
-  getCalendarToken(@CurrentUser() user: any) {
+  getCalendarToken(@CurrentUser() user: AuthenticatedUser) {
     const token = this.calendar.issueToken(user.id);
     return {
       token,

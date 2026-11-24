@@ -13,6 +13,7 @@ import { Logger, Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { NotificationType } from '@prisma/client';
+import { PrismaService } from '../../common/prisma/prisma.service';
 
 /**
  * NotificationsGateway
@@ -24,14 +25,19 @@ import { NotificationType } from '@prisma/client';
  *   On connection, the JWT is verified and the socket joins a room
  *   keyed by userId so notifyUser() can emit to the right subscriber.
  *
- * Rooms: each authenticated user lives in room `user:<userId>`.
+ * Rooms: 
+ *   - Each authenticated user lives in room `user:<userId>`.
+ *   - Users can join shipment rooms `shipment:<shipmentId>` to receive chain events.
  *
  * Events (server → client):
  *   notification  — pushed whenever notifyUser() persists a new record
+ *   chainEvent    — pushed whenever a chain event affects a joined shipment
  *
  * Events (client → server):
- *   subscribe     — optional filter to receive only specific NotificationTypes
- *   unsubscribe   — remove a previously set type filter
+ *   subscribe           — optional filter to receive only specific NotificationTypes
+ *   unsubscribe         — remove a previously set type filter
+ *   joinShipmentRoom    — join a shipment room to receive live chain events
+ *   leaveShipmentRoom   — leave a shipment room
  */
 @Injectable()
 @WebSocketGateway({
@@ -57,6 +63,7 @@ export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisco
   constructor(
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
+    private readonly prisma: PrismaService,
   ) {}
 
   // ─── Lifecycle ────────────────────────────────────────────────────────────
@@ -133,6 +140,62 @@ export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisco
     return { event: 'unsubscribed', data: {} };
   }
 
+  @SubscribeMessage('joinShipmentRoom')
+  async handleJoinShipmentRoom(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: { shipmentId: string },
+  ) {
+    const userId = this.socketUserMap.get(client.id);
+    if (!userId) throw new WsException('Unauthenticated');
+    if (!body?.shipmentId) throw new WsException('Missing shipmentId');
+
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new WsException('User not found');
+
+    const shipment = await this.prisma.shipment.findUnique({
+      where: { id: body.shipmentId },
+      include: { watchers: { where: { userId } } }
+    });
+
+    if (!shipment) throw new WsException('Shipment not found');
+
+    // Authorization: Must be participant, watcher, or admin
+    const isParticipant = [
+      shipment.buyerAddress,
+      shipment.supplierAddress,
+      shipment.logisticsAddress,
+      shipment.arbiterAddress,
+    ].includes(user.stellarAddress);
+
+    const isWatcher = shipment.watchers.length > 0;
+    const isAdmin = user.role === 'ADMIN';
+
+    if (!isParticipant && !isWatcher && !isAdmin) {
+      throw new WsException('Unauthorized to join this shipment room');
+    }
+
+    const roomName = `shipment:${body.shipmentId}`;
+    await client.join(roomName);
+    this.logger.debug(`[WS] Client ${client.id} joined ${roomName}`);
+    
+    return { event: 'joinedShipmentRoom', data: { shipmentId: body.shipmentId } };
+  }
+
+  @SubscribeMessage('leaveShipmentRoom')
+  async handleLeaveShipmentRoom(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: { shipmentId: string },
+  ) {
+    if (!this.socketUserMap.has(client.id)) throw new WsException('Unauthenticated');
+    if (!body?.shipmentId) return;
+
+    const roomName = `shipment:${body.shipmentId}`;
+    await client.leave(roomName);
+    this.logger.debug(`[WS] Client ${client.id} left ${roomName}`);
+    
+    return { event: 'leftShipmentRoom', data: { shipmentId: body.shipmentId } };
+  }
+
   // ─── Server-side push ─────────────────────────────────────────────────────
 
   /**
@@ -161,6 +224,20 @@ export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisco
     });
 
     this.logger.debug(`[WS] Pushed notification ${notification.id} to room ${room}`);
+  }
+
+  /** Emits an arbitrary event to every socket of a user (e.g. `chain:tx` status updates). */
+  pushEvent(userId: string, event: string, payload: Record<string, any>) {
+    this.server?.to(this.userRoom(userId)).emit(event, payload);
+  }
+
+  /**
+   * Pushes a live chain event to all sockets subscribed to a specific shipment.
+   */
+  pushToShipmentRoom(shipmentId: string, eventName: string, payload: any) {
+    const room = `shipment:${shipmentId}`;
+    this.server.to(room).emit('chainEvent', { shipmentId, eventName, payload });
+    this.logger.debug(`[WS] Pushed chainEvent (${eventName}) to room ${room}`);
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────

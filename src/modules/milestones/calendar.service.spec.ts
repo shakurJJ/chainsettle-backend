@@ -335,7 +335,7 @@ describe('CalendarService', () => {
       await service.getShipmentMilestones('SHIP-1');
 
       const args = prisma.milestone.findMany.mock.calls[0][0];
-      expect(args.where).toEqual({ shipmentId: 'SHIP-1', dueAt: { not: null } });
+      expect(args.where).toEqual({ shipmentId: 'SHIP-1', dueAt: { not: null }, deletedAt: null });
       expect(args.orderBy).toEqual({ dueAt: 'asc' });
     });
   });

@@ -1,7 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { RedisService } from '../../common/redis/redis.service';
+import { runTrackedJob } from '../../common/jobs/job-tracker.util';
 import { MilestoneStatus, NotificationType } from '@prisma/client';
 
 /**
@@ -31,19 +34,22 @@ export class MilestoneDeadlineJob {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    private readonly config: ConfigService,
+    @Optional() private readonly redis?: RedisService,
   ) {
-    this.reminder1Days = parseInt(process.env.OVERDUE_REMINDER_1_DAYS ?? '0', 10);
-    this.reminder3Days = parseInt(process.env.OVERDUE_REMINDER_3_DAYS ?? '3', 10);
+    this.reminder1Days = this.config.get<number>('OVERDUE_REMINDER_1_DAYS', 0);
+    this.reminder3Days = this.config.get<number>('OVERDUE_REMINDER_3_DAYS', 3);
   }
 
   /**
    * Scheduled job: runs every hour
    * Detects overdue milestones and sends notifications
    */
-  @Cron(CronExpression.EVERY_HOUR)
+  @Cron(CronExpression.EVERY_HOUR, { name: 'milestone-deadline' })
   async checkAndNotifyOverdue() {
-    try {
-      this.logger.log('Starting milestone deadline check...');
+    const execute = async () => {
+      try {
+        this.logger.log('Starting milestone deadline check...');
 
       const now = new Date();
 
@@ -54,6 +60,7 @@ export class MilestoneDeadlineJob {
           status: {
             in: [MilestoneStatus.PENDING, MilestoneStatus.PROOF_SUBMITTED],
           },
+          deletedAt: null,
           overdueNotifiedAt: null,
         },
         include: {
@@ -85,6 +92,7 @@ export class MilestoneDeadlineJob {
           status: {
             in: [MilestoneStatus.PENDING, MilestoneStatus.PROOF_SUBMITTED],
           },
+          deletedAt: null,
           overdueNotifiedAt: {
             not: null,
             lt: escalationCutoff, // initial notice was sent more than 3 days ago
@@ -102,16 +110,23 @@ export class MilestoneDeadlineJob {
         },
       });
 
-      if (escalationMilestones.length === 0) {
-        this.logger.log('No milestones require 3-day escalation');
-      } else {
-        this.logger.log(`Found ${escalationMilestones.length} milestone(s) requiring 3-day escalation`);
-        for (const milestone of escalationMilestones) {
-          await this.notifyEscalation(milestone);
+        if (escalationMilestones.length === 0) {
+          this.logger.log('No milestones require 3-day escalation');
+        } else {
+          this.logger.log(`Found ${escalationMilestones.length} milestone(s) requiring 3-day escalation`);
+          for (const milestone of escalationMilestones) {
+            await this.notifyEscalation(milestone);
+          }
         }
+      } catch (error) {
+        this.logger.error('Milestone deadline check failed', error.message);
       }
-    } catch (error) {
-      this.logger.error('Milestone deadline check failed', error.message);
+    };
+
+    if (this.redis) {
+      await runTrackedJob(this.redis, 'milestone-deadline', execute, this.logger);
+    } else {
+      await execute();
     }
   }
 

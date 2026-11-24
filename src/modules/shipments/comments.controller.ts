@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -13,7 +14,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { AuthenticatedUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { CommentsService } from './comments.service';
 import { CreateCommentDto } from './dto/create-comment.dto';
 import { ShipmentParticipantGuard } from './guards/shipment-participant.guard';
@@ -31,22 +32,53 @@ export class CommentsController {
   create(
     @Param('id') shipmentId: string,
     @Body() dto: CreateCommentDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.commentsService.create(shipmentId, user.sub, user.stellarAddress, dto);
   }
 
   @Get()
-  @ApiOperation({ summary: 'List comments on a shipment (visibility-filtered). Pinned comments sort first.' })
+  @ApiOperation({
+    summary:
+      'List root comments on a shipment (visibility-filtered), each with a replyCount. Pinned comments sort first. ' +
+      'A deleted root that still has replies is returned with deleted: true and its body redacted.',
+  })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiQuery({ name: 'milestoneIndex', required: false, type: Number, description: 'Only comments scoped to this milestone' })
   findAll(
     @Param('id') shipmentId: string,
     @Query('page') page?: number,
     @Query('limit') limit?: number,
-    @CurrentUser() user: any = {},
+    @CurrentUser() user: AuthenticatedUser = {},
+    @Query('milestoneIndex') milestoneIndex?: string,
   ) {
-    return this.commentsService.findAll(shipmentId, user.stellarAddress, page, limit);
+    let milestoneFilter: number | undefined;
+    if (milestoneIndex !== undefined && milestoneIndex !== '') {
+      milestoneFilter = Number(milestoneIndex);
+      if (!Number.isInteger(milestoneFilter) || milestoneFilter < 0) {
+        throw new BadRequestException('milestoneIndex must be a non-negative integer');
+      }
+    }
+    return this.commentsService.findAll(shipmentId, user.stellarAddress, page, limit, milestoneFilter);
+  }
+
+  /**
+   * GET /shipments/:id/comments/:commentId/replies
+   * List the direct replies to a comment, oldest first (#299).
+   */
+  @Get(':commentId/replies')
+  @ApiOperation({ summary: 'List replies to a comment (visibility-filtered), oldest first' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  findReplies(
+    @Param('id') shipmentId: string,
+    @Param('commentId') commentId: string,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+    @CurrentUser() user: AuthenticatedUser = {},
+  ) {
+    return this.commentsService.findReplies(shipmentId, commentId, user.stellarAddress, page, limit);
   }
 
   /**
@@ -60,7 +92,7 @@ export class CommentsController {
   pin(
     @Param('id') shipmentId: string,
     @Param('commentId') commentId: string,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.commentsService.setPinned(shipmentId, commentId, true, user.sub, user.stellarAddress);
   }
@@ -76,7 +108,7 @@ export class CommentsController {
   unpin(
     @Param('id') shipmentId: string,
     @Param('commentId') commentId: string,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.commentsService.setPinned(shipmentId, commentId, false, user.sub, user.stellarAddress);
   }
@@ -87,7 +119,7 @@ export class CommentsController {
   remove(
     @Param('id') shipmentId: string,
     @Param('commentId') commentId: string,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.commentsService.remove(shipmentId, commentId, user.sub, user.stellarAddress);
   }

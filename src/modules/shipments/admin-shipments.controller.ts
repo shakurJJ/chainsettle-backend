@@ -4,7 +4,7 @@ import { UserRole } from '@prisma/client';
 import { ShipmentsService } from './shipments.service';
 import { FindStuckShipmentsDto } from './dto/find-stuck-shipments.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { AuthenticatedUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 
 /**
@@ -50,7 +50,7 @@ export class AdminShipmentsController {
   @ApiResponse({ status: 200, description: 'Shipment synced and returned' })
   @ApiResponse({ status: 403, description: 'Not authorized (admin only)' })
   @ApiResponse({ status: 404, description: 'Shipment not found' })
-  forceSync(@Param('id') id: string, @CurrentUser() user: any) {
+  forceSync(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.shipmentsService.adminForceSync(id, user.id, user.stellarAddress);
   }
 }

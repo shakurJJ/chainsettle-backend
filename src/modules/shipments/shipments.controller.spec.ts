@@ -1,6 +1,7 @@
 // NOTE: This repository's CI/test runner appears misconfigured in the current environment.
 // Tests added for RBAC logic are primarily meant for Jest unit testing in a properly set up CI.
 
+import { OrganizationsService } from '../organizations/organizations.service';
 import { ForbiddenException } from '@nestjs/common';
 import { ShipmentsController } from './shipments.controller';
 import { ShipmentsService } from './shipments.service';
@@ -34,6 +35,7 @@ describe('ShipmentsController (RBAC)', () => {
             mockApprovals as ShipmentApprovalsService,
             mockSavedFilters as SavedFiltersService,
             mockRedis as RedisService,
+            {} as OrganizationsService,
         );
 
         const dto: any = {
@@ -62,6 +64,7 @@ describe('ShipmentsController (RBAC)', () => {
             mockApprovals as ShipmentApprovalsService,
             mockSavedFilters as SavedFiltersService,
             mockRedis as RedisService,
+            {} as OrganizationsService,
         );
 
         const dto: any = {
@@ -95,6 +98,7 @@ describe('ShipmentsController (RBAC)', () => {
             mockApprovals as ShipmentApprovalsService,
             mockSavedFilters as SavedFiltersService,
             redisMock as RedisService,
+            {} as OrganizationsService,
         );
 
         const dto: any = {
@@ -111,6 +115,26 @@ describe('ShipmentsController (RBAC)', () => {
         const result = await controller.create(dto, { sub: 'user-1', stellarAddress: 'GBUY-ME', role: 'BUYER' }, 'key-abc');
         expect(result).toEqual(cached);
         expect(mockService.create).not.toHaveBeenCalled();
+    });
+
+    it('delegates GET /shipments/:id/documents to shipmentsService.getDocuments', async () => {
+        const mockDocuments = [{ source: 'PROOF', cid: 'Qm123', downloadUrl: '/api/v1/ipfs/Qm123' }];
+        const mockService: Partial<ShipmentsService> = {
+            getDocuments: jest.fn().mockResolvedValue(mockDocuments),
+        };
+
+        const controller = new ShipmentsController(
+            mockService as ShipmentsService,
+            mockApprovals as ShipmentApprovalsService,
+            mockSavedFilters as SavedFiltersService,
+            mockRedis as RedisService,
+            {} as any,
+            {} as any,
+        );
+
+        const result = await controller.getDocuments('SHIP-1', { source: 'PROOF' }, { stellarAddress: 'GBUY-ME', role: 'BUYER' });
+        expect(result).toEqual(mockDocuments);
+        expect(mockService.getDocuments).toHaveBeenCalledWith('SHIP-1', 'GBUY-ME', false, 'PROOF');
     });
 });
 

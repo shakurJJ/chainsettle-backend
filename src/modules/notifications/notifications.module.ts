@@ -5,7 +5,11 @@ import { NotificationsService } from './notifications.service';
 import { NotificationsController } from './notifications.controller';
 import { NotificationsGateway } from './notifications.gateway';
 import { NotificationDigestJob } from './notification-digest.job';
+import { NotificationCleanupJob } from './notification-cleanup.job';
 import { WebhooksModule } from '../webhooks/webhooks.module';
+import { PushNotificationService } from './push-notification.service';
+import { WebPushService } from './web-push.service';
+import { TelegramService } from './telegram.service';
 
 @Module({
   imports: [
@@ -19,8 +23,8 @@ import { WebhooksModule } from '../webhooks/webhooks.module';
     }),
     WebhooksModule,
   ],
-  providers: [NotificationsService, NotificationsGateway, NotificationDigestJob],
+  providers: [NotificationsService, NotificationsGateway, NotificationDigestJob, PushNotificationService, WebPushService, TelegramService],
   controllers: [NotificationsController],
-  exports: [NotificationsService, NotificationsGateway],
+  exports: [NotificationsService, NotificationsGateway, PushNotificationService, WebPushService, TelegramService],
 })
 export class NotificationsModule {}

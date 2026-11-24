@@ -1,7 +1,8 @@
-import { ExceptionFilter, Catch, ArgumentsHost } from '@nestjs/common';
+import { ExceptionFilter, Catch, ArgumentsHost, Injectable } from '@nestjs/common';
 import { ThrottlerException } from '@nestjs/throttler';
 import { Request, Response } from 'express';
 import { RateLimitInfo } from '../guards/rate-limit-throttler.guard';
+import { I18nService } from '../../i18n/i18n.service';
 
 /**
  * Custom exception filter for throttler exceptions.
@@ -14,21 +15,20 @@ export class ThrottlerExceptionFilter implements ExceptionFilter {
 
   catch(exception: ThrottlerException, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
-    const request = ctx.getRequest<Request & { rateLimit?: RateLimitInfo }>();
+    const request = ctx.getRequest<Request & { rateLimit?: RateLimitInfo; locale?: string }>();
     const response = ctx.getResponse<Response>();
-    const request = ctx.getRequest<Request>();
     const status = exception.getStatus();
-    const exceptionResponse = exception.getResponse();
 
     const rate = request.rateLimit;
     const reset = rate?.reset ?? 60;
     const limit = rate?.limit;
     const remaining = rate?.remaining ?? 0;
 
-    const message =
-      typeof exceptionResponse === 'string'
-        ? exceptionResponse
-        : (exceptionResponse as { message?: string })?.message || 'Too Many Requests';
+    const acceptLanguage = request.headers?.['accept-language'];
+    const locale =
+      request.locale ??
+      this.i18n.resolveLocale(Array.isArray(acceptLanguage) ? acceptLanguage[0] : acceptLanguage);
+    const message = this.i18n.t('errors.TOO_MANY_REQUESTS', locale);
 
     response
       .status(status)

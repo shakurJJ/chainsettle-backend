@@ -1,9 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
-import * as fs from 'fs';
-import * as path from 'path';
+import { Injectable, Logger } from "@nestjs/common";
+import * as fs from "fs";
+import * as path from "path";
 
-export const DEFAULT_LOCALE = 'en';
-export const SUPPORTED_LOCALES = ['en', 'es'] as const;
+export const DEFAULT_LOCALE = "en";
+export const SUPPORTED_LOCALES = ["en", "es", "fr"] as const;
 export type SupportedLocale = (typeof SUPPORTED_LOCALES)[number];
 
 type LocaleTree = Record<string, unknown>;
@@ -25,17 +25,17 @@ export class I18nService {
     if (!acceptLanguage) return DEFAULT_LOCALE;
 
     const candidates = acceptLanguage
-      .split(',')
+      .split(",")
       .map((part) => {
-        const [tag, ...params] = part.trim().split(';');
-        const qParam = params.find((p) => p.trim().startsWith('q='));
-        const q = qParam ? parseFloat(qParam.split('=')[1]) : 1;
+        const [tag, ...params] = part.trim().split(";");
+        const qParam = params.find((p) => p.trim().startsWith("q="));
+        const q = qParam ? parseFloat(qParam.split("=")[1]) : 1;
         return { tag: tag.trim().toLowerCase(), q: Number.isFinite(q) ? q : 1 };
       })
       .sort((a, b) => b.q - a.q);
 
     for (const { tag } of candidates) {
-      const primary = tag.split('-')[0] as SupportedLocale;
+      const primary = tag.split("-")[0] as SupportedLocale;
       if (SUPPORTED_LOCALES.includes(primary)) {
         return primary;
       }
@@ -54,11 +54,9 @@ export class I18nService {
     args: Record<string, string | number> = {},
   ): string {
     const raw =
-      this.lookup(locale, key) ??
-      this.lookup(DEFAULT_LOCALE, key) ??
-      key;
+      this.lookup(locale, key) ?? this.lookup(DEFAULT_LOCALE, key) ?? key;
 
-    if (typeof raw !== 'string') {
+    if (typeof raw !== "string") {
       return key;
     }
 
@@ -74,15 +72,21 @@ export class I18nService {
    * - Objects shaped like `{ i18nKey: 'errors.FOO', args?: {...} }`
    */
   translateErrorMessage(message: unknown, locale: string): unknown {
-    if (message && typeof message === 'object' && !Array.isArray(message)) {
-      const payload = message as { i18nKey?: string; args?: Record<string, string | number>; message?: unknown };
+    if (message && typeof message === "object" && !Array.isArray(message)) {
+      const payload = message as {
+        i18nKey?: string;
+        args?: Record<string, string | number>;
+        message?: unknown;
+      };
       if (payload.i18nKey) {
         return this.t(payload.i18nKey, locale, payload.args ?? {});
       }
       if (Array.isArray(payload.message)) {
-        return payload.message.map((m) => this.translateErrorMessage(m, locale));
+        return payload.message.map((m) =>
+          this.translateErrorMessage(m, locale),
+        );
       }
-      if (typeof payload.message === 'string') {
+      if (typeof payload.message === "string") {
         return this.translateErrorMessage(payload.message, locale);
       }
       return message;
@@ -92,12 +96,12 @@ export class I18nService {
       return message.map((m) => this.translateErrorMessage(m, locale));
     }
 
-    if (typeof message !== 'string') {
+    if (typeof message !== "string") {
       return message;
     }
 
     // Direct key usage: "errors.ONLY_BUYER_MAY_CONFIRM"
-    if (message.startsWith('errors.') || message.startsWith('email.')) {
+    if (message.startsWith("errors.") || message.startsWith("email.")) {
       return this.t(message, locale);
     }
 
@@ -111,30 +115,36 @@ export class I18nService {
   }
 
   getEmailCopy(type: string, locale: string): Record<string, string> | null {
-    const value = this.lookup(locale, `email.${type}`) ?? this.lookup(DEFAULT_LOCALE, `email.${type}`);
-    if (!value || typeof value !== 'object') return null;
+    const value =
+      this.lookup(locale, `email.${type}`) ??
+      this.lookup(DEFAULT_LOCALE, `email.${type}`);
+    if (!value || typeof value !== "object") return null;
     return value as Record<string, string>;
   }
 
   private loadLocales() {
-    const localesRoot = path.join(__dirname, 'locales');
+    const localesRoot = path.join(__dirname, "locales");
     for (const locale of SUPPORTED_LOCALES) {
-      const filePath = path.join(localesRoot, locale, 'common.json');
+      const filePath = path.join(localesRoot, locale, "common.json");
       try {
-        const raw = fs.readFileSync(filePath, 'utf-8');
+        const raw = fs.readFileSync(filePath, "utf-8");
         this.catalogs.set(locale, JSON.parse(raw) as LocaleTree);
       } catch (error) {
-        this.logger.error(`Failed to load locale ${locale} from ${filePath}`, (error as Error).message);
+        this.logger.error(
+          `Failed to load locale ${locale} from ${filePath}`,
+          (error as Error).message,
+        );
       }
     }
   }
 
   private lookup(locale: string, key: string): unknown {
-    const catalog = this.catalogs.get(locale) ?? this.catalogs.get(DEFAULT_LOCALE);
+    const catalog =
+      this.catalogs.get(locale) ?? this.catalogs.get(DEFAULT_LOCALE);
     if (!catalog) return undefined;
 
-    return key.split('.').reduce<unknown>((node, part) => {
-      if (node && typeof node === 'object' && part in (node as LocaleTree)) {
+    return key.split(".").reduce<unknown>((node, part) => {
+      if (node && typeof node === "object" && part in (node as LocaleTree)) {
         return (node as LocaleTree)[part];
       }
       return undefined;
@@ -142,14 +152,16 @@ export class I18nService {
   }
 
   private findErrorKeyByEnglish(englishMessage: string): string | null {
-    const enErrors = this.lookup(DEFAULT_LOCALE, 'errors');
-    if (!enErrors || typeof enErrors !== 'object') return null;
+    const enErrors = this.lookup(DEFAULT_LOCALE, "errors");
+    if (!enErrors || typeof enErrors !== "object") return null;
 
-    for (const [key, template] of Object.entries(enErrors as Record<string, string>)) {
-      if (typeof template !== 'string') continue;
+    for (const [key, template] of Object.entries(
+      enErrors as Record<string, string>,
+    )) {
+      if (typeof template !== "string") continue;
       if (template === englishMessage) return key;
 
-      const pattern = template.replace(/\{(\w+)\}/g, '(.+)');
+      const pattern = template.replace(/\{(\w+)\}/g, "(.+)");
       const regex = new RegExp(`^${pattern}$`);
       if (regex.test(englishMessage)) return key;
     }
@@ -162,12 +174,12 @@ export class I18nService {
     key: string,
   ): Record<string, string> {
     const template = this.lookup(DEFAULT_LOCALE, `errors.${key}`);
-    if (typeof template !== 'string') return {};
+    if (typeof template !== "string") return {};
 
     const names = [...template.matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
     if (names.length === 0) return {};
 
-    const pattern = template.replace(/\{(\w+)\}/g, '(.+)');
+    const pattern = template.replace(/\{(\w+)\}/g, "(.+)");
     const match = englishMessage.match(new RegExp(`^${pattern}$`));
     if (!match) return {};
 

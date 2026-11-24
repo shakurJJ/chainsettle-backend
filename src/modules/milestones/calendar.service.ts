@@ -116,7 +116,7 @@ export class CalendarService {
   /** Milestones with a due date for one shipment, earliest first. */
   async getShipmentMilestones(shipmentId: string): Promise<CalendarMilestone[]> {
     return this.prisma.milestone.findMany({
-      where: { shipmentId, dueAt: { not: null } },
+      where: { shipmentId, dueAt: { not: null }, deletedAt: null },
       orderBy: { dueAt: 'asc' },
       select: {
         id: true,
@@ -149,6 +149,7 @@ export class CalendarService {
     return this.prisma.milestone.findMany({
       where: {
         dueAt: { not: null },
+        deletedAt: null,
         shipment: {
           OR: [
             { buyerAddress: address },

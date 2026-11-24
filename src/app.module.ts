@@ -6,7 +6,7 @@ import { TerminusModule } from '@nestjs/terminus';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { envValidationSchema } from './config/env.validation';
 import { RolesGuard } from './common/guards/roles.guard';
-import { RateLimitThrottlerGuard } from './common/guards/rate-limit-throttler.guard';
+import { GqlThrottlerGuard } from './common/guards/gql-throttler.guard';
 
 import { PrismaModule } from './common/prisma/prisma.module';
 import { StellarModule } from './common/stellar/stellar.module';
@@ -16,11 +16,14 @@ import { TokenRegistryModule } from './common/token-registry/token-registry.modu
 import { RedisThrottlerStorageService } from './common/throttler/redis-throttler-storage.service';
 import { MetricsModule } from './common/metrics/metrics.module';
 import { HttpMetricsInterceptor } from './common/interceptors/http-metrics.interceptor';
+import { TimeoutInterceptor } from './common/interceptors/timeout.interceptor';
+import { TimeoutGuard } from './common/guards/timeout.guard';
 import { FxModule } from './common/fx/fx.module';
 
 import { AuthModule } from './modules/auth/auth.module';
 import { ShipmentsModule } from './modules/shipments/shipments.module';
 import { ShipmentTemplatesModule } from './modules/shipment-templates/shipment-templates.module';
+import { RecurringSchedulesModule } from './modules/recurring-schedules/recurring-schedules.module';
 import { MilestonesModule } from './modules/milestones/milestones.module';
 import { EventsModule } from './modules/events/events.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -33,6 +36,11 @@ import { ChainModule } from './modules/chain/chain.module';
 import { KycModule } from './modules/kyc/kyc.module';
 import { ArbitersModule } from './modules/arbiters/arbiters.module';
 import { FeatureFlagsModule } from './modules/feature-flags/feature-flags.module';
+import { InvitationsModule } from './modules/invitations/invitations.module';
+import { GraphqlModule } from './modules/graphql/graphql.module';
+import { AdminDashboardModule } from './modules/admin-dashboard/admin-dashboard.module';
+import { AdminDisputesModule } from './modules/admin-dashboard/admin-disputes.module';
+import { SettlementProposalsModule } from './modules/milestones/settlement-proposals.module';
 
 @Module({
   imports: [
@@ -79,6 +87,7 @@ import { FeatureFlagsModule } from './modules/feature-flags/feature-flags.module
     AuthModule,
     ShipmentsModule,
     ShipmentTemplatesModule,
+    RecurringSchedulesModule,
     MilestonesModule,
     EventsModule,
     NotificationsModule,
@@ -88,13 +97,23 @@ import { FeatureFlagsModule } from './modules/feature-flags/feature-flags.module
     ChainModule,
     KycModule,
     ArbitersModule,
+    InvitationsModule,
     FeatureFlagsModule,
+    GraphqlModule,
+    AdminDashboardModule,
+    AdminDisputesModule,
+    SettlementProposalsModule,
   ],
   providers: [
-    // Apply global throttler guard (sets X-RateLimit-* on success and 429)
+    // Apply global throttler guard to REST and GraphQL (sets X-RateLimit-* on success and 429)
     {
       provide: APP_GUARD,
-      useClass: RateLimitThrottlerGuard,
+      useClass: GqlThrottlerGuard,
+    },
+    // Apply TimeoutGuard to read @Timeout() decorator metadata
+    {
+      provide: APP_GUARD,
+      useClass: TimeoutGuard,
     },
     // Apply global roles guard — enforces @Roles() decorator across all routes
     {
@@ -121,6 +140,12 @@ import { FeatureFlagsModule } from './modules/feature-flags/feature-flags.module
       provide: APP_INTERCEPTOR,
       useClass: HttpMetricsInterceptor,
     },
+    // Timeout requests that hang (slow RPC, stuck DB)
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: TimeoutInterceptor,
+    },
+    TimeoutGuard,
     {
       provide: APP_FILTER,
       useClass: HttpExceptionFilter,

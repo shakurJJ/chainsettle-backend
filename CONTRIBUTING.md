@@ -2,7 +2,7 @@
 
 Thanks for contributing! This guide covers the contributor workflow — setup, branching,
 commits, tests, and PR expectations. For architecture, module overview, and API details,
-see [README.md](README.md).
+see [README.md](README.md). If you run into setup or runtime errors, see [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ---
 
@@ -70,6 +70,9 @@ Examples: `feat/165-remove-pending-milestone`, `fix/201-shipment-status-bug`,
 `docs/214-contributing-guide`.
 
 Common types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`.
+Commit messages are checked locally by the Husky `commit-msg` hook using
+`@commitlint/config-conventional`. Allowed types include `build`, `chore`, `ci`,
+`docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, and `test`.
 
 ---
 
@@ -88,6 +91,23 @@ Examples:
 
 Use imperative mood ("add", not "added"), and reference the issue number in the
 commit body or PR description when relevant.
+
+---
+
+## Pre-commit Hooks
+
+[husky](https://typicode.github.io/husky/) and [lint-staged](https://github.com/lint-staged/lint-staged)
+run automatically on every commit. They are installed by the `prepare` script when you run
+`npm install` — no extra setup needed.
+
+On `git commit`, every staged `.ts` file is run through:
+
+1. `eslint --fix` — auto-fixes what it can; remaining lint **errors block the commit**.
+2. `prettier --write` — reformats the file (config in `.prettierrc`).
+
+Fixed files are re-staged automatically, so the commit contains the formatted version.
+If the hook blocks your commit, fix the reported errors and commit again. To bypass it in
+an emergency, use `git commit --no-verify` — CI and reviewers will still catch the issues.
 
 ---
 

@@ -35,9 +35,11 @@ import { AppendMilestoneDto } from './dto/append-milestone.dto';
 import { ConfirmMilestoneDto } from './dto/confirm-milestone.dto';
 import { BulkConfirmMilestonesDto } from './dto/bulk-confirm-milestones.dto';
 import { BulkRejectMilestonesDto } from './dto/bulk-reject-milestones.dto';
+import { RejectProofDto } from './dto/reject-proof.dto';
 import { RebalanceMilestonesDto } from './dto/rebalance-milestones.dto';
+import { SubmitDisputeRationaleDto } from './dto/submit-dispute-rationale.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { AuthenticatedUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ShipmentParticipantGuard } from '../shipments/guards/shipment-participant.guard';
 import { StellarAddressThrottlerGuard } from '../../common/guards/stellar-address-throttler.guard';
 import { Throttle } from '@nestjs/throttler';
@@ -97,6 +99,7 @@ export class MilestonesController {
   @ApiOperation({ summary: 'List all milestones for a shipment with optional filters' })
   @ApiQuery({ name: 'status', required: false, enum: ['PENDING', 'PROOF_SUBMITTED', 'CONFIRMED', 'DISPUTED', 'RESOLVED'] })
   @ApiQuery({ name: 'overdue', required: false, type: Boolean })
+  @ApiQuery({ name: 'precision', required: false, type: Number, description: 'Override decimal places for FX-converted values (e.g. 0 for JPY, 2 for USD, 4 for KWD). Defaults to currency-appropriate value.' })
   @ApiResponse({ status: 200, description: 'List of milestones with isOverdue computed' })
   @ApiResponse({ status: 403, description: 'Not a shipment participant' })
   @ApiResponse({ status: 404, description: 'Shipment not found' })
@@ -104,9 +107,11 @@ export class MilestonesController {
     @Param('shipmentId') shipmentId: string,
     @Query('status') status?: string,
     @Query('overdue') overdue?: string,
+    @Query('precision') precision?: string,
   ) {
     const isOverdueFilter = overdue === 'true';
-    return this.milestonesService.findByShipment(shipmentId, status, isOverdueFilter);
+    const precisionOverride = precision !== undefined ? parseInt(precision, 10) : undefined;
+    return this.milestonesService.findByShipment(shipmentId, status, isOverdueFilter, precisionOverride);
   }
 
   /**
@@ -131,7 +136,7 @@ export class MilestonesController {
   appendMilestone(
     @Param('shipmentId') shipmentId: string,
     @Body() dto: AppendMilestoneDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
     const callerAddress: string = user?.stellarAddress ?? user?.sub;
     return this.milestonesService.appendMilestone(shipmentId, callerAddress, dto);
@@ -148,13 +153,35 @@ export class MilestonesController {
     return this.milestonesService.getDisputeDetail(shipmentId, index);
   }
 
+  @Post(':index/dispute/rationale')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Write the immutable arbiter rationale for a resolved dispute' })
+  @ApiResponse({ status: 201, description: 'Rationale stored and both parties notified' })
+  @ApiResponse({ status: 403, description: 'Caller is not the assigned arbiter' })
+  @ApiResponse({ status: 409, description: 'Dispute is not resolved or rationale already exists' })
+  submitDisputeRationale(
+    @Param('shipmentId') shipmentId: string,
+    @Param('index', ParseIntPipe) index: number,
+    @Body() dto: SubmitDisputeRationaleDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const callerAddress: string = user?.stellarAddress ?? user?.sub;
+    return this.milestonesService.submitDisputeRationale(
+      shipmentId,
+      index,
+      callerAddress,
+      dto.rationale,
+      dto.ipfsCid,
+    );
+  }
+
   @Get(':index')
   @ApiOperation({ summary: 'Get a single milestone by index' })
   findOne(
     @Param('shipmentId') shipmentId: string,
     @Param('index', ParseIntPipe) index: number,
   ) {
-    return this.milestonesService.findOne(shipmentId, index);
+    return this.milestonesService.findOneWithCommentCount(shipmentId, index);
   }
 
   @Get(':index/reminders')
@@ -251,7 +278,7 @@ export class MilestonesController {
     @Param('shipmentId') shipmentId: string,
     @Param('index', ParseIntPipe) index: number,
     @UploadedFile() file: Express.Multer.File,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
     if (!file) {
       throw new BadRequestException('A proof file must be provided in the "file" field');
@@ -266,6 +293,43 @@ export class MilestonesController {
       callerAddress,
       file,
     );
+  }
+
+  /**
+   * POST /api/v1/shipments/:shipmentId/milestones/:index/proof/verify
+   *
+   * Hashes the uploaded file with SHA-256 and reports whether it matches a
+   * stored proof submission for this milestone (#394).
+   */
+  @Post(':index/proof/verify')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Check whether a file matches a stored milestone proof (SHA-256)' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file'],
+      properties: { file: { type: 'string', format: 'binary' } },
+    },
+  })
+  @ApiResponse({ status: 200, description: '{ matches, submissionId?, sha256 }' })
+  @ApiResponse({ status: 400, description: 'No file uploaded' })
+  @ApiResponse({ status: 404, description: 'Milestone not found' })
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: MAX_FILE_SIZE },
+    }),
+  )
+  verifyProof(
+    @Param('shipmentId') shipmentId: string,
+    @Param('index', ParseIntPipe) index: number,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (!file) {
+      throw new BadRequestException('A file must be provided in the "file" field');
+    }
+    return this.milestonesService.verifyProof(shipmentId, index, file);
   }
 
   /**
@@ -285,16 +349,43 @@ export class MilestonesController {
   rebalance(
     @Param('shipmentId') shipmentId: string,
     @Body() dto: RebalanceMilestonesDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
     const callerAddress: string = user?.stellarAddress ?? user?.sub;
     return this.milestonesService.rebalance(shipmentId, callerAddress, dto.milestones);
   }
 
   /**
-   * POST /api/v1/shipments/:shipmentId/milestones/:index/confirm
-   * Buyer registers an on-chain milestone confirmation so the DB reflects it immediately.
+   * POST /api/v1/shipments/:shipmentId/milestones/:index/reject
+   * Buyer rejects a submitted proof, reverting the milestone to PENDING.
+   * Requires a structured reason code; a note is mandatory when code is OTHER.
    */
+  @Post(':index/reject')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(ShipmentParticipantGuard)
+  @ApiOperation({ summary: 'Reject a submitted proof (buyer only)' })
+  @ApiResponse({ status: 200, description: 'Milestone reverted to PENDING' })
+  @ApiResponse({ status: 400, description: 'Missing or invalid reasonCode, or note required for OTHER' })
+  @ApiResponse({ status: 403, description: 'Only the buyer may reject proofs' })
+  @ApiResponse({ status: 404, description: 'Shipment or milestone not found' })
+  @ApiResponse({ status: 409, description: 'Milestone not in PROOF_SUBMITTED status' })
+  rejectProof(
+    @Param('shipmentId') shipmentId: string,
+    @Param('index', ParseIntPipe) index: number,
+    @Body() dto: RejectProofDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const callerAddress: string = user?.stellarAddress ?? user?.sub;
+    return this.milestonesService.rejectProof(
+      shipmentId,
+      index,
+      callerAddress,
+      dto.reasonCode,
+      dto.note,
+    );
+  }
+
+
   @Post(':index/confirm')
   @HttpCode(HttpStatus.OK)
   @UseGuards(ShipmentParticipantGuard)
@@ -307,7 +398,7 @@ export class MilestonesController {
     @Param('shipmentId') shipmentId: string,
     @Param('index', ParseIntPipe) index: number,
     @Body() dto: ConfirmMilestoneDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
     const callerAddress: string = user?.stellarAddress ?? user?.sub;
     return this.milestonesService.confirmFromApi(
@@ -336,10 +427,10 @@ export class MilestonesController {
   bulkReject(
     @Param('shipmentId') shipmentId: string,
     @Body() dto: BulkRejectMilestonesDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
     const callerAddress: string = user?.stellarAddress ?? user?.sub;
-    return this.milestonesService.bulkRejectFromApi(shipmentId, callerAddress, dto.indices, dto.reason);
+    return this.milestonesService.bulkRejectFromApi(shipmentId, callerAddress, dto.indices, dto.reasonCode, dto.note);
   }
 
   /**
@@ -361,7 +452,7 @@ export class MilestonesController {
   removeMilestone(
     @Param('shipmentId') shipmentId: string,
     @Param('index', ParseIntPipe) index: number,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
     const callerAddress: string = user?.stellarAddress ?? user?.sub;
     const callerId: string | undefined = user?.id;
@@ -399,7 +490,7 @@ export class MilestonesController {
     @Param('shipmentId') shipmentId: string,
     @Param('index', ParseIntPipe) index: number,
     @Param('evidenceId') evidenceId: string,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
     const callerAddress: string = user?.stellarAddress ?? user?.sub;
     const isAdmin: boolean = user?.role === 'ADMIN';

@@ -5,14 +5,20 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { CommentVisibility, NotificationType } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { WebhooksService } from '../webhooks/webhooks.service';
 import { CreateCommentDto } from './dto/create-comment.dto';
+import { OrganizationsService } from '../organizations/organizations.service';
 
 /** Maximum number of pinned comments allowed per shipment */
 const MAX_PINNED_COMMENTS = 3;
+
+/** Maximum comment body characters included in the SHIPMENT_COMMENT_CREATED webhook payload. */
+const COMMENT_EXCERPT_LENGTH = 200;
 
 /**
  * Stellar address regex — G followed by exactly 55 uppercase alphanumeric chars.
@@ -27,6 +33,8 @@ export class CommentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    @Optional() private readonly organizations?: OrganizationsService,
+    @Optional() private readonly webhooks?: WebhooksService,
   ) {}
 
   // ----------------------------------------------------------
@@ -44,8 +52,39 @@ export class CommentsService {
     });
     if (!shipment) throw new NotFoundException(`Shipment ${shipmentId} not found`);
 
-    if (!this.isParticipant(authorAddress, shipment)) {
+    // Org members (#435) may comment unless their org role is VIEWER.
+    if (
+      !this.isParticipant(authorAddress, shipment) &&
+      !(await this.organizations?.canCommentOnShipment(authorId, shipment))
+    ) {
       throw new ForbiddenException('Only shipment participants can post comments');
+    }
+
+    // Replies (#299) must target a live comment on the same shipment that the
+    // author is allowed to see.
+    if (dto.parentCommentId) {
+      const parent = await this.prisma.shipmentComment.findFirst({
+        where: {
+          id: dto.parentCommentId,
+          shipmentId,
+          deletedAt: null,
+          visibility: { in: this.buildVisibilityFilter(authorAddress, shipment, false) },
+        },
+      });
+      if (!parent) throw new NotFoundException(`Comment ${dto.parentCommentId} not found`);
+    }
+
+    // Milestone-scoped comments (#396) must reference a live milestone.
+    if (dto.milestoneIndex !== undefined && dto.milestoneIndex !== null) {
+      const milestone = await this.prisma.milestone.findFirst({
+        where: { shipmentId, milestoneIndex: dto.milestoneIndex, deletedAt: null },
+        select: { id: true },
+      });
+      if (!milestone) {
+        throw new BadRequestException(
+          `Milestone ${dto.milestoneIndex} does not exist on shipment ${shipmentId}`,
+        );
+      }
     }
 
     const comment = await this.prisma.shipmentComment.create({
@@ -55,11 +94,31 @@ export class CommentsService {
         body: dto.body,
         visibility: dto.visibility ?? CommentVisibility.ALL,
         attachmentCid: dto.attachmentCid,
+        parentCommentId: dto.parentCommentId ?? null,
+        milestoneIndex: dto.milestoneIndex ?? null,
       },
-      include: { author: { select: { id: true, stellarAddress: true, name: true } } },
+      include: { author: { select: { id: true, stellarAddress: true, name: true, avatarCid: true } } },
     });
 
     this.logger.log(`Comment created on shipment ${shipmentId} by ${authorAddress}`);
+
+    // Webhook for external integrations (ERPs, chat bridges) — dispatched once
+    // per comment, independent of participants' notification preferences.
+    // Fire-and-forget: a webhook failure must not fail comment creation.
+    this.webhooks
+      ?.dispatch(NotificationType.SHIPMENT_COMMENT_CREATED, {
+        shipmentId,
+        commentId: comment.id,
+        authorAddress,
+        bodyExcerpt: comment.body.slice(0, COMMENT_EXCERPT_LENGTH),
+        createdAt: comment.createdAt.toISOString(),
+      })
+      .catch((err) =>
+        this.logger.error(
+          `Webhook dispatch error for SHIPMENT_COMMENT_CREATED (comment ${comment.id})`,
+          err.message,
+        ),
+      );
 
     // Notify all participants who can see this comment
     await this.notifyParticipants(shipment, comment, authorAddress);
@@ -72,46 +131,49 @@ export class CommentsService {
       authorAddress,
     );
 
-    return { ...comment, mentionedAddresses };
+    return { ...comment, author: this.formatAuthor(comment.author), mentionedAddresses };
   }
 
   // ----------------------------------------------------------
   // GET /shipments/:id/comments
   // ----------------------------------------------------------
 
+  /**
+   * Returns root comments only (parentCommentId = null), each with a
+   * `replyCount` of the visible, non-deleted replies. Replies are fetched via
+   * GET /shipments/:id/comments/:commentId/replies (#299).
+   *
+   * A soft-deleted root that still has visible replies is returned as a
+   * tombstone (`deleted: true`, body and attachment redacted) so its thread
+   * stays reachable.
+   */
   async findAll(
     shipmentId: string,
     requesterAddress: string,
     page = 1,
     limit = 20,
+    milestoneIndex?: number,
   ) {
-    const shipment = await this.prisma.shipment.findUnique({
-      where: { id: shipmentId },
-    });
-    if (!shipment) throw new NotFoundException(`Shipment ${shipmentId} not found`);
-
-    const requester = await this.prisma.user.findUnique({
-      where: { stellarAddress: requesterAddress },
-    });
-    const isAdmin = requester?.role === 'ADMIN';
-
-    if (!isAdmin && !this.isParticipant(requesterAddress, shipment)) {
-      throw new ForbiddenException('Only shipment participants can read comments');
-    }
-
-    const visibilityFilter = this.buildVisibilityFilter(requesterAddress, shipment, isAdmin);
+    const { shipment, isAdmin } = await this.loadForRead(shipmentId, requesterAddress);
+    const visibility = { in: this.buildVisibilityFilter(requesterAddress, shipment, isAdmin) };
+    const visibleReplies = { deletedAt: null, visibility };
 
     const where = {
       shipmentId,
-      deletedAt: null,
-      visibility: { in: visibilityFilter },
+      parentCommentId: null,
+      ...(milestoneIndex !== undefined ? { milestoneIndex } : {}),
+      visibility,
+      OR: [{ deletedAt: null }, { replies: { some: visibleReplies } }],
     };
 
     // Pinned comments sort first (by pinnedAt ASC), then the rest chronologically (#189)
     const [comments, total] = await this.prisma.$transaction([
       this.prisma.shipmentComment.findMany({
         where,
-        include: { author: { select: { id: true, stellarAddress: true, name: true } } },
+        include: {
+          author: { select: { id: true, stellarAddress: true, name: true, avatarCid: true } },
+          _count: { select: { replies: { where: visibleReplies } } },
+        },
         orderBy: [
           // nulls last: pinned comments (pinnedAt != null) come first
           { pinnedAt: { sort: 'asc', nulls: 'last' } },
@@ -123,7 +185,58 @@ export class CommentsService {
       this.prisma.shipmentComment.count({ where }),
     ]);
 
-    return { data: comments, meta: { total, page, limit, totalPages: Math.ceil(total / limit) } };
+    const data = comments.map(({ _count, ...comment }) => ({
+      ...this.redactIfDeleted(comment),
+      author: this.formatAuthor(comment.author),
+      replyCount: _count.replies,
+    }));
+
+    return { data, meta: { total, page, limit, totalPages: Math.ceil(total / limit) } };
+  }
+
+  // ----------------------------------------------------------
+  // GET /shipments/:id/comments/:commentId/replies  (#299)
+  // ----------------------------------------------------------
+
+  /**
+   * Returns the direct replies to a comment, oldest first. Works even when the
+   * parent has been soft-deleted, so deleting a parent never strands its
+   * replies.
+   */
+  async findReplies(
+    shipmentId: string,
+    commentId: string,
+    requesterAddress: string,
+    page = 1,
+    limit = 20,
+  ) {
+    const { shipment, isAdmin } = await this.loadForRead(shipmentId, requesterAddress);
+    const visibility = { in: this.buildVisibilityFilter(requesterAddress, shipment, isAdmin) };
+
+    const parent = await this.prisma.shipmentComment.findFirst({
+      where: { id: commentId, shipmentId, visibility },
+    });
+    if (!parent) throw new NotFoundException(`Comment ${commentId} not found`);
+
+    const where = { shipmentId, parentCommentId: commentId, deletedAt: null, visibility };
+
+    const [replies, total] = await this.prisma.$transaction([
+      this.prisma.shipmentComment.findMany({
+        where,
+        include: { author: { select: { id: true, stellarAddress: true, name: true, avatarCid: true } } },
+        orderBy: { createdAt: 'asc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.shipmentComment.count({ where }),
+    ]);
+
+    const data = replies.map((reply) => ({
+      ...this.redactIfDeleted(reply),
+      author: this.formatAuthor(reply.author),
+    }));
+
+    return { data, meta: { total, page, limit, totalPages: Math.ceil(total / limit) } };
   }
 
   // ----------------------------------------------------------
@@ -163,14 +276,14 @@ export class CommentsService {
     const updated = await this.prisma.shipmentComment.update({
       where: { id: commentId },
       data: { pinnedAt: pinned ? new Date() : null },
-      include: { author: { select: { id: true, stellarAddress: true, name: true } } },
+      include: { author: { select: { id: true, stellarAddress: true, name: true, avatarCid: true } } },
     });
 
     this.logger.log(
       `Comment ${commentId} ${pinned ? 'pinned' : 'unpinned'} by ${requesterAddress}`,
     );
 
-    return updated;
+    return { ...updated, author: this.formatAuthor(updated.author) };
   }
 
   // ----------------------------------------------------------
@@ -203,6 +316,42 @@ export class CommentsService {
   // ----------------------------------------------------------
   // HELPERS
   // ----------------------------------------------------------
+
+  /** Loads the shipment and enforces read access (participants and admins). */
+  private async loadForRead(shipmentId: string, requesterAddress: string) {
+    const shipment = await this.prisma.shipment.findUnique({
+      where: { id: shipmentId },
+    });
+    if (!shipment) throw new NotFoundException(`Shipment ${shipmentId} not found`);
+
+    const requester = await this.prisma.user.findUnique({
+      where: { stellarAddress: requesterAddress },
+    });
+    const isAdmin = requester?.role === 'ADMIN';
+
+    if (
+      !isAdmin &&
+      !this.isParticipant(requesterAddress, shipment) &&
+      !(requester && (await this.organizations?.canReadShipment(requester.id, shipment)))
+    ) {
+      throw new ForbiddenException('Only shipment participants can read comments');
+    }
+
+    return { shipment, isAdmin };
+  }
+
+  private formatAuthor(author: any) {
+    if (!author) return author;
+    return {
+      ...author,
+      avatarUrl: author.avatarCid ? `/api/v1/ipfs/${author.avatarCid}` : null,
+    };
+  }
+
+  private redactIfDeleted<T extends { deletedAt: Date | null }>(comment: T) {
+    if (!comment.deletedAt) return { ...comment, deleted: false };
+    return { ...comment, body: null, attachmentCid: null, deleted: true };
+  }
 
   private isParticipant(address: string, shipment: any): boolean {
     return [

@@ -1,7 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { RedisService } from '../../common/redis/redis.service';
+import { runTrackedJob } from '../../common/jobs/job-tracker.util';
 import { MilestoneStatus, NotificationType, UserRole } from '@prisma/client';
 
 /**
@@ -19,14 +22,17 @@ export class DisputeEscalationJob {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    private readonly config: ConfigService,
+    @Optional() private readonly redis?: RedisService,
   ) {}
 
-  @Cron(CronExpression.EVERY_HOUR)
+  @Cron(CronExpression.EVERY_HOUR, { name: 'dispute-escalation' })
   async checkAndEscalateDisputes() {
-    try {
-      this.logger.log('Starting dispute escalation check...');
+    const execute = async () => {
+      try {
+        this.logger.log('Starting dispute escalation check...');
 
-      const days = parseInt(process.env.DISPUTE_ESCALATION_DAYS ?? '7', 10);
+      const days = this.config.get<number>('DISPUTE_ESCALATION_DAYS', 7);
       const threshold = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
       const overdue = await this.prisma.milestone.findMany({
@@ -37,7 +43,11 @@ export class DisputeEscalationJob {
         },
         include: {
           shipment: {
-            select: { id: true, arbiterAddress: true },
+            select: {
+              id: true,
+              arbiterAddress: true,
+              arbiter: { select: { arbiterAwayUntil: true, awayMessage: true } },
+            },
           },
         },
       });
@@ -58,11 +68,18 @@ export class DisputeEscalationJob {
         this.logger.warn('No admin users found — disputes cannot be escalated');
       }
 
-      for (const milestone of overdue) {
-        await this.escalate(milestone, admins, days);
+        for (const milestone of overdue) {
+          await this.escalate(milestone, admins, days);
+        }
+      } catch (error) {
+        this.logger.error('Dispute escalation check failed', error.message);
       }
-    } catch (error) {
-      this.logger.error('Dispute escalation check failed', error.message);
+    };
+
+    if (this.redis) {
+      await runTrackedJob(this.redis, 'dispute-escalation', execute, this.logger);
+    } else {
+      await execute();
     }
   }
 
@@ -74,9 +91,13 @@ export class DisputeEscalationJob {
     try {
       const { shipment, milestoneIndex, id } = milestone;
 
+      const awayUntil: Date | null = shipment.arbiter?.arbiterAwayUntil ?? null;
+      const arbiterAway = !!awayUntil && awayUntil > new Date();
+
       const title = `Unresolved dispute — shipment ${shipment.id} milestone ${milestoneIndex}`;
       const message =
-        `Dispute on shipment ${shipment.id} milestone ${milestoneIndex} has been unresolved for over ${days} days. Arbiter: ${shipment.arbiterAddress}.`;
+        `Dispute on shipment ${shipment.id} milestone ${milestoneIndex} has been unresolved for over ${days} days. Arbiter: ${shipment.arbiterAddress}.` +
+        (arbiterAway ? ` The arbiter is marked away until ${awayUntil!.toISOString()}.` : '');
 
       for (const admin of admins) {
         await this.notifications.notifyUser(
@@ -88,6 +109,8 @@ export class DisputeEscalationJob {
             shipmentId: shipment.id,
             milestoneIndex,
             arbiterAddress: shipment.arbiterAddress,
+            arbiterAway,
+            arbiterAwayUntil: arbiterAway ? awayUntil!.toISOString() : null,
           },
         );
       }

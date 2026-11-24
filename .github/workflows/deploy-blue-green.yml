@@ -79,6 +79,9 @@ jobs:
             echo "Active=$ACTIVE → bringing up $TARGET"
 
             export RELEASE_TAG="${{ steps.meta.outputs.tag }}"
+            # Build metadata for GET /health/version (#427); compose passes these as build args
+            export GIT_SHA="${{ github.sha }}"
+            export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             # Pull/build and start the inactive colour without touching the live one
             docker compose pull "app-${TARGET}" || true
             docker compose up -d --no-deps --build "app-${TARGET}"
@@ -107,6 +110,14 @@ jobs:
               CODE=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" || true)
               if [ "$CODE" = "200" ]; then
                 echo "Health check passed on attempt $i"
+                # Confirm which build the slot is serving (#427)
+                VERSION_URL="${HEALTH_URL%/health/*}/health/version"
+                VERSION_JSON=$(curl -s "$VERSION_URL" || true)
+                echo "$TARGET is running: $VERSION_JSON"
+                case "$VERSION_JSON" in
+                  *"${{ github.sha }}"*) echo "Git SHA matches ${{ github.sha }}" ;;
+                  *) echo "::warning::$TARGET did not report git SHA ${{ github.sha }} — check that docker compose passes GIT_SHA/BUILD_TIME as build args" ;;
+                esac
                 exit 0
               fi
               echo "Attempt $i: HTTP $CODE — retrying in 5s"

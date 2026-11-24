@@ -32,6 +32,8 @@ The backend is the **bridge between the Stellar blockchain and the frontend**. I
 > For a deep-dive into module interactions, the event pipeline, shipment lifecycle, and cross-cutting concerns see [ARCHITECTURE.md](./ARCHITECTURE.md).
 >
 > For definitions of domain terms used throughout the codebase (shipment, milestone, arbiter, proof, dispute, escalation, reconciliation, reputation) see [docs/glossary.md](./docs/glossary.md).
+>
+> For how notifications travel from domain events to in-app, email, Slack, Discord, Telegram, FCM push, and webhook channels — including preferences, digests, and the delivery pipeline — see [docs/notifications.md](./docs/notifications.md).
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -68,6 +70,12 @@ The backend is the **bridge between the Stellar blockchain and the frontend**. I
 | `PrismaModule` | Shared global DB client (PostgreSQL) |
 | `StellarModule` | Shared global Stellar RPC client + utilities |
 
+> Role/permission matrix (buyer, supplier, logistics, arbiter, admin — endpoint by endpoint): [docs/rbac.md](./docs/rbac.md)
+>
+> Machine-to-machine authentication via API keys (create, rotate, revoke, scopes, security best practices): [docs/api-keys.md](./docs/api-keys.md)
+>
+> GraphQL API (endpoint, authentication, all queries/subscriptions, depth/complexity limits, DataLoader batching, GraphQL vs REST guidance): [docs/graphql.md](./docs/graphql.md)
+
 ---
 
 ## API Endpoints
@@ -77,12 +85,20 @@ All endpoints are prefixed with `/api/v1` (URI versioning; see [API Versioning](
 > Database schema reference (ERD + tables): [docs/database.md](./docs/database.md)
 >
 > Typed TypeScript SDK: [sdk/](./sdk/) — regenerate with `npm run generate:sdk`
+>
+> 🔄 **Idempotency**: Learn how to safely retry network requests using the `Idempotency-Key` header in [docs/idempotency.md](./docs/idempotency.md).
 
 ### Auth
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/auth/nonce?address=G...` | Get challenge nonce for a Stellar address |
 | `POST` | `/auth/login` | Submit signed nonce, receive JWT |
+| `GET` | `/auth/api-keys` | List your API keys (JWT) |
+| `POST` | `/auth/api-keys` | Create an API key — plaintext shown once (JWT) |
+| `POST` | `/auth/api-keys/:id/rotate` | Rotate a key with optional grace period (JWT) |
+| `DELETE` | `/auth/api-keys/:id` | Revoke an API key (JWT) |
+
+> 🔑 **API Keys**: For machine-to-machine auth (CI pipelines, backend services) see [docs/api-keys.md](./docs/api-keys.md) — covers the `X-Api-Key` header, scopes, key rotation, and security best practices.
 
 ### Shipments
 | Method | Path | Auth | Description |
@@ -108,18 +124,35 @@ All endpoints are prefixed with `/api/v1` (URI versioning; see [API Versioning](
 | `GET` | `/events` | ✓ | List chain events (filter by shipmentId) |
 
 ### Notifications
+> ⚡ WebSocket Gateway: Real-time notifications and chain events. See [docs/websockets.md](./docs/websockets.md).
+
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `GET` | `/notifications` | ✓ | Get user notifications |
 | `PATCH` | `/notifications/:id/read` | ✓ | Mark notification as read |
 | `PATCH` | `/notifications/read-all` | ✓ | Mark all as read |
-| `GET` | `/notifications/preferences` | ✓ | Get channel preferences (+ Slack webhook) |
-| `PATCH` | `/notifications/preferences` | ✓ | Update preferences / Slack webhook URL |
+| `GET` | `/notifications/preferences` | ✓ | Get channel preferences and linked-channel status |
+| `PATCH` | `/notifications/preferences` | ✓ | Update per-type channel preferences / Slack webhook URL |
+| `POST` | `/notifications/telegram/link` | ✓ | Generate a one-time Telegram account-link URL |
+| `DELETE` | `/notifications/telegram/link` | ✓ | Unlink the Telegram account |
 
 ### Health
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `GET` | `/health` | — | Database + service health check |
+
+### GraphQL
+
+> 📊 **GraphQL API**: A GraphQL layer runs at `/graphql` (no `/api/v1` prefix) alongside these REST routes. See [docs/graphql.md](./docs/graphql.md) for the endpoint URL, JWT auth setup, all available queries and subscriptions, query depth/complexity limits, and a GraphQL vs REST guide.
+
+| Operation | Type | Description |
+|-----------|------|-------------|
+| `shipment(id)` | Query | Single shipment with milestones and recent events |
+| `shipments(status, page, limit)` | Query | Paginated list of shipments visible to the caller |
+| `milestones(shipmentId)` | Query | All milestones for a shipment (DataLoader-batched) |
+| `milestone(id)` | Query | Single milestone with proof submission history |
+| `shipmentUpdated(id)` | Subscription | Live push when a shipment changes |
+| `milestoneUpdated(shipmentId)` | Subscription | Live push when a milestone on a shipment changes |
 
 ---
 
@@ -198,7 +231,9 @@ chainsetttle-backend/
 
 - **Node.js** v20+
 - **pnpm** (recommended) or npm
-- **PostgreSQL** 15+
+- **Docker** and **Docker Compose** (recommended for PostgreSQL and Redis)
+- **PostgreSQL** 15+ (or use docker-compose)
+- **Redis** 7+ (or use docker-compose)
 - **Stellar CLI** (only needed if deploying the contract)
 
 ---
@@ -213,19 +248,35 @@ npm install
 pnpm install
 ```
 
-### 2. Set up environment variables
+### 2. Set up PostgreSQL and Redis
+
+**Option A: Docker Compose (recommended)**
+
+```bash
+# Start PostgreSQL and Redis in the background
+npm run dev:up
+
+# When done, stop the services
+npm run dev:down
+```
+
+**Option B: Manual setup**
+
+Install PostgreSQL 15+ and Redis 7+ on your machine and ensure they are running.
+
+### 3. Set up environment variables
 
 ```bash
 cp .env.example .env
 ```
 
 Edit `.env` with your values:
-- `DATABASE_URL` — your PostgreSQL connection string
+- `DATABASE_URL` — your PostgreSQL connection string (defaults work with docker-compose)
 - `JWT_SECRET` — a long random string
 - `CHAINSETTTLE_CONTRACT_ID` — the deployed contract ID from `chainsetttle-contract`
 - `SMTP_*` — email credentials (use Gmail app password or any SMTP)
 
-### 3. Set up the database
+### 4. Set up the database
 
 ```bash
 # Create and apply migrations
@@ -234,8 +285,8 @@ npx prisma migrate dev --name init
 # Generate Prisma client
 npx prisma generate
 
-# (Optional) seed initial data
-# npx prisma db seed
+# Seed demo users, shipments, milestones, comments, and notifications
+npx prisma db seed
 ```
 
 ### 4. Start the development server
@@ -246,6 +297,8 @@ npm run start:dev
 
 API available at: `http://localhost:3000/api/v1`
 Swagger docs at: `http://localhost:3000/docs`
+
+> **Hitting an error?** See [docs/troubleshooting.md](docs/troubleshooting.md) for solutions to the most common setup and runtime problems (missing env vars, Prisma client not generated, Redis/Stellar/IPFS unreachable, port conflicts).
 
 ---
 
@@ -308,7 +361,10 @@ npm run generate:sdk   # refresh openapi.json + schema.ts
 npm run check:sdk      # CI: fail if sdk/ is stale
 ```
 
-See [sdk/README.md](./sdk/README.md).
+For a full usage guide — client construction, authentication, pagination, error handling,
+and how to fix a failing drift check — see **[docs/sdk.md](docs/sdk.md)**.
+
+See also [sdk/README.md](./sdk/README.md) for a quick-start.
 
 ---
 
@@ -420,7 +476,7 @@ Errors follow a standardised format from `HttpExceptionFilter`:
 }
 ```
 
-Send `Accept-Language: es` to receive Spanish error messages for mapped strings (falls back to English). See [`src/i18n/README.md`](src/i18n/README.md).
+Send `Accept-Language: es` or append `?lang=es` to receive Spanish error messages for mapped strings (falls back to English). See [`docs/i18n.md`](docs/i18n.md).
 
 ---
 
@@ -450,8 +506,9 @@ npm run sbom
 - [ ] Wire up real Stellar `Keypair.verify()` in `auth.service.ts`
 - [ ] Set `CORS_ORIGIN` to your production frontend URL
 - [ ] Add rate limiting tuning for production traffic
-- [ ] Deploy via blue/green workflow (`.github/workflows/deploy-blue-green.yml` — see `docs/deployment.md`)
+- [ ] Deploy via blue/green workflow (`.github/workflows/deploy-blue-green.yml` — see [docs/deployment.md](./docs/deployment.md))
 - [ ] Run `npm run loadtest` against staging before scale-up (see `docs/load-testing.md`)
+- [ ] Review [docs/webhooks.md](./docs/webhooks.md) if external systems subscribe to webhook events
 
 ---
 
@@ -465,6 +522,7 @@ npm run sbom
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
 | `DATABASE_REPLICA_URL` | No | Optional read-replica URL for GET-heavy paths |
 | `SHIPMENT_ARCHIVAL_DAYS` | No | Days before terminal shipments move to cold storage (default: 90) |
+| `SHIPMENT_ARCHIVAL_CRON` | No | Cron schedule for the archival job; invalid expressions fail at startup (default: `0 3 * * *`) |
 | `JWT_SECRET` | Yes | Secret for signing JWTs |
 | `JWT_EXPIRES_IN` | No | Token expiry (default: `7d`) |
 | `IMPERSONATION_JWT_EXPIRES_IN` | No | Admin impersonation token TTL (default: `15m`) |
@@ -477,9 +535,17 @@ npm run sbom
 | `SMTP_PASS` | No | SMTP password |
 | `CORS_ORIGIN` | No | Allowed frontend origin |
 | `EVENT_POLLING_INTERVAL_MS` | No | Cron interval in ms (default: 5000) |
+| `OVERDUE_REMINDER_1_DAYS` | No | Days after dueAt when initial overdue notification is sent (default: 0) |
+| `OVERDUE_REMINDER_3_DAYS` | No | Days after initial reminder when escalation notification is sent (default: 3) |
+| `DISPUTE_ESCALATION_DAYS` | No | Days a milestone can remain in DISPUTED status before admins are alerted (default: 7) |
 
 ---
 
 ## License
 
 MIT
+
+## Handsoff notes
+
+<!-- handsoff-issue-675 -->
+- #675: Add pause, resume and skip-next to recurring shipment schedules

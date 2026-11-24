@@ -31,6 +31,11 @@ const mockPrisma = {
     deleteMany: jest.fn(),
     findMany: jest.fn(),
   },
+  trackingUpdate: {
+    findFirst: jest.fn(),
+    create: jest.fn(),
+    findMany: jest.fn(),
+  },
   $transaction: jest.fn(),
 };
 
@@ -301,4 +306,136 @@ describe("ShipmentsService", () => {
     });
   });
 
+  describe("update() expectedDeliveryAt", () => {
+    it("updates expectedDeliveryAt successfully when shipment is ACTIVE", async () => {
+      mockPrisma.shipment.findUnique.mockResolvedValueOnce({
+        id: "SHIP-1",
+        buyerAddress: "GBUYER",
+        status: ShipmentStatus.ACTIVE,
+        expectedDeliveryAt: new Date("2026-07-01T00:00:00Z"),
+      });
+      mockPrisma.shipment.update.mockResolvedValueOnce({
+        id: "SHIP-1",
+        buyerAddress: "GBUYER",
+        supplierAddress: "GSUPPLIER",
+        logisticsAddress: "GLOGISTICS",
+        arbiterAddress: "GARBITER",
+        status: ShipmentStatus.ACTIVE,
+        totalAmount: BigInt(100),
+        releasedAmount: BigInt(0),
+        expectedDeliveryAt: new Date("2026-07-15T00:00:00Z"),
+        milestones: [],
+        events: [],
+      });
+
+      const res = await service.update("SHIP-1", "GBUYER", {
+        expectedDeliveryAt: "2026-07-15T00:00:00Z",
+      });
+
+      expect(res).toBeDefined();
+      expect(mockPrisma.shipment.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: "SHIP-1" },
+          data: expect.objectContaining({
+            expectedDeliveryAt: new Date("2026-07-15T00:00:00Z"),
+          }),
+        }),
+      );
+    });
+
+    it("rejects setting expectedDeliveryAt when shipment is not ACTIVE", async () => {
+      mockPrisma.shipment.findUnique.mockResolvedValueOnce({
+        id: "SHIP-1",
+        buyerAddress: "GBUYER",
+        status: ShipmentStatus.COMPLETED,
+      });
+
+      await expect(
+        service.update("SHIP-1", "GBUYER", {
+          expectedDeliveryAt: "2026-07-15T00:00:00Z",
+        }),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+  });
+
+  describe("createTracking() delivery delay alerts", () => {
+    const shipment = {
+      id: "SHIP-1",
+      buyerAddress: "GBUYER",
+      supplierAddress: "GSUPPLIER",
+      logisticsAddress: "GLOGISTICS",
+      expectedDeliveryAt: new Date("2026-07-01T00:00:00Z"),
+      status: ShipmentStatus.ACTIVE,
+    };
+
+    it("sends DELIVERY_DELAYED notification when estimatedArrival is later than expectedDeliveryAt", async () => {
+      mockPrisma.shipment.findUnique.mockResolvedValueOnce(shipment);
+      mockPrisma.trackingUpdate.findFirst.mockResolvedValueOnce(null);
+      mockPrisma.trackingUpdate.create.mockResolvedValueOnce({
+        id: "track-1",
+        shipmentId: "SHIP-1",
+        location: "Port of Lagos",
+        status: "In Transit",
+        estimatedArrival: new Date("2026-07-05T00:00:00Z"),
+        createdAt: new Date(),
+      });
+
+      await service.createTracking("SHIP-1", "GLOGISTICS", {
+        location: "Port of Lagos",
+        status: "In Transit",
+        estimatedArrival: "2026-07-05T00:00:00Z",
+      });
+
+      expect(mockNotifications.notifyUser).toHaveBeenCalledWith(
+        "GBUYER",
+        NotificationType.DELIVERY_DELAYED,
+        "Shipment delivery delayed",
+        expect.any(String),
+        expect.objectContaining({
+          shipmentId: "SHIP-1",
+          estimatedArrival: new Date("2026-07-05T00:00:00Z").toISOString(),
+        }),
+      );
+      expect(mockNotifications.notifyUser).toHaveBeenCalledWith(
+        "GSUPPLIER",
+        NotificationType.DELIVERY_DELAYED,
+        "Shipment delivery delayed",
+        expect.any(String),
+        expect.objectContaining({
+          shipmentId: "SHIP-1",
+          estimatedArrival: new Date("2026-07-05T00:00:00Z").toISOString(),
+        }),
+      );
+    });
+
+    it("does not send duplicate DELIVERY_DELAYED notification if ETA has not changed", async () => {
+      mockPrisma.shipment.findUnique.mockResolvedValueOnce(shipment);
+      mockPrisma.trackingUpdate.findFirst.mockResolvedValueOnce({
+        id: "track-1",
+        shipmentId: "SHIP-1",
+        estimatedArrival: new Date("2026-07-05T00:00:00Z"),
+        createdAt: new Date("2026-06-20T00:00:00Z"),
+      });
+      mockPrisma.trackingUpdate.create.mockResolvedValueOnce({
+        id: "track-2",
+        shipmentId: "SHIP-1",
+        location: "Warehouse 2",
+        status: "In Transit",
+        estimatedArrival: new Date("2026-07-05T00:00:00Z"),
+        createdAt: new Date(),
+      });
+
+      await service.createTracking("SHIP-1", "GLOGISTICS", {
+        location: "Warehouse 2",
+        status: "In Transit",
+        estimatedArrival: "2026-07-05T00:00:00Z",
+      });
+
+      // Only TRACKING_UPDATED should be called, NOT DELIVERY_DELAYED
+      const deliveryDelayedCalls = mockNotifications.notifyUser.mock.calls.filter(
+        (call: any[]) => call[1] === NotificationType.DELIVERY_DELAYED,
+      );
+      expect(deliveryDelayedCalls).toHaveLength(0);
+    });
+  });
 });

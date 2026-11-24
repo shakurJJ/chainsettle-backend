@@ -20,6 +20,11 @@ export class StellarAddressThrottlerGuard extends RateLimitThrottlerGuard {
       return req.body.stellarAddress;
     }
 
+    // Authenticated routes: throttle per caller address
+    if (req.user?.stellarAddress) {
+      return req.user.stellarAddress;
+    }
+
     // Fallback to IP-based throttling if no address is found
     return req.ips.length > 0 ? req.ips[0] : req.ip;
   }

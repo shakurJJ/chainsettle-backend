@@ -1,11 +1,18 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StellarService } from '../../common/stellar/stellar.service';
 import { ShipmentsService } from '../shipments/shipments.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { RedisService } from '../../common/redis/redis.service';
+import { runTrackedJob } from '../../common/jobs/job-tracker.util';
+import { JOB_LOCK_KEYS } from '../../common/jobs/job-locks';
 import { ShipmentStatus, NotificationType, UserRole } from '@prisma/client';
 import { nativeToScVal } from '@stellar/stellar-sdk';
+import { randomUUID } from 'crypto';
+
+const RECONCILIATION_LOCK_KEY = JOB_LOCK_KEYS.reconciliation;
+const RECONCILIATION_LOCK_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 @Injectable()
 export class ReconciliationJob {
@@ -16,13 +23,15 @@ export class ReconciliationJob {
     private readonly stellar: StellarService,
     private readonly shipments: ShipmentsService,
     private readonly notifications: NotificationsService,
+    @Optional() private readonly redis?: RedisService,
   ) {}
 
-  @Cron('0 2 * * 0')
+  @Cron('0 2 * * 0', { name: 'reconciliation' })
   async runReconciliation() {
-    const run = await this.prisma.reconciliationRun.create({
-      data: { startedAt: new Date() },
-    });
+    const execute = async () => {
+      const run = await this.prisma.reconciliationRun.create({
+        data: { startedAt: new Date() },
+      });
 
     let checkedCount = 0;
     let mismatchCount = 0;
@@ -119,5 +128,31 @@ export class ReconciliationJob {
         },
       });
     }
+  };
+
+  if (this.redis) {
+    const redis = this.redis;
+    await runTrackedJob(
+      redis,
+      'reconciliation',
+      async () => {
+        // The lock keeps a manual admin-triggered run from overlapping a
+        // scheduled one (and vice versa) across all instances.
+        const token = randomUUID();
+        if (!(await redis.acquireLock(RECONCILIATION_LOCK_KEY, token, RECONCILIATION_LOCK_TTL_MS))) {
+          this.logger.debug('Skipping reconciliation — another run holds the lock');
+          return;
+        }
+        try {
+          await execute();
+        } finally {
+          await redis.releaseLock(RECONCILIATION_LOCK_KEY, token);
+        }
+      },
+      this.logger,
+    );
+  } else {
+    await execute();
   }
+}
 }

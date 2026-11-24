@@ -13,9 +13,20 @@ export class LocaleMiddleware implements NestMiddleware {
   constructor(private readonly i18n: I18nService) {}
 
   use(req: Request, _res: Response, next: NextFunction) {
-    const header = req.headers['accept-language'];
-    const value = Array.isArray(header) ? header[0] : header;
-    req.locale = this.i18n.resolveLocale(value);
+    let localeValue: string | undefined;
+
+    if (req.query && req.query.lang) {
+      localeValue = Array.isArray(req.query.lang)
+        ? (req.query.lang[0] as string)
+        : (req.query.lang as string);
+    }
+
+    if (!localeValue) {
+      const header = req.headers['accept-language'];
+      localeValue = Array.isArray(header) ? header[0] : header;
+    }
+
+    req.locale = this.i18n.resolveLocale(localeValue);
     next();
   }
 }

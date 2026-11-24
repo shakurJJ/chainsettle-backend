@@ -5,12 +5,20 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { CreateShipmentTemplateDto, UpdateShipmentTemplateDto } from './dto/create-shipment-template.dto';
+import { AuditLogService } from '../audit-logs/audit-log.service';
+import {
+  CreateShipmentTemplateDto,
+  UpdateShipmentTemplateDto,
+  UpdateTemplateVisibilityDto,
+} from './dto/create-shipment-template.dto';
 import { CreateTemplateFromShipmentDto } from './dto/create-template-from-shipment.dto';
 
 @Injectable()
 export class ShipmentTemplatesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly auditLog: AuditLogService,
+  ) {}
 
   async create(dto: CreateShipmentTemplateDto, ownerId: string) {
     this.validateMilestonePercentages(dto.milestoneTemplates);
@@ -40,6 +48,7 @@ export class ShipmentTemplatesService {
     const [templates, total] = await Promise.all([
       this.prisma.shipmentTemplate.findMany({
         where: {
+          deletedAt: null,
           OR: [
             { ownerId },
             { isPublic: true },
@@ -51,12 +60,41 @@ export class ShipmentTemplatesService {
       }),
       this.prisma.shipmentTemplate.count({
         where: {
+          deletedAt: null,
           OR: [
             { ownerId },
             { isPublic: true },
           ],
         },
       }),
+    ]);
+
+    return {
+      data: templates,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  async findMine(
+    ownerId: string,
+    page: number = 1,
+    limit: number = 20,
+  ) {
+    const skip = (page - 1) * limit;
+
+    const [templates, total] = await Promise.all([
+      this.prisma.shipmentTemplate.findMany({
+        where: { ownerId, deletedAt: null },
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.shipmentTemplate.count({ where: { ownerId, deletedAt: null } }),
     ]);
 
     return {
@@ -83,7 +121,13 @@ export class ShipmentTemplatesService {
   ) {
     const shipment = await this.prisma.shipment.findUnique({
       where: { id: shipmentId },
-      include: { milestones: { orderBy: { milestoneIndex: 'asc' } } },
+      include: {
+        milestones: {
+          where: { deletedAt: null },
+          orderBy: { milestoneIndex: 'asc' },
+          include: { checklistItems: { orderBy: { createdAt: 'asc' } } },
+        },
+      },
     });
 
     if (!shipment) {
@@ -100,6 +144,9 @@ export class ShipmentTemplatesService {
       paymentPercent: m.paymentPercent,
       ...(m.dueAt
         ? { dueDays: Math.round((m.dueAt.getTime() - shipment.createdAt.getTime()) / msPerDay) }
+        : {}),
+      ...(m.checklistItems.length > 0
+        ? { checklist: m.checklistItems.map((c) => ({ label: c.label, required: c.required })) }
         : {}),
     }));
 
@@ -121,8 +168,8 @@ export class ShipmentTemplatesService {
   }
 
   async findOne(id: string) {
-    const template = await this.prisma.shipmentTemplate.findUnique({
-      where: { id },
+    const template = await this.prisma.shipmentTemplate.findFirst({
+      where: { id, deletedAt: null },
     });
 
     if (!template) {
@@ -144,6 +191,7 @@ export class ShipmentTemplatesService {
       name: m.name,
       paymentPercent: m.paymentPercent,
       dueDays: m.dueDays ?? null,
+      checklist: Array.isArray(m.checklist) ? m.checklist : [],
       dueDescription:
         m.dueDays != null ? `${m.dueDays} day${m.dueDays === 1 ? '' : 's'} after creation` : 'No due date set',
     }));
@@ -192,6 +240,35 @@ export class ShipmentTemplatesService {
     });
   }
 
+  async updateVisibility(
+    id: string,
+    ownerId: string,
+    actorAddress: string,
+    dto: UpdateTemplateVisibilityDto,
+  ) {
+    const template = await this.findOne(id);
+
+    if (template.ownerId !== ownerId) {
+      throw new ForbiddenException('Only the template owner can change its visibility');
+    }
+
+    const updated = await this.prisma.shipmentTemplate.update({
+      where: { id },
+      data: { isPublic: dto.isPublic },
+    });
+
+    await this.auditLog.record({
+      actorId: ownerId,
+      actorAddress: actorAddress ?? 'unknown',
+      action: 'SHIPMENT_TEMPLATE_VISIBILITY_CHANGED',
+      resourceType: 'ShipmentTemplate',
+      resourceId: id,
+      metadata: { isPublic: dto.isPublic },
+    });
+
+    return updated;
+  }
+
   async delete(id: string, ownerId: string) {
     const template = await this.findOne(id);
 
@@ -199,9 +276,19 @@ export class ShipmentTemplatesService {
       throw new ForbiddenException('Only the template owner can delete it');
     }
 
-    await this.prisma.shipmentTemplate.delete({
-      where: { id },
-    });
+    // Soft-delete (#306): the row is kept so audit log entries referencing it
+    // still resolve; findOne/findAll/findMine exclude it from then on.
+    await this.prisma.$transaction([
+      this.prisma.shipmentTemplate.update({
+        where: { id },
+        data: { deletedAt: new Date() },
+      }),
+      // Recurring schedules built on this template stop generating drafts (#389).
+      this.prisma.recurringSchedule.updateMany({
+        where: { templateId: id, active: true },
+        data: { active: false },
+      }),
+    ]);
 
     return { success: true };
   }

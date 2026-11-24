@@ -37,6 +37,7 @@ describe('AuthService.deactivateUser', () => {
       {} as ConfigService,
       {} as NotificationsService,
       mockAuditLog as unknown as AuditLogService,
+      {} as any, // SessionService — not used in deactivateUser tests
     );
   });
 

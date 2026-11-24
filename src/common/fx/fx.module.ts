@@ -3,10 +3,12 @@ import { RedisModule } from '../redis/redis.module';
 import { TokenRegistryModule } from '../token-registry/token-registry.module';
 import { FxRateService } from './fx-rate.service';
 import { FxRateJob } from './fx-rate.job';
+import { FxRateController } from './fx-rate.controller';
 
 @Global()
 @Module({
   imports: [RedisModule, TokenRegistryModule],
+  controllers: [FxRateController],
   providers: [FxRateService, FxRateJob],
   exports: [FxRateService],
 })

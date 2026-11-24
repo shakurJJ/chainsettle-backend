@@ -16,6 +16,8 @@ import { StellarService } from '../../common/stellar/stellar.service';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import * as nodemailer from 'nodemailer';
+import { resolveBuildInfo } from '../../common/build-info';
+import { FxRateService } from '../../common/fx/fx-rate.service';
 
 @ApiTags('health')
 @Controller('health')
@@ -25,6 +27,8 @@ export class HealthController {
     private readonly prismaHealth: PrismaHealthIndicator,
     private readonly prisma: PrismaService,
     private readonly ipfsService: IpfsService,
+    private readonly stellar: StellarService,
+    private readonly fxRate: FxRateService,
   ) {}
 
   /**
@@ -73,6 +77,45 @@ export class HealthController {
       () => this.prismaHealth.pingCheck('database', this.prisma),
       () => this.ipfsHealthCheck(),
     ]);
+  }
+
+  /**
+   * GET /health/detailed
+   * Dependency health plus the active Stellar RPC/Horizon endpoint and the
+   * health of every configured failover endpoint, plus the FX provider
+   * circuit breaker state.
+   */
+  @Get('detailed')
+  @ApiOperation({ summary: 'Detailed health including Stellar RPC/Horizon failover state' })
+  async detailed() {
+    let database = 'up';
+    try {
+      await this.prisma.$queryRaw`SELECT 1`;
+    } catch {
+      database = 'down';
+    }
+    const stellar = this.stellar.getEndpointHealth();
+    const stellarUp =
+      stellar.rpc.endpoints.some((e) => e.healthy) && stellar.horizon.endpoints.some((e) => e.healthy);
+    return {
+      status: database === 'up' && stellarUp ? 'ok' : 'degraded',
+      database,
+      ipfs: this.ipfsService.isHealthy ? 'up' : 'down',
+      stellar,
+      fx: { circuitBreaker: this.fxRate.getBreakerState() },
+    };
+  }
+
+  /**
+   * GET /health/version
+   * Build and version info for the running instance — used to confirm which
+   * release each blue/green slot is serving (#427). Values are `unknown` when
+   * not injected at Docker build time.
+   */
+  @Get('version')
+  @ApiOperation({ summary: 'Running build version, git commit, build time, Node version and uptime' })
+  version() {
+    return { ...resolveBuildInfo(), uptimeSeconds: Math.floor(process.uptime()) };
   }
 
   private ipfsHealthCheck(): HealthIndicatorResult {

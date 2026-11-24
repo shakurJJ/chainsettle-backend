@@ -11,4 +11,8 @@
   {{/if}}
   <hr />
   <small style="color: #888;">{{t.footer}}</small>
+  {{#if unsubscribeUrl}}
+  <br />
+  <small style="color: #888;"><a href="{{unsubscribeUrl}}" style="color: #888; text-decoration: underline;">Unsubscribe</a></small>
+  {{/if}}
 </div>

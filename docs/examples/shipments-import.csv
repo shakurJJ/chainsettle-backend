@@ -1,0 +1,3 @@
+supplierAddress,logisticsAddress,arbiterAddress,tokenAddress,totalAmount,description,referenceNumber,milestones
+GDQ2...SUPPLIER,GDQ3...LOGISTICS,GDQ4...ARBITER,CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA,10000000,"First batch of widgets","PO-1001","Deposit:30|Delivery:70"
+GDQ2...SUPPLIER,GDQ3...LOGISTICS,GDQ4...ARBITER,CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA,50000000,"Second batch, fully paid on delivery","PO-1002","Full Delivery:100"

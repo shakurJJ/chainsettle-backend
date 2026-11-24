@@ -1,0 +1,5 @@
+CREATE TYPE "SettlementProposalStatus" AS ENUM ('PENDING', 'ACCEPTED', 'REJECTED', 'WITHDRAWN');
+CREATE TABLE "settlement_proposals" ("id" TEXT NOT NULL, "milestoneId" TEXT NOT NULL, "proposedBy" TEXT NOT NULL, "supplierPercent" INTEGER NOT NULL, "message" TEXT, "status" "SettlementProposalStatus" NOT NULL DEFAULT 'PENDING', "respondedAt" TIMESTAMP(3), "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "settlement_proposals_pkey" PRIMARY KEY ("id"), CONSTRAINT "settlement_proposals_milestoneId_fkey" FOREIGN KEY ("milestoneId") REFERENCES "milestones"("id") ON DELETE CASCADE ON UPDATE CASCADE);
+CREATE INDEX "settlement_proposals_milestoneId_status_idx" ON "settlement_proposals"("milestoneId", "status");
+CREATE UNIQUE INDEX "settlement_proposals_one_pending_per_milestone" ON "settlement_proposals"("milestoneId") WHERE "status" = 'PENDING';
+ALTER TABLE "milestones" ADD COLUMN "disputedAt" TIMESTAMP(3);

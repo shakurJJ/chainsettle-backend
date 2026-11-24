@@ -1,5 +1,5 @@
 # Multi-stage build for ChainSettle NestJS API
-# Build:  docker build -t chainsettle-backend .
+# Build:  docker build --build-arg GIT_SHA=$(git rev-parse HEAD) --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) -t chainsettle-backend .
 # Run:    docker run --env-file .env -p 3000:3000 chainsettle-backend
 
 # ── Build stage ──────────────────────────────────────────────
@@ -22,7 +22,13 @@ FROM node:20-alpine AS runner
 
 WORKDIR /app
 
-ENV NODE_ENV=production
+# Build metadata surfaced by GET /health/version and chainsettle_build_info (#427).
+#   docker build --build-arg GIT_SHA=$(git rev-parse HEAD) #                --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) .
+# APP_VERSION defaults to package.json's version when not supplied.
+ARG GIT_SHA=unknown
+ARG BUILD_TIME=unknown
+ARG APP_VERSION=
+ENV NODE_ENV=production     GIT_SHA=${GIT_SHA}     BUILD_TIME=${BUILD_TIME}     APP_VERSION=${APP_VERSION}
 
 RUN apk add --no-cache wget \
   && addgroup -S app && adduser -S app -G app

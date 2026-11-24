@@ -102,6 +102,12 @@ export class ShipmentResponseDto {
   estimatedArrival?: string;
 
   @ApiPropertyOptional({
+    description: 'ISO-8601 promised delivery date/time',
+    example: '2024-04-05T00:00:00.000Z',
+  })
+  expectedDeliveryAt?: string;
+
+  @ApiPropertyOptional({
     description: 'Wallet address of the shipper',
     example: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd',
   })

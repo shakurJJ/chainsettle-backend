@@ -29,6 +29,8 @@ export class KycService {
   private readonly threshold: bigint;
   private readonly enhancedThreshold: bigint;
   private readonly webhookSecret: string;
+  /** How long a VERIFIED status stays valid before re-verification is required (#429). */
+  readonly validityDays: number;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -40,6 +42,16 @@ export class KycService {
       this.config.get<string>('KYC_ENHANCED_VALUE_THRESHOLD_STROOPS', '10000000000000'),
     );
     this.webhookSecret = this.config.get<string>('KYC_WEBHOOK_SECRET', '');
+    this.validityDays = Number(this.config.get<number>('KYC_VALIDITY_DAYS', 365));
+  }
+
+  /** A user is only verified while their verification has not lapsed. */
+  static isActiveVerification(
+    user: { kycStatus: KycStatus; kycExpiresAt?: Date | null } | null | undefined,
+    now: Date = new Date(),
+  ): boolean {
+    if (user?.kycStatus !== KycStatus.VERIFIED) return false;
+    return !user.kycExpiresAt || user.kycExpiresAt.getTime() > now.getTime();
   }
 
   /** Whether a shipment of this size requires both parties to be KYC-verified. */
@@ -64,9 +76,11 @@ export class KycService {
   async isVerified(stellarAddress: string): Promise<boolean> {
     const user = await this.prisma.user.findUnique({
       where: { stellarAddress },
-      select: { kycStatus: true },
+      select: { kycStatus: true, kycExpiresAt: true },
     });
-    return user?.kycStatus === KycStatus.VERIFIED;
+    // Expired verifications are treated as unverified even before the daily
+    // expiry job flips the stored status back to UNVERIFIED (#429).
+    return KycService.isActiveVerification(user);
   }
 
   /**
@@ -82,7 +96,7 @@ export class KycService {
 
     await this.prisma.user.update({
       where: { id: userId },
-      data: { kycStatus: KycStatus.PENDING, kycReference: reference },
+      data: { kycStatus: KycStatus.PENDING, kycReference: reference, kycSubmittedAt: new Date() },
     });
 
     await this.auditLog.record({
@@ -98,13 +112,25 @@ export class KycService {
     return { reference, kycStatus: KycStatus.PENDING };
   }
 
-  async getStatus(userId: string): Promise<{ kycStatus: KycStatus; kycReference: string | null }> {
+  async getStatus(userId: string): Promise<{
+    kycStatus: KycStatus;
+    kycReference: string | null;
+    kycVerifiedAt: Date | null;
+    kycExpiresAt: Date | null;
+    expired: boolean;
+  }> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { kycStatus: true, kycReference: true },
+      select: { kycStatus: true, kycReference: true, kycVerifiedAt: true, kycExpiresAt: true },
     });
     if (!user) throw new NotFoundException('User not found');
-    return user;
+    const expired =
+      user.kycStatus === KycStatus.VERIFIED && !KycService.isActiveVerification(user);
+    return {
+      ...user,
+      kycStatus: expired ? KycStatus.UNVERIFIED : user.kycStatus,
+      expired,
+    };
   }
 
   /**
@@ -134,10 +160,22 @@ export class KycService {
     }
 
     const kycStatus = KycStatus[dto.status];
+    const expiryData =
+      kycStatus === KycStatus.VERIFIED
+        ? (() => {
+            const verifiedAt = new Date();
+            return {
+              kycVerifiedAt: verifiedAt,
+              kycExpiresAt: new Date(verifiedAt.getTime() + this.validityDays * 24 * 60 * 60 * 1000),
+              kycReminder30dSentAt: null,
+              kycReminder7dSentAt: null,
+            };
+          })()
+        : {};
 
     await this.prisma.user.update({
       where: { id: user.id },
-      data: { kycStatus, kycReference: dto.reference },
+      data: { kycStatus, kycReference: dto.reference, ...expiryData },
     });
 
     await this.auditLog.record({

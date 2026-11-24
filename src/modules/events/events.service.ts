@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy, Optional, BadRequestException, ConflictException } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
@@ -7,9 +7,12 @@ import { RedisService } from '../../common/redis/redis.service';
 import { StellarService } from '../../common/stellar/stellar.service';
 import { MilestonesService } from '../milestones/milestones.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { ShipmentEventsPublisher } from '../graphql/shipment-events.publisher';
 import { ShipmentsService } from '../shipments/shipments.service';
 import { MetricsService } from '../../common/metrics/metrics.service';
 import { NotificationType } from '@prisma/client';
+import { AuditLogService } from '../audit-logs/audit-log.service';
+import { runTrackedJob } from '../../common/jobs/job-tracker.util';
 
 const MAX_ATTEMPTS = 5;
 const POLLER_LOCK_KEY = 'chainsettle:event-poller:leader';
@@ -50,9 +53,12 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
     private readonly stellar: StellarService,
     private readonly milestones: MilestonesService,
     private readonly notifications: NotificationsService,
+    private readonly gateway: NotificationsGateway,
     private readonly shipments: ShipmentsService,
     private readonly config: ConfigService,
     private readonly metrics: MetricsService,
+    @Optional() private readonly gqlPublisher?: ShipmentEventsPublisher,
+    @Optional() private readonly auditLog?: AuditLogService,
   ) {}
 
   async onModuleInit() {
@@ -200,14 +206,18 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
   // RETRY CRON — runs every minute, exponential back-off
   // ----------------------------------------------------------
 
-  @Cron(CronExpression.EVERY_MINUTE)
+  @Cron(CronExpression.EVERY_MINUTE, { name: 'failed-events-retry' })
   async retryFailedEvents() {
-    // Only the poller leader retries DLQ work to avoid duplicate side-effects.
-    if (!this.isLeader) {
-      return;
-    }
+    return runTrackedJob(
+      this.redis,
+      'failed-events-retry',
+      async () => {
+        // Only the poller leader retries DLQ work to avoid duplicate side-effects.
+        if (!this.isLeader) {
+          return;
+        }
 
-    const now = new Date();
+        const now = new Date();
 
     const pending = await this.prisma.failedEvent.findMany({
       where: { resolvedAt: null, attemptCount: { lt: MAX_ATTEMPTS } },
@@ -253,6 +263,9 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
         }
       }
     }
+  },
+  this.logger,
+);
   }
 
   // ----------------------------------------------------------
@@ -268,6 +281,41 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
     await this.saveRawEvent(eventName, event, payload);
     await this.executeHandler(eventName, payload, event);
     this.metrics.incrementEventsProcessed(eventName);
+    await this.publishGraphqlUpdate(payload);
+  }
+
+  /**
+   * Process a single raw Soroban event during a backfill run.
+   *
+   * Identical to the live-poller path but intentionally skips the GraphQL
+   * fanout (backfill replays are not real-time updates) and does not advance
+   * the live cursor.  All idempotency guarantees are preserved:
+   *  - `saveRawEvent` upserts into chain_events with `update: {}` so existing
+   *    rows are never overwritten.
+   *  - Domain handlers skip work that was already done (e.g. CONFIRMED check).
+   *
+   * Called by BackfillService; exposed as public so the two services remain
+   * independently injectable without circular deps.
+   */
+  async processEventForBackfill(event: any): Promise<void> {
+    const eventName = this.extractEventName(event);
+    const payload = this.extractPayload(event);
+
+    await this.saveRawEvent(eventName, event, payload);
+    await this.executeHandler(eventName, payload, event);
+    this.metrics.incrementEventsProcessed(eventName);
+    // No GraphQL publish — backfill is a repair operation, not a live event.
+  }
+
+  /** Fan the processed chain event out to GraphQL subscribers (#431). */
+  private async publishGraphqlUpdate(payload: any) {
+    if (!this.gqlPublisher) return;
+    const [shipmentId, milestoneIndex] = Array.isArray(payload) ? payload : [payload, undefined];
+    if (shipmentId === undefined || shipmentId === null) return;
+    await this.gqlPublisher.publishShipment(
+      String(shipmentId),
+      milestoneIndex === undefined ? undefined : Number(milestoneIndex),
+    );
   }
 
   private async executeHandler(eventName: string, payload: any, meta: any) {
@@ -454,17 +502,14 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
     const [shipmentId, refundAmount] = Array.isArray(payload) ? payload : [payload, undefined];
     this.logger.log(`Shipment cancelled on-chain: ${shipmentId}`);
 
-    try {
-      // Pass null as callerAddress to bypass the buyer-only guard on the event path
-      await this.shipments.cancel(String(shipmentId), null, event.txHash ?? '');
-    } catch (err: any) {
-      // If the API already cancelled it, the status won't be ACTIVE — that's fine
-      if (err?.status === 409) {
-        this.logger.debug(`Shipment ${shipmentId} already cancelled — skipping event update`);
-      } else {
-        throw err;
-      }
-    }
+    await this.prisma.shipment.update({
+      where: { id: String(shipmentId) },
+      data: {
+        status: 'CANCELLED',
+        cancelledAt: new Date(),
+        refundTxHash: event.txHash ?? null,
+      },
+    });
   }
 
   // ----------------------------------------------------------
@@ -635,6 +680,139 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
       healthy: lag <= 100,
       isPollerLeader: this.isLeader,
     };
+  }
+
+  // ----------------------------------------------------------
+  // ADMIN — Cursor rewind
+  // ----------------------------------------------------------
+
+  /**
+   * Moves the event-poller cursor back to `toLedger` so that all events
+   * from that ledger onward are reprocessed.
+   *
+   * Safety contract:
+   *  1. `toLedger` must be ≥ 1 and ≤ current chain tip (no future ledgers).
+   *  2. `toLedger` must still be within the Soroban RPC retention window —
+   *     validated by probing `getOldestAvailableLedger()`.
+   *  3. The operation holds the distributed poller lock for its entire
+   *     duration so no competing replica can advance the cursor while we
+   *     rewind it.
+   *  4. Once the DB and in-memory cursor are updated the stream is restarted
+   *     from the new position; existing `chain_events` upserts guarantee that
+   *     already-processed events will not create duplicate DB rows.
+   *
+   * @param toLedger   - Target ledger sequence number.
+   * @param actor      - Admin user object from the JWT (for audit logging).
+   * @param reason     - Human-readable justification stored in the audit log.
+   * @param ipAddress  - Caller IP forwarded from the HTTP request.
+   */
+  async rewindCursor(
+    toLedger: number,
+    actor: { id?: string; stellarAddress?: string },
+    reason: string,
+    ipAddress?: string,
+  ): Promise<{
+    previousLedger: number;
+    newLedger: number;
+    chainTip: number;
+    oldestAvailableLedger: number;
+  }> {
+    // --- 1. Validate upper bound: cannot rewind to a future ledger ----------
+    const chainTip = await this.stellar.getLatestLedger();
+    if (toLedger > chainTip) {
+      throw new BadRequestException(
+        `toLedger (${toLedger}) is ahead of the current chain tip (${chainTip}). ` +
+          `Choose a ledger ≤ ${chainTip}.`,
+      );
+    }
+
+    // --- 2. Validate lower bound: must be within RPC retention window -------
+    const oldestAvailable = await this.stellar.getOldestAvailableLedger();
+    if (toLedger < oldestAvailable) {
+      throw new BadRequestException(
+        `toLedger (${toLedger}) is older than the earliest ledger available on the ` +
+          `Soroban RPC node (${oldestAvailable}). The node cannot serve events that ` +
+          `far back. Choose a ledger ≥ ${oldestAvailable}.`,
+      );
+    }
+
+    // --- 3. Acquire or confirm leadership of the distributed poller lock ----
+    //
+    // We must own the lock before touching the cursor so no other replica
+    // advances it concurrently.  If this instance is already the leader it
+    // already holds the lock.  If not (e.g. multi-replica and admin hits a
+    // follower) we do a one-shot acquisition attempt.
+    let acquiredHere = false;
+    if (!this.isLeader) {
+      const token = this.lockToken;
+      const acquired = await this.redis.acquireLock(
+        POLLER_LOCK_KEY,
+        token,
+        POLLER_LOCK_TTL_MS,
+      );
+      if (!acquired) {
+        throw new ConflictException(
+          'The event-poller lock is currently held by another replica. ' +
+            'Retry in a few seconds, or hit the leader replica directly.',
+        );
+      }
+      acquiredHere = true;
+      this.isLeader = true;
+    }
+
+    try {
+      // --- 4. Read previous cursor value (for audit trail) ------------------
+      const persisted = await this.prisma.eventCursor.findUnique({
+        where: { id: 'main' },
+      });
+      const previousLedger = persisted?.lastProcessedLedger ?? this.lastProcessedLedger;
+
+      // --- 5. Persist the new cursor to the DB ------------------------------
+      await this.prisma.eventCursor.upsert({
+        where: { id: 'main' },
+        create: { id: 'main', lastProcessedLedger: toLedger },
+        update: { lastProcessedLedger: toLedger },
+      });
+
+      // --- 6. Update the in-memory mirror so the restarted stream uses it ---
+      this.lastProcessedLedger = toLedger;
+
+      // --- 7. Restart the stream from the new position ----------------------
+      this.startStreamSubscription();
+
+      this.logger.log(
+        `[rewindCursor] Cursor rewound from ${previousLedger} → ${toLedger} ` +
+          `by ${actor.stellarAddress ?? 'unknown'}. Reason: ${reason}`,
+      );
+
+      // --- 8. Explicit audit log entry (richer metadata than interceptor) ---
+      await this.auditLog?.record({
+        actorId: actor.id,
+        actorAddress: actor.stellarAddress ?? 'SYSTEM',
+        action: 'events.cursor.rewind',
+        resourceType: 'EventCursor',
+        resourceId: 'main',
+        metadata: {
+          previousLedger,
+          newLedger: toLedger,
+          chainTip,
+          oldestAvailableLedger: oldestAvailable,
+          reason,
+        },
+        ipAddress,
+      });
+
+      return { previousLedger, newLedger: toLedger, chainTip, oldestAvailableLedger: oldestAvailable };
+    } finally {
+      // Release the lock only if WE acquired it here (i.e. we were a
+      // follower that temporarily grabbed leadership for this operation).
+      // If we were already the leader, keep the lock — the normal renewal
+      // interval will maintain it.
+      if (acquiredHere) {
+        await this.redis.releaseLock(POLLER_LOCK_KEY, this.lockToken);
+        this.isLeader = false;
+      }
+    }
   }
 
   // ----------------------------------------------------------

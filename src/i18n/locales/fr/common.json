@@ -1,0 +1,40 @@
+{
+  "errors": {
+    "ONLY_BUYER_MAY_CONFIRM": "Seul l'acheteur de l'envoi peut confirmer les jalons",
+    "SHIPMENT_NOT_FOUND": "Envoi {id} introuvable",
+    "MILESTONE_NOT_FOUND": "Jalon {index} introuvable dans l'envoi {id}",
+    "MILESTONE_CONFIRM_STATUS": "Le jalon {index} doit être dans le statut PROOF_SUBMITTED pour être confirmé (actuellement {status})",
+    "INTERNAL_SERVER_ERROR": "Erreur interne du serveur",
+    "TOO_MANY_REQUESTS": "Trop de requêtes",
+    "NOTIFICATION_NOT_FOUND": "Notification introuvable",
+    "PROOF_FILE_REQUIRED": "Un fichier de preuve doit être fourni dans le champ \"file\"",
+    "UNSUPPORTED_FILE_TYPE": "Type de fichier non pris en charge : {mime}. Autorisés : PDF, images, MP4.",
+    "CANCELLED_SHIPMENT_CONFIRM": "Impossible de confirmer un jalon pour un envoi annulé"
+  },
+  "email": {
+    "PROOF_SUBMITTED": {
+      "subject": "Preuve soumise",
+      "heading": "ChainSettle — Preuve soumise",
+      "body": "Une preuve a été soumise pour le jalon <strong>{{milestoneName}}</strong> de l'envoi <strong>{{shipmentId}}</strong>.",
+      "cta": "Voir la preuve sur IPFS",
+      "footer_action": "Veuillez examiner et confirmer ou contester la preuve soumise.",
+      "footer": "Vous recevez cet e-mail car vous êtes participant sur ChainSettle."
+    },
+    "PAYMENT_RELEASED": {
+      "subject": "Paiement libéré",
+      "heading": "ChainSettle — Paiement libéré",
+      "body": "Un paiement de <strong>{{amount}} {{tokenSymbol}}</strong> a été libéré pour le jalon <strong>{{milestoneIndex}}</strong> de l'envoi <strong>{{shipmentId}}</strong>.",
+      "cta": "Voir l'envoi",
+      "footer": "Vous recevez cet e-mail car vous êtes participant sur ChainSettle."
+    },
+    "DISPUTE_RAISED": {
+      "subject": "Litige soulevé",
+      "heading": "ChainSettle — Litige soulevé",
+      "body": "Un litige a été soulevé pour le jalon <strong>{{milestoneIndex}}</strong> de l'envoi <strong>{{shipmentId}}</strong>.",
+      "action": "Veuillez soumettre vos preuves rapidement afin que l'arbitre puisse examiner le dossier.",
+      "cta": "Soumettre des preuves",
+      "footer": "Vous recevez cet e-mail car vous êtes participant sur ChainSettle."
+    },
+    "GENERIC_FOOTER": "Vous recevez cet e-mail car vous êtes participant sur ChainSettle."
+  }
+}
