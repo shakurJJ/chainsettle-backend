@@ -134,11 +134,18 @@ export class HttpExceptionFilter implements ExceptionFilter {
       message = rawMessage;
     }
 
+    // Read the code before translation, which can reduce an object response
+    // to just its message and would otherwise drop the code.
+    const exceptionCode = (rawMessage as { code?: unknown } | null)?.code;
     const errorResponse = buildErrorBody(
       status,
       request.url,
       message,
-      timedOut ? DB_STATEMENT_TIMEOUT_CODE : undefined,
+      timedOut
+        ? DB_STATEMENT_TIMEOUT_CODE
+        : typeof exceptionCode === 'string'
+          ? exceptionCode
+          : undefined,
     );
 
     if (timedOut) {
