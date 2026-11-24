@@ -283,6 +283,53 @@ describe('ShipmentReportService.buildForUser', () => {
       }),
     );
     expect(report!.stats.totalShipments).toBe(1);
+    expect(prisma.shipment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({
+          milestones: expect.objectContaining({
+            where: { deletedAt: null },
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('uses the previous calendar month for a monthly report', async () => {
+    const prisma = {
+      user: {
+        findUnique: jest.fn().mockResolvedValue({ stellarAddress: ADDRESS }),
+      },
+      shipment: {
+        findMany: jest.fn().mockResolvedValue([shipment({ milestones: [] })]),
+      },
+    };
+
+    const result = await serviceWith(prisma).buildForUser(
+      'user-1',
+      'monthly',
+      NOW,
+    );
+
+    expect(result!.html).toContain('2026-10-01 → 2026-11-01');
+  });
+
+  it('uses a rolling 7-day window for a weekly report', async () => {
+    const prisma = {
+      user: {
+        findUnique: jest.fn().mockResolvedValue({ stellarAddress: ADDRESS }),
+      },
+      shipment: {
+        findMany: jest.fn().mockResolvedValue([shipment({ milestones: [] })]),
+      },
+    };
+
+    const result = await serviceWith(prisma).buildForUser(
+      'user-1',
+      'weekly',
+      NOW,
+    );
+
+    expect(result!.html).toContain('2026-11-16 → 2026-11-23');
   });
 
   it('returns null when the user no longer exists', async () => {

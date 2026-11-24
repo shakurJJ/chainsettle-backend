@@ -311,9 +311,16 @@ export class ShipmentReportService {
     });
     if (!user) return null;
 
-    const periodDays = frequency === 'monthly' ? 30 : 7;
-    const periodEnd = now;
-    const periodStart = new Date(now.getTime() - periodDays * DAY_MS);
+    // The job schedules monthly reports using the server-local calendar day,
+    // so derive the calendar-month boundaries from the same clock.
+    const periodEnd =
+      frequency === 'monthly'
+        ? new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1))
+        : now;
+    const periodStart =
+      frequency === 'monthly'
+        ? new Date(Date.UTC(now.getFullYear(), now.getMonth() - 1, 1))
+        : new Date(now.getTime() - 7 * DAY_MS);
 
     const shipments = await this.prisma.shipment.findMany({
       where: {
@@ -342,6 +349,7 @@ export class ShipmentReportService {
         createdAt: true,
         updatedAt: true,
         milestones: {
+          where: { deletedAt: null },
           select: {
             milestoneIndex: true,
             name: true,

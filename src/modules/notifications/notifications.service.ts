@@ -686,6 +686,10 @@ export class NotificationsService {
         const existing = normalizeChannelPrefs(merged[notifType]);
         merged[notifType] = { ...existing, email: false };
       }
+      // The report email shares this unsubscribe link, so make the opt-out
+      // durable: re-enabling a single notification email must not quietly
+      // resume scheduled reports.
+      merged._meta = { ...merged._meta, reportFrequency: 'off' };
     } else {
       const notifType = type as NotificationType;
       const existing = normalizeChannelPrefs(merged[notifType]);
