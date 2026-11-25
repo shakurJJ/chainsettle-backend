@@ -10,7 +10,7 @@ import {
 import { CommentVisibility, NotificationType } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { WebhooksService } from '../webhooks/webhooks.service';
+import { OutboxService } from '../outbox/outbox.service';
 import { CreateCommentDto } from './dto/create-comment.dto';
 import { OrganizationsService } from '../organizations/organizations.service';
 
@@ -34,7 +34,7 @@ export class CommentsService {
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
     @Optional() private readonly organizations?: OrganizationsService,
-    @Optional() private readonly webhooks?: WebhooksService,
+    @Optional() private readonly outbox?: OutboxService,
   ) {}
 
   // ----------------------------------------------------------
@@ -87,38 +87,36 @@ export class CommentsService {
       }
     }
 
-    const comment = await this.prisma.shipmentComment.create({
-      data: {
+    // The comment and its outbox event commit together (#660). The webhook for
+    // external integrations (ERPs, chat bridges) is written once per comment,
+    // independent of participants' notification preferences, and delivered by
+    // OutboxDispatcherJob with retries.
+    const comment = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.shipmentComment.create({
+        data: {
+          shipmentId,
+          authorId,
+          body: dto.body,
+          visibility: dto.visibility ?? CommentVisibility.ALL,
+          attachmentCid: dto.attachmentCid,
+          parentCommentId: dto.parentCommentId ?? null,
+          milestoneIndex: dto.milestoneIndex ?? null,
+        },
+        include: { author: { select: { id: true, stellarAddress: true, name: true, avatarCid: true } } },
+      });
+
+      await this.outbox?.enqueue(tx, NotificationType.SHIPMENT_COMMENT_CREATED, {
         shipmentId,
-        authorId,
-        body: dto.body,
-        visibility: dto.visibility ?? CommentVisibility.ALL,
-        attachmentCid: dto.attachmentCid,
-        parentCommentId: dto.parentCommentId ?? null,
-        milestoneIndex: dto.milestoneIndex ?? null,
-      },
-      include: { author: { select: { id: true, stellarAddress: true, name: true, avatarCid: true } } },
+        commentId: created.id,
+        authorAddress,
+        bodyExcerpt: created.body.slice(0, COMMENT_EXCERPT_LENGTH),
+        createdAt: created.createdAt.toISOString(),
+      });
+
+      return created;
     });
 
     this.logger.log(`Comment created on shipment ${shipmentId} by ${authorAddress}`);
-
-    // Webhook for external integrations (ERPs, chat bridges) — dispatched once
-    // per comment, independent of participants' notification preferences.
-    // Fire-and-forget: a webhook failure must not fail comment creation.
-    this.webhooks
-      ?.dispatch(NotificationType.SHIPMENT_COMMENT_CREATED, {
-        shipmentId,
-        commentId: comment.id,
-        authorAddress,
-        bodyExcerpt: comment.body.slice(0, COMMENT_EXCERPT_LENGTH),
-        createdAt: comment.createdAt.toISOString(),
-      })
-      .catch((err) =>
-        this.logger.error(
-          `Webhook dispatch error for SHIPMENT_COMMENT_CREATED (comment ${comment.id})`,
-          err.message,
-        ),
-      );
 
     // Notify all participants who can see this comment
     await this.notifyParticipants(shipment, comment, authorAddress);

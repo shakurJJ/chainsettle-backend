@@ -12,6 +12,10 @@ export const OPEN_DISPUTES_GAUGE = 'chainsettle_open_disputes';
 export const DISPUTE_RESOLUTION_TIME_HISTOGRAM = 'chainsettle_dispute_resolution_time_hours';
 export const WEBHOOK_DELIVERIES_COUNTER = 'chainsettle_webhook_deliveries_total';
 export const WEBHOOK_DELIVERY_DURATION_HISTOGRAM = 'chainsettle_webhook_delivery_duration_seconds';
+/** Outbox deliveries by outcome - labels: result (dispatched|retried|dead_lettered) */
+export const OUTBOX_EVENTS_COUNTER = 'chainsettle_outbox_events_total';
+/** Undispatched outbox rows - labels: status (PENDING|PROCESSING|DISPATCHED|FAILED) */
+export const OUTBOX_BACKLOG_GAUGE = 'chainsettle_outbox_backlog';
 
 /** Cron job duration histogram - labels: job */
 export const JOB_DURATION_HISTOGRAM = 'chainsettle_job_duration_seconds';
@@ -37,6 +41,8 @@ export class MetricsService {
     private readonly jobDuration: Histogram<string>,
     @InjectMetric(JOB_RUNS_COUNTER)
     private readonly jobRuns: Counter<string>,
+    @InjectMetric(OUTBOX_EVENTS_COUNTER)
+    private readonly outboxEvents: Counter<string>,
   ) {}
 
   /**
@@ -54,6 +60,11 @@ export class MetricsService {
   setStellarEndpointHealth(type: string, url: string, healthy: boolean, active: boolean): void {
     this.stellarEndpoint.set({ type, url, active: String(active) }, healthy ? 1 : 0);
     this.stellarEndpoint.remove({ type, url, active: String(!active) });
+  }
+
+  /** Records one outbox delivery outcome (#660). */
+  recordOutboxEvent(result: 'dispatched' | 'retried' | 'dead_lettered'): void {
+    this.outboxEvents.inc({ result });
   }
 
   incrementEventsProcessed(eventName: string): void {

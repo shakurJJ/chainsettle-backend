@@ -5,6 +5,7 @@ import { PrismaService } from "../../common/prisma/prisma.service";
 import { NotificationType } from "@prisma/client";
 import { I18nService } from "../../i18n/i18n.service";
 import { TelegramService } from "./telegram.service";
+import { OutboxService } from "../outbox/outbox.service";
 
 const ALL_TYPES = Object.values(NotificationType);
 const TELEGRAM_DEFAULT_TYPES = new Set<NotificationType>([
@@ -42,13 +43,14 @@ const mockNotification = {
   type: NotificationType.PROOF_SUBMITTED,
 };
 const telegramNotification = { sendMessage: jest.fn().mockResolvedValue(undefined) };
+const outboxMock = { enqueue: jest.fn().mockResolvedValue({}) };
 
 function buildPrisma(
   prefOverride?: object,
   slackWebhookUrl: string | null = null,
   teamsWebhookUrl: string | null = null,
 ): any {
-  return {
+  const prisma: any = {
     user: {
       findUnique: jest.fn().mockResolvedValue(mockUser),
       findFirst: jest.fn().mockResolvedValue(mockUser),
@@ -77,8 +79,15 @@ function buildPrisma(
     emailSuppression: {
       findUnique: jest.fn().mockResolvedValue(null),
     },
-    $transaction: jest.fn().mockResolvedValue([[], 0]),
   };
+
+  // Supports both array-style (findForUser) and callback-style (notifyUser
+  // writes the notification and its outbox event in one transaction) usage.
+  prisma.$transaction = jest.fn((arg: any) =>
+    typeof arg === "function" ? arg(prisma) : Promise.all(arg),
+  );
+
+  return prisma;
 }
 
 async function buildService(prisma: any, configOverrides: Record<string, any> = {}) {
@@ -100,6 +109,7 @@ async function buildService(prisma: any, configOverrides: Record<string, any> = 
         },
       },
       { provide: TelegramService, useValue: telegramNotification },
+      { provide: OutboxService, useValue: outboxMock },
     ],
   }).compile();
   return module.get(NotificationsService);
@@ -107,6 +117,28 @@ async function buildService(prisma: any, configOverrides: Record<string, any> = 
 
 describe("NotificationsService — preferences", () => {
   afterEach(() => jest.clearAllMocks());
+
+  describe("transactional outbox (#660)", () => {
+    it("writes the webhook event in the same transaction as the notification", async () => {
+      const prisma = buildPrisma();
+      const service = await buildService(prisma);
+
+      await service.notifyUser(
+        "GABC",
+        NotificationType.PROOF_SUBMITTED,
+        "title",
+        "msg",
+        { shipmentId: "SHIP-1" },
+      );
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(outboxMock.enqueue).toHaveBeenCalledWith(
+        prisma,
+        NotificationType.PROOF_SUBMITTED,
+        { notificationId: "notif-1", shipmentId: "SHIP-1" },
+      );
+    });
+  });
 
   describe("default preferences", () => {
     it("upserts a default preference record on first notifyUser call", async () => {
