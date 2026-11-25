@@ -213,6 +213,7 @@ model Shipment {
   tokenAddress     String
   totalAmount      BigInt          // stored in stroops (smallest unit)
   releasedAmount   BigInt          @default(0)
+  fxRateAtCreation Float?          // token→USD rate locked at creation (#653); null if FX unavailable
   status           ShipmentStatus  @default(ACTIVE)
   arbiterStatus    ArbiterStatus   @default(PENDING_ACCEPTANCE)
   txHash           String?         // ledger tx hash of creation
@@ -308,6 +309,7 @@ model Milestone {
   proofHash          String?         // IPFS CID submitted by supplier/logistics
   status             MilestoneStatus @default(PENDING)
   paymentReleased    BigInt?         // exact amount released for this milestone
+  fxRateAtRelease    Float?          // token→USD rate locked at release (#653); null if FX unavailable
   confirmedAt        DateTime?
   dueAt              DateTime?       // optional deadline for milestone completion
   overdueNotifiedAt  DateTime?       // timestamp when overdue notification was sent (prevents re-notification)
@@ -1022,4 +1024,26 @@ model OrganizationMember {
   @@unique([orgId, userId])
   @@index([userId])
   @@map("organization_members")
+}
+
+
+enum RoleRequestStatus {
+  PENDING
+  APPROVED
+  EXPIRED
+}
+
+/// Pending promotion to ADMIN awaiting a second admin's approval (#655).
+model AdminRoleRequest {
+  id           String            @id @default(uuid())
+  targetUserId String
+  requestedBy  String
+  approvedBy   String?
+  status       RoleRequestStatus @default(PENDING)
+  expiresAt    DateTime
+  approvedAt   DateTime?
+  createdAt    DateTime          @default(now())
+
+  @@index([targetUserId, status])
+  @@map("admin_role_requests")
 }

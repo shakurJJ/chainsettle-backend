@@ -178,6 +178,9 @@ export class ShipmentsService {
     if (!token.enabled) {
       throw new BadRequestException(`Token ${tokenAddress} is disabled and cannot be used for new shipments`);
     }
+    if (token.deprecatedAt) {
+      throw new BadRequestException(`Token ${tokenAddress} is deprecated and cannot be used for new shipments`);
+    }
 
     // Per-token min/max shipment value (#304) — no-op for tokens without bounds.
     this.tokenRegistry.assertValueWithinBounds(tokenAddress, totalAmountBigInt);
@@ -190,9 +193,16 @@ export class ShipmentsService {
       totalAmountBigInt,
     );
 
+    // Lock the token→USD rate for historical reporting (#653). Null-safe.
+    const fxRateAtCreation = await this.fxRate
+      .getUsdRate(token.symbol)
+      .then((r) => r?.rate ?? null)
+      .catch(() => null);
+
     const shipment = await this.prisma.shipment.create({
       data: {
         id: dto.shipmentId,
+        fxRateAtCreation,
         ...(requiredApprovals !== null ? { requiredApprovals } : {}),
         buyerAddress: dto.buyerAddress,
         supplierAddress,
@@ -2294,9 +2304,9 @@ export class ShipmentsService {
     const headers = [
       'shipmentId', 'buyerAddress', 'supplierAddress', 'logisticsAddress',
       'arbiterAddress', 'totalAmount', 'releasedAmount', 'status', 'createdAt',
-      'expectedDeliveryAt',
+      'expectedDeliveryAt', 'fxRateAtCreation', 'totalAmountUsd',
       'milestoneName', 'milestoneIndex', 'paymentPercent', 'milestoneStatus',
-      'proofHash', 'confirmedAt',
+      'proofHash', 'confirmedAt', 'fxRateAtRelease', 'paymentReleasedUsd',
       'lineItemSku', 'lineItemName', 'lineItemQuantity', 'lineItemUnit',
       'lineItemUnitPrice', 'lineItemCurrency',
     ];
@@ -2323,14 +2333,22 @@ export class ShipmentsService {
         s.status,
         s.createdAt?.toISOString() ?? '',
         s.expectedDeliveryAt ? (s.expectedDeliveryAt instanceof Date ? s.expectedDeliveryAt.toISOString() : new Date(s.expectedDeliveryAt).toISOString()) : '',
+        s.fxRateAtCreation ?? '',
+        s.fxRateAtCreation != null
+          ? (Number(toUsdc(s.totalAmount)) * s.fxRateAtCreation).toFixed(2)
+          : '',
       ];
 
       const milestoneRows = s.milestones?.length
         ? s.milestones.map((m: any) => [
             m.name, m.milestoneIndex, m.paymentPercent,
             m.status, m.proofHash ?? '', m.confirmedAt?.toISOString() ?? '',
+            m.fxRateAtRelease ?? '',
+            m.fxRateAtRelease != null && m.paymentReleased != null
+              ? (Number(toUsdc(m.paymentReleased)) * m.fxRateAtRelease).toFixed(2)
+              : '',
           ])
-        : [['', '', '', '', '', '']];
+        : [['', '', '', '', '', '', '', '']];
 
       const lineItemRows = s.lineItems?.length
         ? s.lineItems.map((li: any) => [

@@ -6,6 +6,7 @@ import { TerminusModule } from '@nestjs/terminus';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { envValidationSchema } from './config/env.validation';
 import { RolesGuard } from './common/guards/roles.guard';
+import { AdminIpAllowlistGuard } from './common/guards/admin-ip-allowlist.guard';
 import { GqlThrottlerGuard } from './common/guards/gql-throttler.guard';
 import { ImpersonationGuard } from './common/guards/impersonation.guard';
 import { DeprecationInterceptor } from './common/interceptors/deprecation.interceptor';
@@ -117,6 +118,10 @@ import { ReportsModule } from './modules/reports/reports.module';
   ],
   providers: [
     // Apply global throttler guard to REST and GraphQL (sets X-RateLimit-* on success and 429)
+    {
+      provide: APP_GUARD,
+      useClass: AdminIpAllowlistGuard,
+    },
     {
       provide: APP_GUARD,
       useClass: GqlThrottlerGuard,

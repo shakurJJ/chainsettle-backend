@@ -180,13 +180,17 @@ export class AdminDashboardService {
       shipments_created: bigint | number;
       total_value: bigint | number;
       released_value: bigint | number;
+      total_value_usd: number | string | null;
     }> = await this.prisma.$queryRawUnsafe(
       `
       SELECT 
         date_trunc('${dateTruncUnit}', "createdAt") AS period_start,
         COUNT(*)::bigint AS shipments_created,
         COALESCE(SUM("totalAmount"), 0)::bigint AS total_value,
-        COALESCE(SUM("releasedAmount"), 0)::bigint AS released_value
+        COALESCE(SUM("releasedAmount"), 0)::bigint AS released_value,
+        -- #653: value each shipment at the rate locked at creation; fall back
+        -- to the current rate only for rows created before the rate was stored.
+        COALESCE(SUM("totalAmount"::numeric * COALESCE("fxRateAtCreation", $3)), 0)::float8 AS total_value_usd
       FROM shipments
       WHERE "createdAt" >= $1 AND "createdAt" <= $2
         ${tokenAddressFilter ? `AND UPPER("tokenAddress") = UPPER('${tokenAddressFilter}')` : ""}
@@ -195,6 +199,7 @@ export class AdminDashboardService {
     `,
       fromDate,
       toDate,
+      usdRate,
     );
 
     const rawCompleted: Array<{
@@ -217,7 +222,7 @@ export class AdminDashboardService {
 
     const createdMap = new Map<
       string,
-      { count: number; totalValue: bigint; releasedValue: bigint }
+      { count: number; totalValue: bigint; releasedValue: bigint; totalValueUsdRaw: number }
     >();
     for (const row of rawCreated) {
       const key = new Date(row.period_start).toISOString();
@@ -225,6 +230,7 @@ export class AdminDashboardService {
         count: Number(row.shipments_created),
         totalValue: BigInt(row.total_value.toString()),
         releasedValue: BigInt(row.released_value.toString()),
+        totalValueUsdRaw: Number(row.total_value_usd ?? 0),
       });
     }
 
@@ -257,6 +263,7 @@ export class AdminDashboardService {
         count: 0,
         totalValue: BigInt(0),
         releasedValue: BigInt(0),
+        totalValueUsdRaw: 0,
       };
       const completedCount = completedMap.get(periodIso) || 0;
 
@@ -264,7 +271,8 @@ export class AdminDashboardService {
         Number(createdData.totalValue) / 10 ** tokenDecimals;
       const releasedValHuman =
         Number(createdData.releasedValue) / 10 ** tokenDecimals;
-      const totalValueUsd = Math.round(totalValHuman * usdRate * 100) / 100;
+      const totalValueUsd =
+        Math.round((createdData.totalValueUsdRaw / 10 ** tokenDecimals) * 100) / 100;
 
       buckets.push({
         periodStart: periodIso,
