@@ -98,6 +98,48 @@ export class SessionService {
     return jtisToRevoke.length;
   }
 
+  /**
+   * Invalidate a single session (used by logout).
+   *
+   * The jti is blocklisted for the remaining lifetime of the token so it is
+   * rejected immediately, and removed from the user's active-session set.
+   * A non-positive TTL means the token has already expired, so only the
+   * session-set entry is cleaned up.
+   */
+  async invalidateSession(userId: string, jti: string, ttlMs: number): Promise<void> {
+    if (ttlMs > 0) {
+      await this.redis.setPx(`${this.BLOCKLIST_PREFIX}${jti}`, '1', ttlMs);
+    }
+    await this.redis.srem(`${this.SESSION_SET_PREFIX}${userId}`, jti);
+    this.logger.debug(`Session invalidated: jti=${jti} for userId=${userId}`);
+  }
+
+  /**
+   * List the active sessions for a user. Only opaque session IDs (jtis)
+   * are returned — never raw token values.
+   */
+  async listSessions(userId: string): Promise<{ id: string }[]> {
+    const jtis = await this.redis.smembers(`${this.SESSION_SET_PREFIX}${userId}`);
+    return jtis.map((id) => ({ id }));
+  }
+
+  /**
+   * Revoke a single session owned by the user.
+   *
+   * @returns false when the session does not belong to the user
+   */
+  async revokeSession(userId: string, jti: string): Promise<boolean> {
+    const key = `${this.SESSION_SET_PREFIX}${userId}`;
+    const jtis = await this.redis.smembers(key);
+    if (!jtis.includes(jti)) {
+      return false;
+    }
+
+    await this.redis.set(`${this.BLOCKLIST_PREFIX}${jti}`, '1', this.jwtTtlSeconds);
+    await this.redis.srem(key, jti);
+    return true;
+  }
+
   // ------------------------------------------------------------------
   // Blocklist check (called by JwtStrategy on every authenticated request)
   // ------------------------------------------------------------------

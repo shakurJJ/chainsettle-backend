@@ -6,6 +6,7 @@ ChainSettle uses **Sign-In With Stellar** as its sole primary authentication mec
 > - Architecture Decision: [ADR-0001 — Sign-In With Stellar](./adr/0001-sign-in-with-stellar.md)
 > - Machine-to-machine auth: [API Keys](./api-keys.md)
 > - Role/permission matrix: [RBAC](./rbac.md)
+> - Signing and submitting on-chain actions after login: [Transaction Relay](./transaction-relay.md)
 > - Rate limiting headers: see [README — Rate Limiting](../README.md#rate-limiting)
 
 ---
@@ -294,6 +295,8 @@ All protected endpoints return `401 Unauthorized` when the token is missing, mal
 curl -s https://api.example.com/api/v1/shipments \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
+
+On-chain actions (confirming milestones, raising disputes, cancelling shipments) also need a wallet signature on the transaction itself. See [Transaction Relay — Preparing and Submitting Signed Transactions](./transaction-relay.md) for the prepare → sign with Freighter → submit → poll flow.
 
 ---
 

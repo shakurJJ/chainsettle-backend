@@ -32,6 +32,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       stellarAddress: payload.stellarAddress,
       role: payload.role,
       jti: payload.jti,
+      // Needed by logout to blocklist the token for its remaining lifetime
+      exp: payload.exp,
     };
   }
 }
