@@ -34,6 +34,43 @@ export class ContactsService {
     return this.contactsRepository.find({ where: { userId } });
   }
 
+  async searchForUser(
+    userId: string,
+    q: string,
+  ): Promise<
+    Array<{
+      id: string;
+      name: string;
+      stellarAddress: string;
+      email?: string;
+      link: string;
+    }>
+  > {
+    const term = (q ?? '').trim();
+    if (!term) {
+      return [];
+    }
+
+    const pattern = `%${term.toLowerCase()}%`;
+    const contacts = await this.contactsRepository
+      .createQueryBuilder('contact')
+      .where('contact.userId = :userId', { userId })
+      .andWhere(
+        '(LOWER(contact.name) LIKE :pattern OR LOWER(contact.email) LIKE :pattern)',
+        { pattern },
+      )
+      .orderBy('contact.name', 'ASC')
+      .getMany();
+
+    return contacts.map((contact) => ({
+      id: contact.id,
+      name: contact.name,
+      stellarAddress: contact.stellarAddress,
+      email: contact.email,
+      link: `/contacts/${contact.id}`,
+    }));
+  }
+
   async create(userId: string, dto: CreateContactDto): Promise<Contact> {
     const contact = this.contactsRepository.create({ ...dto, userId });
     return this.contactsRepository.save(contact);

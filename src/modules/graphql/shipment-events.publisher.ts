@@ -5,6 +5,7 @@ import { toMilestoneGql } from './milestone.mapper';
 
 export const SHIPMENT_UPDATED = 'shipmentUpdated';
 export const MILESTONE_UPDATED = 'milestoneUpdated';
+export const COMMENT_CREATED = 'commentCreated';
 
 /**
  * Publishes shipment/milestone changes to GraphQL subscribers. Called from
@@ -52,6 +53,28 @@ export class ShipmentEventsPublisher {
       }
     } catch (err) {
       this.logger.error(`Failed to publish GraphQL update for shipment ${shipmentId}`, (err as Error).message);
+    }
+  }
+
+  async publishComment(comment: {
+    id: string;
+    shipmentId: string;
+    authorAddress: string;
+    body: string;
+    createdAt: Date;
+  }): Promise<void> {
+    try {
+      await this.pubSub.publish(COMMENT_CREATED, {
+        [COMMENT_CREATED]: {
+          id: comment.id,
+          shipmentId: comment.shipmentId,
+          authorAddress: comment.authorAddress,
+          body: comment.body,
+          createdAt: comment.createdAt,
+        },
+      });
+    } catch (err) {
+      this.logger.error(`Failed to publish GraphQL comment update for shipment ${comment.shipmentId}`, (err as Error).message);
     }
   }
 }

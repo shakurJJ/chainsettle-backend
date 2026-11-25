@@ -52,7 +52,8 @@ import { AdminDashboardModule } from './modules/admin-dashboard/admin-dashboard.
 import { AdminDisputesModule } from './modules/admin-dashboard/admin-disputes.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { SettlementProposalsModule } from './modules/milestones/settlement-proposals.module';
-import { ReportsModule } from './modules/reports/reports.module';
+import { ContactsModule } from './modules/contacts/contacts.module';
+import { SearchModule } from './modules/search/search.module';
 
 @Module({
   imports: [
@@ -122,7 +123,8 @@ import { ReportsModule } from './modules/reports/reports.module';
     AdminDisputesModule,
     ReportsModule,
     SettlementProposalsModule,
-    ReportsModule,
+    ContactsModule,
+    SearchModule,
   ],
   providers: [
     // Apply global throttler guard to REST and GraphQL (sets X-RateLimit-* on success and 429)

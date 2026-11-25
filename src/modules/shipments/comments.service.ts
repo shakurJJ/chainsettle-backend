@@ -20,6 +20,12 @@ const MAX_PINNED_COMMENTS = 3;
 /** Maximum comment body characters included in the SHIPMENT_COMMENT_CREATED webhook payload. */
 const COMMENT_EXCERPT_LENGTH = 200;
 
+/** Maximum number of comment search results returned by the global search (#669). */
+const SEARCH_COMMENT_LIMIT = 20;
+
+/** Characters of surrounding context included in a search snippet (#669). */
+const SEARCH_SNIPPET_RADIUS = 60;
+
 /**
  * Stellar address regex — G followed by exactly 55 uppercase alphanumeric chars.
  * Used to extract @mentions from comment bodies.
@@ -238,6 +244,115 @@ export class CommentsService {
   }
 
   // ----------------------------------------------------------
+  // GET /search — comment results  (#669)
+  // ----------------------------------------------------------
+
+  /**
+   * Access-scoped full-text search over shipment comment bodies for the global
+   * search endpoint (#669).
+   *
+   * Only comments on shipments the caller participates in are considered, and
+   * the same visibility filter used by findAll is applied so private
+   * (BUYER_SUPPLIER / INTERNAL) comments never leak. Soft-deleted comments are
+   * excluded. Results are capped to keep the endpoint within its latency budget.
+   */
+  async search(
+    query: string,
+    requesterAddress: string,
+    limit = SEARCH_COMMENT_LIMIT,
+  ): Promise<
+    Array<{
+      id: string;
+      shipmentId: string;
+      author: { id: string; stellarAddress: string; name: string | null; avatarUrl: string | null } | null;
+      snippet: string;
+      link: string;
+    }>
+  > {
+    const trimmed = (query ?? '').trim();
+    if (trimmed.length === 0) return [];
+
+    const take = Math.min(Math.max(limit, 1), SEARCH_COMMENT_LIMIT);
+
+    const requester = await this.prisma.user.findUnique({
+      where: { stellarAddress: requesterAddress },
+    });
+    const isAdmin = requester?.role === 'ADMIN';
+
+    // Shipments the caller participates in. Admins may search across all
+    // shipments, but the per-shipment visibility filter still applies.
+    const shipmentWhere = isAdmin
+      ? {}
+      : {
+          OR: [
+            { buyerAddress: requesterAddress },
+            { supplierAddress: requesterAddress },
+            { logisticsAddress: requesterAddress },
+            { arbiterAddress: requesterAddress },
+          ],
+        };
+
+    const shipments = await this.prisma.shipment.findMany({
+      where: shipmentWhere,
+      select: {
+        id: true,
+        buyerAddress: true,
+        supplierAddress: true,
+        logisticsAddress: true,
+        arbiterAddress: true,
+      },
+    });
+    if (shipments.length === 0) return [];
+
+    const shipmentById = new Map(shipments.map((s) => [s.id, s]));
+
+    // Build a per-shipment visibility filter. Participants may see different
+    // visibility classes on different shipments, so we cannot use a single
+    // global `in` list without over-exposing.
+    const visibilityByShipment = new Map<string, CommentVisibility[]>();
+    for (const shipment of shipments) {
+      visibilityByShipment.set(
+        shipment.id,
+        this.buildVisibilityFilter(requesterAddress, shipment, isAdmin),
+      );
+    }
+
+    const comments = await this.prisma.shipmentComment.findMany({
+      where: {
+        shipmentId: { in: shipments.map((s) => s.id) },
+        deletedAt: null,
+        body: { contains: trimmed, mode: 'insensitive' },
+        OR: shipments.map((s) => ({
+          shipmentId: s.id,
+          visibility: { in: visibilityByShipment.get(s.id) ?? [CommentVisibility.ALL] },
+        })),
+      },
+      select: {
+        id: true,
+        shipmentId: true,
+        body: true,
+        visibility: true,
+        author: { select: { id: true, stellarAddress: true, name: true, avatarCid: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take,
+    });
+
+    return comments
+      .filter((comment) => {
+        const allowed = visibilityByShipment.get(comment.shipmentId);
+        return !!allowed && allowed.includes(comment.visibility);
+      })
+      .map((comment) => ({
+        id: comment.id,
+        shipmentId: comment.shipmentId,
+        author: this.formatAuthor(comment.author),
+        snippet: this.buildSnippet(comment.body, trimmed),
+        link: `/shipments/${comment.shipmentId}?commentId=${comment.id}`,
+      }));
+  }
+
+  // ----------------------------------------------------------
   // PATCH /shipments/:id/comments/:commentId/pin  (#189)
   // ----------------------------------------------------------
 
@@ -349,6 +464,28 @@ export class CommentsService {
   private redactIfDeleted<T extends { deletedAt: Date | null }>(comment: T) {
     if (!comment.deletedAt) return { ...comment, deleted: false };
     return { ...comment, body: null, attachmentCid: null, deleted: true };
+  }
+
+  /**
+   * Builds a short snippet of `body` centred on the first case-insensitive
+   * occurrence of `query`, with ellipses when the text is truncated (#669).
+   */
+  private buildSnippet(body: string, query: string): string {
+    if (!body) return '';
+    const lowerBody = body.toLowerCase();
+    const lowerQuery = query.toLowerCase();
+    const idx = lowerBody.indexOf(lowerQuery);
+    if (idx === -1) {
+      return body.length > SEARCH_SNIPPET_RADIUS * 2
+        ? `${body.slice(0, SEARCH_SNIPPET_RADIUS * 2)}…`
+        : body;
+    }
+
+    const start = Math.max(0, idx - SEARCH_SNIPPET_RADIUS);
+    const end = Math.min(body.length, idx + query.length + SEARCH_SNIPPET_RADIUS);
+    const prefix = start > 0 ? '…' : '';
+    const suffix = end < body.length ? '…' : '';
+    return `${prefix}${body.slice(start, end)}${suffix}`;
   }
 
   private isParticipant(address: string, shipment: any): boolean {

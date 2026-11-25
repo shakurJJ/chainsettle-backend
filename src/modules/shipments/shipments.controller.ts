@@ -69,6 +69,8 @@ import {
   ShipmentsExportResult,
 } from '../../common/queue/queue.constants';
 import { ExportShipmentsDto } from './dto/export-shipments.dto';
+import { SearchService } from './search.service';
+import { GlobalSearchDto } from './dto/global-search.dto';
 
 @ApiTags('shipments')
 @ApiBearerAuth()
@@ -83,6 +85,7 @@ export class ShipmentsController {
     private readonly reminders: ShipmentRemindersService,
     private readonly authService: AuthService,
     private readonly organizations: OrganizationsService,
+    private readonly searchService: SearchService,
   ) { }
 
   /**
@@ -220,6 +223,23 @@ export class ShipmentsController {
       displayCurrency,
       riskLevel: query.riskLevel,
     });
+  }
+
+  /**
+   * GET /api/v1/shipments/search
+   * Global search across shipments, comments and contacts (#669).
+   * Results are grouped by type, access-scoped per domain, and capped per type.
+   */
+  @Get('search')
+  @ApiOperation({ summary: 'Global search across shipments, comments and contacts' })
+  @ApiQuery({ name: 'q', required: true, type: String, description: 'Search term (min 2 chars)' })
+  @ApiQuery({ name: 'type', required: false, enum: ['shipments', 'comments', 'contacts'], description: 'Restrict to a single result type' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Results per type (max 25)' })
+  @ApiResponse({ status: 200, description: 'Results grouped by type with snippets and links' })
+  @ApiResponse({ status: 400, description: 'Missing or too-short query' })
+  globalSearch(@CurrentUser() user: AuthenticatedUser, @Query() query: GlobalSearchDto) {
+    return this.searchService.search(user, query);
   }
 
   /**

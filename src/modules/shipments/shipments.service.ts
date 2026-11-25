@@ -545,6 +545,83 @@ export class ShipmentsService {
     };
   }
 
+  /**
+   * GET /search (#669) — shipment slice of the global command-bar search.
+   * Full-text match on description_search plus reference_number ILIKE,
+   * scoped to shipments the caller participates in (or all, for admins).
+   * Returns lightweight rows with a snippet and deep link, capped for latency.
+   */
+  async search(
+    term: string,
+    callerStellarAddress: string | undefined,
+    isAdmin = false,
+    limit = 10,
+  ): Promise<Array<{
+    type: 'shipment';
+    id: string;
+    title: string;
+    snippet: string;
+    status: ShipmentStatus;
+    createdAt: string;
+    link: string;
+  }>> {
+    const q = (term ?? '').trim();
+    if (q.length === 0) return [];
+
+    const cappedLimit = Math.max(1, Math.min(limit, 25));
+    const scopeAddresses =
+      !isAdmin && callerStellarAddress ? [callerStellarAddress] : null;
+
+    const participantCondition = scopeAddresses
+      ? `AND (buyer_address = ANY($1::text[]) OR supplier_address = ANY($1::text[]) OR logistics_address = ANY($1::text[]) OR arbiter_address = ANY($1::text[]))`
+      : '';
+    const participantParams = scopeAddresses ? [scopeAddresses] : [];
+    const limitParamIndex = participantParams.length + 2;
+
+    const query = `
+      SELECT
+        id,
+        reference_number AS "referenceNumber",
+        description,
+        status,
+        created_at AS "createdAt",
+        ts_headline(
+          'english',
+          COALESCE(description, ''),
+          plainto_tsquery('english', $${participantParams.length + 1}),
+          'StartSel=<mark>, StopSel=</mark>, MaxWords=25, MinWords=8'
+        ) AS snippet
+      FROM shipments
+      WHERE (description_search @@ plainto_tsquery('english', $${participantParams.length + 1})
+             OR reference_number ILIKE '%' || $${participantParams.length + 1} || '%')
+      ${participantCondition}
+      ORDER BY created_at DESC
+      LIMIT $${limitParamIndex}
+    `;
+
+    const db = this.prisma.read;
+    const rows = await db.$queryRawUnsafe<
+      Array<{
+        id: string;
+        referenceNumber: string | null;
+        description: string | null;
+        status: ShipmentStatus;
+        createdAt: Date;
+        snippet: string | null;
+      }>
+    >(query, ...participantParams, q, cappedLimit);
+
+    return rows.map((r) => ({
+      type: 'shipment' as const,
+      id: r.id,
+      title: r.referenceNumber ?? r.id,
+      snippet: (r.snippet ?? r.description ?? '').trim(),
+      status: r.status,
+      createdAt: new Date(r.createdAt).toISOString(),
+      link: `/shipments/${r.id}`,
+    }));
+  }
+
   async findOne(id: string, callerUserId?: string, precisionOverride?: number, fields?: string[], displayCurrency = 'USD') {
     const db = this.prisma.read;
     const relations = {

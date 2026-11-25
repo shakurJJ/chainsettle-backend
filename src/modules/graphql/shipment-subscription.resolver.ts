@@ -2,10 +2,10 @@ import { Args, Context, ID, Resolver, Subscription } from '@nestjs/graphql';
 import { ForbiddenException, Inject, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { PubSubEngine } from 'graphql-subscriptions';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { MilestoneGql, ShipmentGql } from './shipment.type';
+import { CommentGql, MilestoneGql, ShipmentGql } from './shipment.type';
 import { GQL_PUBSUB } from './gql-pubsub.module';
 import { isParticipant } from './graphql.access';
-import { MILESTONE_UPDATED, SHIPMENT_UPDATED } from './shipment-events.publisher';
+import { COMMENT_CREATED, MILESTONE_UPDATED, SHIPMENT_UPDATED } from './shipment-events.publisher';
 
 /** Live shipment/milestone updates over graphql-ws (#431). */
 @Resolver()
@@ -29,6 +29,14 @@ export class ShipmentSubscriptionResolver {
   async milestoneUpdated(@Args('shipmentId', { type: () => ID }) shipmentId: string, @Context('req') req: any) {
     await this.assertCanSubscribe(shipmentId, req?.user);
     return this.pubSub.asyncIterator(MILESTONE_UPDATED);
+  }
+
+  @Subscription(() => CommentGql, {
+    filter: (payload, variables) => payload[COMMENT_CREATED].shipmentId === variables.shipmentId,
+  })
+  async commentAdded(@Args('shipmentId', { type: () => ID }) shipmentId: string, @Context('req') req: any) {
+    await this.assertCanSubscribe(shipmentId, req?.user);
+    return this.pubSub.asyncIterator(COMMENT_CREATED);
   }
 
   private async assertCanSubscribe(shipmentId: string, user: any): Promise<void> {
