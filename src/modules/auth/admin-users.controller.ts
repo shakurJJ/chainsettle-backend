@@ -1,6 +1,7 @@
 import {
   Controller,
   Post,
+  Patch,
   Param,
   Body,
   UseGuards,
@@ -17,6 +18,7 @@ import { AuthenticatedUser, CurrentUser } from '../../common/decorators/current-
 import { Roles } from '../../common/decorators/roles.decorator';
 import { BlockImpersonation } from '../../common/decorators/block-impersonation.decorator';
 import { ForceLogoutDto } from './dto/force-logout.dto';
+import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 
 /**
  * Admin user support tools under /admin/users/*
@@ -91,6 +93,45 @@ export class AdminUsersController {
       req.socket?.remoteAddress;
 
     return this.authService.forceLogoutUser(id, admin.id, admin.stellarAddress, dto, ip);
+  }
+
+  /**
+   * PATCH /api/v1/admin/users/:id/role
+   * Promotion to ADMIN creates a pending request needing a second admin's approval (#655).
+   */
+  @Patch(':id/role')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: '[Admin] Change a user role (ADMIN promotions require a second admin)' })
+  @ApiParam({ name: 'id', description: 'User ID' })
+  @ApiResponse({ status: 200, description: 'Role changed, or pending request created for ADMIN' })
+  changeRole(
+    @Param('id') id: string,
+    @Body() dto: UpdateUserRoleDto,
+    @CurrentUser() admin: AuthenticatedUser,
+  ) {
+    return this.authService.requestUserRoleChange(id, admin.id, admin.stellarAddress, dto.role);
+  }
+}
+
+@ApiTags('admin')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard)
+@BlockImpersonation()
+@Controller('admin/role-requests')
+export class AdminRoleRequestsController {
+  constructor(private readonly authService: AuthService) {}
+
+  /** POST /api/v1/admin/role-requests/:id/approve (#655). */
+  @Post(':id/approve')
+  @Roles(UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '[Admin] Approve a pending ADMIN promotion (must be a different admin)' })
+  @ApiParam({ name: 'id', description: 'Role request ID' })
+  @ApiResponse({ status: 200, description: 'Request approved and role granted' })
+  @ApiResponse({ status: 403, description: 'Requester cannot approve their own request' })
+  @ApiResponse({ status: 409, description: 'Request expired or no longer pending' })
+  approve(@Param('id') id: string, @CurrentUser() admin: AuthenticatedUser) {
+    return this.authService.approveAdminRoleRequest(id, admin.id, admin.stellarAddress);
   }
 }
 

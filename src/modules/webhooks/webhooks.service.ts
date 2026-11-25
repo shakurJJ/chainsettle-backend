@@ -9,7 +9,7 @@ import {
 import { ConfigService } from "@nestjs/config";
 import { Cron, CronExpression } from "@nestjs/schedule";
 import * as crypto from "crypto";
-import axios, { AxiosError } from "axios";
+import axios, { AxiosError, AxiosRequestConfig, AxiosResponse } from "axios";
 import { PrismaService } from "../../common/prisma/prisma.service";
 import { MetricsService } from "../../common/metrics/metrics.service";
 import { QueueService } from "../../common/queue/queue.service";
@@ -18,7 +18,7 @@ import {
   QUEUE_WEBHOOKS,
 } from "../../common/queue/queue.constants";
 import { AuditLogService } from "../audit-logs/audit-log.service";
-import { NotificationType, Prisma } from "@prisma/client";
+import { NotificationType, Prisma, WebhookEndpointStatus } from "@prisma/client";
 import { CreateWebhookDto } from "./dto/create-webhook.dto";
 import { UpdateWebhookDto } from "./dto/update-webhook.dto";
 import {
@@ -28,6 +28,7 @@ import {
   maskHeaders,
 } from "./webhook-headers.util";
 import { requestIdStorage } from "../../common/middleware/request-id.middleware";
+import { assertPublicWebhookUrl } from "./url-guard";
 
 // ─── Retry policy ────────────────────────────────────────────────────────────
 
@@ -68,9 +69,27 @@ function isRetryable(err: AxiosError | Error): boolean {
   return RETRYABLE_ERROR_CODES.has(code) || axiosErr.code === "ECONNABORTED";
 }
 
+/** Event type used for batched deliveries (#638). payload is an array of events. */
+export const BATCH_EVENT_TYPE = "webhook.batch";
+export const VERIFICATION_EVENT_TYPE = "webhook.verification";
+export const MAX_BATCH_SIZE = 100;
+
+/**
+ * POST to a webhook URL. Re-validates the target on every call (DNS rebinding
+ * protection, #636) and refuses to follow redirects.
+ */
+async function postGuarded(
+  url: string,
+  body: string,
+  config: AxiosRequestConfig,
+): Promise<AxiosResponse> {
+  await assertPublicWebhookUrl(url);
+  return axios.post(url, body, { ...config, maxRedirects: 0 });
+}
+
 function buildBody(
   eventType: string,
-  payload: Record<string, unknown>,
+  payload: unknown,
 ): string {
   return JSON.stringify({
     eventType,
@@ -115,6 +134,8 @@ interface EndpointWithOptionalEncryptedHeaders {
   url: string;
   secret: string;
   headers?: unknown;
+  batchSize?: number | null;
+  batchWindowMs?: number | null;
 }
 
 // ─── Service ─────────────────────────────────────────────────────────────────
@@ -125,6 +146,16 @@ export class WebhooksService {
   private readonly deliveryTimeoutMs: number;
   private readonly maxPayloadBytes: number;
   private readonly encryptionKey: string;
+
+  /** In-memory batch buffers keyed by endpoint id (#638). */
+  private readonly batches = new Map<
+    string,
+    {
+      ep: EndpointWithOptionalEncryptedHeaders;
+      events: unknown[];
+      timer: NodeJS.Timeout | null;
+    }
+  >();
 
   constructor(
     private readonly config: ConfigService,
@@ -164,7 +195,7 @@ export class WebhooksService {
 
   private preparePayloadForDelivery(
     eventType: string,
-    payload: Record<string, unknown>,
+    payload: unknown,
   ) {
     const body = buildBody(eventType, payload);
     const bytes = Buffer.byteLength(body, "utf8");
@@ -203,6 +234,8 @@ export class WebhooksService {
   // ── Registration ───────────────────────────────────────────────────────────
 
   async register(userId: string, dto: CreateWebhookDto) {
+    await assertPublicWebhookUrl(dto.url);
+
     if (dto.headers !== undefined) {
       const err = validateHeaders(dto.headers);
       if (err) throw new BadRequestException(`headers: ${err.message}`);
@@ -225,18 +258,92 @@ export class WebhooksService {
         secret: hashed,
         events: dto.events,
         headers: encryptedHeaders,
+        status: WebhookEndpointStatus.PENDING_VERIFICATION,
+        batchSize: dto.batchSize ?? null,
+        batchWindowMs: dto.batchSize ? (dto.batchWindowMs ?? 5_000) : null,
       },
     });
+
+    // Attempt the challenge handshake right away; failure leaves it pending (#637)
+    const verification = await this.runVerification(endpoint);
 
     return {
       id: endpoint.id,
       url: endpoint.url,
       events: endpoint.events,
       active: endpoint.active,
+      status: verification.verified
+        ? WebhookEndpointStatus.ACTIVE
+        : endpoint.status,
+      batchSize: endpoint.batchSize,
+      batchWindowMs: endpoint.batchWindowMs,
       createdAt: endpoint.createdAt,
       headers: dto.headers ? maskHeaders(dto.headers) : undefined,
       secret: plaintext,
+      verification,
     };
+  }
+
+  /** POST /webhooks/:id/verify — retry the challenge handshake. */
+  async verify(id: string, userId: string) {
+    const ep = await this.prisma.webhookEndpoint.findFirst({
+      where: { id, userId },
+    });
+    if (!ep) throw new NotFoundException("Webhook endpoint not found");
+    if (ep.status === WebhookEndpointStatus.ACTIVE) {
+      return { verified: true, message: "Webhook endpoint already verified" };
+    }
+    return this.runVerification(ep);
+  }
+
+  /**
+   * Sends a `webhook.verification` event carrying a random challenge. The
+   * receiver must echo the challenge in its response body (either the raw
+   * string or `{ "challenge": "..." }`). On success the endpoint becomes ACTIVE.
+   */
+  private async runVerification(ep: EndpointWithOptionalEncryptedHeaders) {
+    const challenge = crypto.randomBytes(24).toString("hex");
+    const body = buildBody(VERIFICATION_EVENT_TYPE, {
+      challenge,
+      endpointId: ep.id,
+    });
+    const ts = nowUnixSeconds();
+    try {
+      const res = await postGuarded(ep.url, body, {
+        headers: this.buildDeliveryHeaders(
+          ep,
+          ts,
+          signBody(ep.secret, body),
+          signBodyV2(ep.secret, ts, body),
+        ),
+        timeout: this.deliveryTimeoutMs,
+      });
+      const data = res.data;
+      const echoed =
+        (typeof data === "string" && data.trim() === challenge) ||
+        (typeof data === "object" &&
+          data !== null &&
+          (data as any).challenge === challenge);
+      if (!echoed) {
+        return {
+          verified: false,
+          message: "Endpoint did not echo the verification challenge",
+        };
+      }
+      await this.prisma.webhookEndpoint.update({
+        where: { id: ep.id },
+        data: { status: WebhookEndpointStatus.ACTIVE, verifiedAt: new Date() },
+      });
+      return { verified: true, message: "Webhook endpoint verified" };
+    } catch (err) {
+      return {
+        verified: false,
+        message: `Verification request failed: ${(err as Error).message}`.slice(
+          0,
+          500,
+        ),
+      };
+    }
   }
 
   async update(userId: string, id: string, dto: UpdateWebhookDto) {
@@ -249,6 +356,8 @@ export class WebhooksService {
       const err = validateHeaders(dto.headers);
       if (err) throw new BadRequestException(`headers: ${err.message}`);
     }
+
+    if (dto.url !== undefined) await assertPublicWebhookUrl(dto.url);
 
     const data: Prisma.WebhookEndpointUpdateInput = {};
     if (dto.url !== undefined) data.url = dto.url;
@@ -316,6 +425,9 @@ export class WebhooksService {
           url: true,
           events: true,
           active: true,
+          status: true,
+          batchSize: true,
+          batchWindowMs: true,
           createdAt: true,
           headers: true,
         },
@@ -326,6 +438,9 @@ export class WebhooksService {
           url: ep.url,
           events: ep.events,
           active: ep.active,
+          status: ep.status,
+          batchSize: ep.batchSize,
+          batchWindowMs: ep.batchWindowMs,
           createdAt: ep.createdAt,
           headers: ep.headers
             ? maskHeaders(
@@ -347,6 +462,9 @@ export class WebhooksService {
         url: true,
         events: true,
         active: true,
+        status: true,
+        batchSize: true,
+        batchWindowMs: true,
         createdAt: true,
         headers: true,
       },
@@ -376,6 +494,9 @@ export class WebhooksService {
       url: endpoint.url,
       events: endpoint.events,
       active: endpoint.active,
+      status: endpoint.status,
+      batchSize: endpoint.batchSize,
+      batchWindowMs: endpoint.batchWindowMs,
       createdAt: endpoint.createdAt,
       headers: endpoint.headers
         ? maskHeaders(
@@ -442,14 +563,60 @@ export class WebhooksService {
     eventType: NotificationType,
     payload: Record<string, unknown>,
   ) {
+    // Unverified (PENDING_VERIFICATION) endpoints receive no events (#637)
     const endpoints = await this.prisma.webhookEndpoint.findMany({
-      where: { active: true, events: { has: eventType } },
+      where: {
+        active: true,
+        status: WebhookEndpointStatus.ACTIVE,
+        events: { has: eventType },
+      },
     });
     await Promise.allSettled(
       endpoints.map((ep) =>
-        this.dispatchToEndpoint(ep, eventType as string, payload),
+        ep.batchSize && ep.batchSize > 1
+          ? this.enqueueBatch(ep, eventType as string, payload)
+          : this.deliverOnce(ep, eventType as string, payload),
       ),
     );
+  }
+
+  /** Buffer an event; flush when batchSize is reached or batchWindowMs elapses (#638). */
+  private async enqueueBatch(
+    ep: EndpointWithOptionalEncryptedHeaders,
+    eventType: string,
+    payload: Record<string, unknown>,
+  ) {
+    let batch = this.batches.get(ep.id);
+    if (!batch) {
+      batch = { ep, events: [], timer: null };
+      this.batches.set(ep.id, batch);
+    }
+    batch.ep = ep;
+    batch.events.push({ eventType, payload, timestamp: new Date().toISOString() });
+
+    const size = Math.min(ep.batchSize ?? 1, MAX_BATCH_SIZE);
+    if (batch.events.length >= size) {
+      await this.flushBatch(ep.id);
+    } else if (!batch.timer) {
+      batch.timer = setTimeout(() => {
+        this.flushBatch(ep.id).catch((err) =>
+          this.logger.error(
+            `Batch flush failed for ${ep.id}`,
+            (err as Error).message,
+          ),
+        );
+      }, ep.batchWindowMs ?? 5_000);
+      batch.timer.unref?.();
+    }
+  }
+
+  private async flushBatch(endpointId: string) {
+    const batch = this.batches.get(endpointId);
+    if (!batch || batch.events.length === 0) return;
+    if (batch.timer) clearTimeout(batch.timer);
+    this.batches.delete(endpointId);
+    // One request, one signature over the whole array body
+    await this.deliverOnce(batch.ep, BATCH_EVENT_TYPE, batch.events);
   }
 
   async getDelivery(userId: string, endpointId: string, deliveryId: string) {
@@ -589,7 +756,7 @@ export class WebhooksService {
         signature,
         signatureV2,
       );
-      const res = await axios.post(endpoint.url, body, {
+      const res = await postGuarded(endpoint.url, body, {
         headers,
         timeout: this.deliveryTimeoutMs,
       });
@@ -689,7 +856,7 @@ export class WebhooksService {
     const signatureV2 = signBodyV2(endpoint.secret, ts, payloadCheck.body);
 
     try {
-      const res = await axios.post(endpoint.url, payloadCheck.body, {
+      const res = await postGuarded(endpoint.url, payloadCheck.body, {
         headers: {
           "Content-Type": "application/json",
           "X-ChainSettle-Timestamp": String(ts),
@@ -778,7 +945,7 @@ export class WebhooksService {
   private async dispatchToEndpoint(
     ep: EndpointWithOptionalEncryptedHeaders,
     eventType: string,
-    payload: Record<string, unknown>,
+    payload: unknown,
   ) {
     const payloadCheck = this.preparePayloadForDelivery(eventType, payload);
 
@@ -911,8 +1078,13 @@ export class WebhooksService {
     const startedAt = Date.now();
 
     try {
-      const res = await axios.post(ep.url, body, {
-        headers: this.buildDeliveryHeaders(ep, ts, signature, signatureV2),
+      const res = await postGuarded(ep.url, body, {
+        headers: {
+          "Content-Type": "application/json",
+          "X-ChainSettle-Timestamp": String(ts),
+          "X-ChainSettle-Signature": signature,
+          "X-ChainSettle-Signature-V2": signatureV2,
+        },
         timeout: this.deliveryTimeoutMs,
       });
 
@@ -1012,7 +1184,7 @@ export class WebhooksService {
     }
 
     try {
-      const res = await axios.post(ep.url, body, {
+      const res = await postGuarded(ep.url, body, {
         headers: {
           "Content-Type": "application/json",
           "X-ChainSettle-Timestamp": String(ts),

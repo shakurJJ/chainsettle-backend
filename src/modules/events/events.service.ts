@@ -10,6 +10,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { ShipmentEventsPublisher } from '../graphql/shipment-events.publisher';
 import { ShipmentsService } from '../shipments/shipments.service';
 import { MetricsService } from '../../common/metrics/metrics.service';
+import { EscrowLockedMetricsService } from '../../common/metrics/escrow-locked.service';
 import { NotificationType } from '@prisma/client';
 import { AuditLogService } from '../audit-logs/audit-log.service';
 import { runTrackedJob } from '../../common/jobs/job-tracker.util';
@@ -59,6 +60,7 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
     private readonly metrics: MetricsService,
     @Optional() private readonly gqlPublisher?: ShipmentEventsPublisher,
     @Optional() private readonly auditLog?: AuditLogService,
+    @Optional() private readonly escrowMetrics?: EscrowLockedMetricsService,
   ) {}
 
   async onModuleInit() {
@@ -281,6 +283,7 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
     await this.saveRawEvent(eventName, event, payload);
     await this.executeHandler(eventName, payload, event);
     this.metrics.incrementEventsProcessed(eventName);
+    this.escrowMetrics?.scheduleRefresh();
     await this.publishGraphqlUpdate(payload);
   }
 

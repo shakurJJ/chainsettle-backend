@@ -24,6 +24,8 @@ import {
   QUEUE_JOB_DURATION_HISTOGRAM,
 } from './metrics.service';
 import { resolveBuildInfo } from '../build-info';
+import { ESCROW_LOCKED_GAUGE, EscrowLockedMetricsService } from './escrow-locked.service';
+import { CONTRACT_TTL_GAUGE, SPONSORED_FEES_COUNTER } from './metric-names';
 
 const logger = new Logger('MetricsModule');
 
@@ -183,8 +185,23 @@ export async function collectOpenDisputes(this: Gauge<string>, prisma: PrismaSer
       labelNames: ['version', 'gitSha', 'buildTime', 'nodeVersion'],
       collect: collectBuildInfo,
     }),
+    makeGaugeProvider({
+      name: ESCROW_LOCKED_GAUGE,
+      help: 'Value currently locked in escrow per token (human units): active shipments minus released milestones',
+      labelNames: ['token'],
+    }),
+    makeGaugeProvider({
+      name: CONTRACT_TTL_GAUGE,
+      help: 'Remaining ledgers before a Soroban contract storage entry is archived',
+      labelNames: ['entry'],
+    }),
+    makeCounterProvider({
+      name: SPONSORED_FEES_COUNTER,
+      help: 'Total fees paid by the platform sponsor account for fee-bumped transactions (stroops)',
+    }),
     MetricsService,
+    EscrowLockedMetricsService,
   ],
-  exports: [MetricsService],
+  exports: [MetricsService, EscrowLockedMetricsService],
 })
 export class MetricsModule {}

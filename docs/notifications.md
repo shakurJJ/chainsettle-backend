@@ -44,3 +44,27 @@ other event types. Users can change these per-type flags using
 
 Telegram messages respect quiet hours. Set `TELEGRAM_ENABLED=false` to disable
 the bot integration, and do not expose the bot token to clients.
+
+## Microsoft Teams webhook
+
+Set `teamsWebhookUrl` through `PATCH /api/v1/notifications/preferences` to
+configure a Microsoft Teams Incoming Webhook. To remove it, pass `null` or an
+empty string. Teams delivery is enabled per notification type with the `teams`
+channel flag; it is disabled by default.
+
+```json
+{
+  "teamsWebhookUrl": "https://<tenant>.webhook.office.com/webhookb2/...",
+  "preferences": {
+    "PROOF_SUBMITTED": {
+      "inApp": true,
+      "email": true,
+      "teams": true
+    }
+  }
+}
+```
+
+Call `POST /api/v1/notifications/teams/test` to send a test Adaptive Card to the
+configured webhook. Teams webhook delivery retries once when rate limited.
+Delivery failures are logged and do not interrupt other notification channels.

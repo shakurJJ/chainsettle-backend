@@ -82,7 +82,7 @@ export class ShipmentsController {
     private readonly redis: RedisService,
     private readonly reminders: ShipmentRemindersService,
     private readonly authService: AuthService,
-    @Optional() private readonly queue?: QueueService,
+    private readonly organizations: OrganizationsService,
   ) { }
 
   /**
@@ -116,6 +116,11 @@ export class ShipmentsController {
       return Promise.reject(new ForbiddenException('buyerAddress must match the authenticated user'));
     }
 
+    // Organization default shipment settings (#646) — caller must be a MEMBER+.
+    const orgDefaults = dto.organizationId
+      ? await this.organizations.getDefaultsForCreator(dto.organizationId, user.id)
+      : {};
+
     // Idempotency-Key handling — opt-in, additive (#191)
     if (idempotencyKey) {
       const cacheKey = `idempotency:${user.sub}:${idempotencyKey}`;
@@ -125,7 +130,7 @@ export class ShipmentsController {
         return cached.body;
       }
 
-      const result = await this.shipmentsService.create(dto);
+      const result = await this.shipmentsService.create(dto, orgDefaults);
 
       // Cache the result with a 24-hour TTL
       await this.redis.setJson(cacheKey, { statusCode: HttpStatus.CREATED, body: result }, 86400);
@@ -133,7 +138,7 @@ export class ShipmentsController {
       return result;
     }
 
-    return this.shipmentsService.create(dto);
+    return this.shipmentsService.create(dto, orgDefaults);
   }
 
   /**

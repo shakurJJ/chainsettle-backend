@@ -5,6 +5,8 @@ import { NotificationsService } from './notifications.service';
 import { NotificationsController } from './notifications.controller';
 import { NotificationsGateway } from './notifications.gateway';
 import { NotificationDigestJob } from './notification-digest.job';
+import { ShipmentReportService } from './shipment-report.service';
+import { ShipmentReportJob } from './shipment-report.job';
 import { NotificationCleanupJob } from './notification-cleanup.job';
 import { OutboxModule } from '../outbox/outbox.module';
 import { PushNotificationService } from './push-notification.service';
@@ -28,10 +30,11 @@ import { EmailProcessor } from './email.processor';
     NotificationsService,
     NotificationsGateway,
     NotificationDigestJob,
+    ShipmentReportService,
+    ShipmentReportJob,
     PushNotificationService,
     WebPushService,
     TelegramService,
-    EmailProcessor,
   ],
   controllers: [NotificationsController],
   exports: [NotificationsService, NotificationsGateway, PushNotificationService, WebPushService, TelegramService],
