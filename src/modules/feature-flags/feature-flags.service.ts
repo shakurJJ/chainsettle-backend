@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { RedisService } from '../../common/redis/redis.service';
+import { PrismaService } from '../../common/prisma/prisma.service';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 /** Redis key prefix for every stored flag. */
 export const FEATURE_FLAG_PREFIX = 'feature-flag:';
@@ -14,10 +16,16 @@ export const FEATURE_FLAG_PREFIX = 'feature-flag:';
  * `rollout` is an optional percentage (0-100). When present and below 100 the
  * flag is on for only that share of subjects, chosen by a stable hash so a
  * given subject always lands in the same bucket.
+ *
+ * `userIds` and `orgIds` are explicit targeting lists. A subject (or its
+ * organization) that appears in either list is always on when `enabled` is
+ * true, regardless of the rollout percentage.
  */
 export interface FeatureFlag {
   enabled: boolean;
   rollout?: number;
+  userIds?: string[];
+  orgIds?: string[];
 }
 
 /** A flag plus the name it is stored under. */
@@ -26,11 +34,12 @@ export interface NamedFeatureFlag extends FeatureFlag {
 }
 
 /**
- * Redis-backed feature flag store.
+ * Database-backed feature flag store with a Redis read cache.
  *
- * Flags are read from Redis on every check, with no in-process cache. That is
- * deliberate: toggling a flag with a plain `SET` takes effect on the very next
- * request, across every pod, without a redeploy or restart.
+ * Flags are persisted in the database (source of truth) and cached in Redis.
+ * Every write updates the database and invalidates the Redis cache key, so a
+ * toggle takes effect on the very next request, across every pod, without a
+ * redeploy or restart.
  *
  * Unknown flags evaluate to false. New functionality is therefore off until
  * somebody explicitly turns it on, which is the safe default for both a
@@ -40,7 +49,11 @@ export interface NamedFeatureFlag extends FeatureFlag {
 export class FeatureFlagsService {
   private readonly logger = new Logger(FeatureFlagsService.name);
 
-  constructor(private readonly redis: RedisService) {}
+  constructor(
+    private readonly redis: RedisService,
+    private readonly prisma: PrismaService,
+    private readonly auditLog: AuditLogService,
+  ) {}
 
   /** Full Redis key for a flag name. */
   private key(name: string): string {
@@ -59,37 +72,81 @@ export class FeatureFlagsService {
     return digest.readUInt32BE(0) % 100;
   }
 
-  /**
-   * Read a flag's raw configuration, or null when it has never been set.
-   */
-  async getFlag(name: string): Promise<FeatureFlag | null> {
-    const stored = await this.redis.getJson<FeatureFlag>(this.key(name));
-    if (!stored || typeof stored.enabled !== 'boolean') return null;
-
+  /** Normalise a raw stored record into a FeatureFlag. */
+  private normalise(stored: {
+    enabled: boolean;
+    rollout?: number | null;
+    userIds?: string[] | null;
+    orgIds?: string[] | null;
+  }): FeatureFlag {
     const flag: FeatureFlag = { enabled: stored.enabled };
     if (typeof stored.rollout === 'number') {
       flag.rollout = Math.min(100, Math.max(0, stored.rollout));
     }
+    if (Array.isArray(stored.userIds) && stored.userIds.length > 0) {
+      flag.userIds = [...stored.userIds];
+    }
+    if (Array.isArray(stored.orgIds) && stored.orgIds.length > 0) {
+      flag.orgIds = [...stored.orgIds];
+    }
+    return flag;
+  }
+
+  /**
+   * Read a flag's raw configuration, or null when it has never been set.
+   *
+   * Checks the Redis cache first; on a miss, reads from the database and
+   * populates the cache. Unknown flags are not cached so that a flag created
+   * later is picked up immediately.
+   */
+  async getFlag(name: string): Promise<FeatureFlag | null> {
+    const cached = await this.redis.getJson<FeatureFlag>(this.key(name));
+    if (cached && typeof cached.enabled === 'boolean') {
+      return this.normalise(cached);
+    }
+
+    const record = await this.prisma.featureFlag.findUnique({
+      where: { key: name },
+    });
+    if (!record) return null;
+
+    const flag = this.normalise(record);
+    await this.redis.set(this.key(name), JSON.stringify(flag));
     return flag;
   }
 
   /**
    * Decide whether a flag is on for a given subject.
    *
+   * Evaluation order:
+   * 1. Unknown flag or master switch off -> false.
+   * 2. Explicit targeting: subject or its org listed -> true.
+   * 3. Percentage rollout bucketing.
+   *
    * @param name      Flag name, e.g. "shipment-templates".
    * @param subjectId Stable identifier for the caller (user id or Stellar
    *   address). Percentage rollouts need one to bucket against; a percentage
    *   flag with no subject evaluates to false rather than flapping between
    *   requests.
+   * @param orgId     Optional organization the caller belongs to, used for
+   *   explicit org targeting.
    */
-  async isEnabled(name: string, subjectId?: string): Promise<boolean> {
+  async isEnabled(
+    name: string,
+    subjectId?: string,
+    orgId?: string,
+  ): Promise<boolean> {
     const flag = await this.getFlag(name);
 
     // Unknown flag: off. Fail closed.
     if (!flag) return false;
 
-    // Master switch wins over any rollout percentage.
+    // Master switch wins over any targeting or rollout percentage.
     if (!flag.enabled) return false;
+
+    // Explicit targeting: a listed subject or org is always on.
+    if (subjectId && flag.userIds?.includes(subjectId)) return true;
+    if (orgId && flag.orgIds?.includes(orgId)) return true;
 
     // No rollout configured, or fully rolled out.
     if (flag.rollout === undefined || flag.rollout >= 100) return true;
@@ -105,57 +162,100 @@ export class FeatureFlagsService {
   /**
    * Create or overwrite a flag.
    *
-   * Writes have no TTL: a flag stays as set until it is changed or deleted.
+   * Persists to the database, invalidates the Redis cache key and records an
+   * audit log entry.
    */
-  async setFlag(name: string, flag: FeatureFlag): Promise<FeatureFlag> {
-    const payload: FeatureFlag = { enabled: flag.enabled };
-    if (typeof flag.rollout === 'number') {
-      payload.rollout = Math.min(100, Math.max(0, flag.rollout));
-    }
+  async setFlag(
+    name: string,
+    flag: FeatureFlag,
+    actorId?: string,
+  ): Promise<FeatureFlag> {
+    const payload = this.normalise(flag);
 
-    await this.redis.set(this.key(name), JSON.stringify(payload));
+    await this.prisma.featureFlag.upsert({
+      where: { key: name },
+      create: {
+        key: name,
+        enabled: payload.enabled,
+        rollout: payload.rollout ?? null,
+        userIds: payload.userIds ?? [],
+        orgIds: payload.orgIds ?? [],
+      },
+      update: {
+        enabled: payload.enabled,
+        rollout: payload.rollout ?? null,
+        userIds: payload.userIds ?? [],
+        orgIds: payload.orgIds ?? [],
+      },
+    });
+
+    await this.invalidate(name);
+    await this.recordAudit('feature-flag.updated', name, actorId, payload);
+
     this.logger.log(
       `Feature flag "${name}" set to enabled=${payload.enabled}` +
-        (payload.rollout !== undefined ? ` rollout=${payload.rollout}%` : ''),
+        (payload.rollout !== undefined ? ` rollout=${payload.rollout}%` : '') +
+        (payload.userIds ? ` users=${payload.userIds.length}` : '') +
+        (payload.orgIds ? ` orgs=${payload.orgIds.length}` : ''),
     );
     return payload;
   }
 
+  /** Alias for {@link setFlag}, used by the admin PATCH endpoint. */
+  async updateFlag(
+    name: string,
+    flag: FeatureFlag,
+    actorId?: string,
+  ): Promise<FeatureFlag> {
+    return this.setFlag(name, flag, actorId);
+  }
+
   /** Remove a flag entirely. It then evaluates as off, like any unknown flag. */
-  async deleteFlag(name: string): Promise<void> {
-    await this.redis.del(this.key(name));
+  async deleteFlag(name: string, actorId?: string): Promise<void> {
+    await this.prisma.featureFlag.deleteMany({ where: { key: name } });
+    await this.invalidate(name);
+    await this.recordAudit('feature-flag.deleted', name, actorId, null);
     this.logger.log(`Feature flag "${name}" deleted`);
   }
 
-  /**
-   * List every configured flag.
-   *
-   * Uses SCAN under the hood rather than KEYS, so it stays safe on a large
-   * shared keyspace.
-   */
-  async listFlags(): Promise<NamedFeatureFlag[]> {
-    const client = this.redis.getClient();
-    const names: string[] = [];
+  /** Drop the cached copy of a flag so the next read hits the database. */
+  private async invalidate(name: string): Promise<void> {
+    await this.redis.del(this.key(name));
+  }
 
-    let cursor = '0';
-    do {
-      const [next, keys] = await client.scan(
-        cursor,
-        'MATCH',
-        `${FEATURE_FLAG_PREFIX}*`,
-        'COUNT',
-        100,
+  /** Best-effort audit trail; a logging failure must not fail the write. */
+  private async recordAudit(
+    action: string,
+    name: string,
+    actorId: string | undefined,
+    payload: FeatureFlag | null,
+  ): Promise<void> {
+    try {
+      await this.auditLog.log({
+        action,
+        actorId,
+        resource: 'feature-flag',
+        resourceId: name,
+        metadata: payload ? { ...payload } : undefined,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Failed to audit ${action} for feature flag "${name}": ${
+          (err as Error).message
+        }`,
       );
-      cursor = next;
-      names.push(...keys);
-    } while (cursor !== '0');
-
-    const flags: NamedFeatureFlag[] = [];
-    for (const key of names.sort()) {
-      const name = key.slice(FEATURE_FLAG_PREFIX.length);
-      const flag = await this.getFlag(name);
-      if (flag) flags.push({ name, ...flag });
     }
-    return flags;
+  }
+
+  /** List every configured flag, read from the database. */
+  async listFlags(): Promise<NamedFeatureFlag[]> {
+    const records = await this.prisma.featureFlag.findMany({
+      orderBy: { key: 'asc' },
+    });
+
+    return records.map((record) => ({
+      name: record.key,
+      ...this.normalise(record),
+    }));
   }
 }

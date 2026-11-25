@@ -13,6 +13,8 @@ import { GqlPubSubModule } from './gql-pubsub.module';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { createLoaders } from './graphql.loaders';
 import { complexityLimitPlugin, depthLimitRule } from './graphql-limits';
+import { createPersistedQueriesPlugin } from './graphql-persisted-queries';
+import { RedisService } from '../../common/redis/redis.service';
 
 const jwtModule = JwtModule.registerAsync({
   imports: [ConfigModule],
@@ -53,19 +55,28 @@ async function authenticateConnection(
     GraphQLModule.forRootAsync<ApolloDriverConfig>({
       driver: ApolloDriver,
       imports: [ConfigModule, jwtModule],
-      inject: [ConfigService, JwtService, PrismaService],
-      useFactory: (config: ConfigService, jwt: JwtService, prisma: PrismaService) => {
+      inject: [ConfigService, JwtService, PrismaService, RedisService],
+      useFactory: (
+        config: ConfigService,
+        jwt: JwtService,
+        prisma: PrismaService,
+        redis: RedisService,
+      ) => {
         const isProd = process.env.NODE_ENV === 'production';
         const maxDepth = Number(config.get('GRAPHQL_MAX_DEPTH', 7));
         const maxComplexity = Number(config.get('GRAPHQL_MAX_COMPLEXITY', 1000));
         const secret = config.get<string>('JWT_SECRET');
+        const persistedOnly = config.get<boolean>('GRAPHQL_PERSISTED_ONLY', false);
         return {
           autoSchemaFile: true,
           path: '/graphql',
           playground: !isProd,
           introspection: !isProd,
           validationRules: [depthLimitRule(maxDepth)],
-          plugins: [complexityLimitPlugin(maxComplexity)],
+          plugins: [
+            complexityLimitPlugin(maxComplexity),
+            createPersistedQueriesPlugin(redis, persistedOnly),
+          ],
           subscriptions: {
             'graphql-ws': {
               path: '/graphql',

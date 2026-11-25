@@ -1067,6 +1067,22 @@ enum RoleRequestStatus {
   EXPIRED
 }
 
+/// Admin-managed feature flag with per-user / per-organization targeting (#678).
+/// Persisted so toggles take effect without a deploy; cached in Redis and
+/// invalidated on change.
+model FeatureFlag {
+  id             String   @id @default(uuid())
+  key            String   @unique
+  enabled        Boolean  @default(false)
+  rolloutPercent Int      @default(100)
+  userIds        String[] @default([])
+  orgIds         String[] @default([])
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@map("feature_flags")
+}
+
 /// Pending promotion to ADMIN awaiting a second admin's approval (#655).
 model AdminRoleRequest {
   id           String            @id @default(uuid())

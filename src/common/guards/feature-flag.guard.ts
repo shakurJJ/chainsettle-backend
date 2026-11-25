@@ -42,8 +42,14 @@ export class FeatureFlagGuard implements CanActivate {
     // Percentage rollouts bucket on a stable per-caller id. Prefer the user id,
     // fall back to the Stellar address for token-authenticated callers.
     const subjectId: string | undefined = user?.id ?? user?.stellarAddress;
+    // Organization targeting is evaluated alongside per-user targeting.
+    const organizationId: string | undefined = user?.organizationId;
 
-    const enabled = await this.featureFlags.isEnabled(flagName, subjectId);
+    const enabled = await this.featureFlags.isEnabled(
+      flagName,
+      subjectId,
+      organizationId,
+    );
     if (!enabled) {
       throw new NotFoundException();
     }
