@@ -462,6 +462,7 @@ export class MilestonesService {
     }
 
     const confirmedAt = new Date();
+    const fxRateAtRelease = await this.lockReleaseRate(shipmentId);
     const updatedByIndex = new Map<number, unknown>();
 
     if (toConfirm.length > 0) {
@@ -477,6 +478,7 @@ export class MilestonesService {
             data: {
               status: MilestoneStatus.CONFIRMED,
               paymentReleased: BigInt(item.paymentReleased),
+              fxRateAtRelease,
               confirmedAt,
             },
           }),
@@ -558,6 +560,23 @@ export class MilestonesService {
   }
 
   /**
+   * Current token→USD rate to lock on a milestone release (#653).
+   * Returns null when the FX provider is unavailable.
+   */
+  private async lockReleaseRate(shipmentId: string, tokenSymbol?: string | null): Promise<number | null> {
+    try {
+      const symbol =
+        tokenSymbol ??
+        (await this.prisma.shipment.findUnique({ where: { id: shipmentId }, select: { tokenSymbol: true } }))
+          ?.tokenSymbol ??
+        'USDC';
+      return (await this.fxRate.getUsdRate(symbol))?.rate ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Called by EventsService when a milestone_confirmed event is detected.
    */
   async markConfirmed(
@@ -570,11 +589,14 @@ export class MilestonesService {
       throw new ConflictException(`Cannot confirm a milestone for a cancelled shipment`);
     }
 
+    const fxRateAtRelease = await this.lockReleaseRate(shipmentId, shipment?.tokenSymbol);
+
     return this.prisma.milestone.update({
       where: { shipmentId_milestoneIndex: { shipmentId, milestoneIndex } },
       data: {
         status: MilestoneStatus.CONFIRMED,
         paymentReleased,
+        fxRateAtRelease,
         confirmedAt: new Date(),
       },
     });

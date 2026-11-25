@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 import * as fs from 'fs';
@@ -7,7 +7,7 @@ import * as crypto from 'crypto';
 import * as Handlebars from 'handlebars';
 import { WebPushService } from './web-push.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { NotificationType } from '@prisma/client';
+import { NotificationType, UserRole } from '@prisma/client';
 import { NotificationsGateway } from './notifications.gateway';
 import { OutboxService } from '../outbox/outbox.service';
 import { PushNotificationService } from './push-notification.service';
@@ -16,19 +16,26 @@ import { DEFAULT_LOCALE, I18nService } from '../../i18n/i18n.service';
 import { SmsProviderFactory } from '../../common/providers/sms.provider';
 import { TelegramService } from './telegram.service';
 
+const NOTIFICATION_DELIVERY_ERROR_MAX = 1_000;
+
 type ChannelPrefs = {
   inApp: boolean;
   email: boolean;
   slack?: boolean;
   sms?: boolean;
   discord?: boolean;
+  teams?: boolean;
   push?: boolean;
   telegram?: boolean;
 };
 type PreferenceMap = Record<NotificationType, ChannelPrefs>;
 export type DigestFrequency = "instant" | "daily" | "weekly";
+export type ReportFrequency = "off" | "weekly" | "monthly";
 type StoredPreferences = PreferenceMap & {
-  _meta?: { digestFrequency?: DigestFrequency };
+  _meta?: {
+    digestFrequency?: DigestFrequency;
+    reportFrequency?: ReportFrequency;
+  };
   _quietHours?: {
     enabled: boolean;
     start: string;
@@ -47,6 +54,7 @@ type NotificationGroup = {
 };
 
 const DEFAULT_DIGEST_FREQUENCY: DigestFrequency = "daily";
+export const DEFAULT_REPORT_FREQUENCY: ReportFrequency = "off";
 
 // SMS is only allowed for these notification types
 export const SMS_ALLOWED_TYPES: NotificationType[] = [
@@ -77,6 +85,7 @@ function buildDefaultPreferences(): PreferenceMap {
       slack: true,
       sms: smsDefault,
       discord: discordDefault,
+      teams: false,
       push: true,
       telegram: TELEGRAM_DEFAULT_TYPES.includes(type),
     };
@@ -94,6 +103,7 @@ function normalizeChannelPrefs(
     slack: raw?.slack ?? true,
     sms: raw?.sms ?? false,
     discord: raw?.discord ?? false,
+    teams: raw?.teams ?? false,
     push: raw?.push ?? true,
     telegram:
       raw?.telegram ??
@@ -137,7 +147,7 @@ export class NotificationsService {
    * Creates an in-app notification for a user (by their Stellar address)
    * and optionally sends an email if they have one registered.
    * Both channels are gated on the user's NotificationPreference record.
-   * Optional Slack, Discord, SMS, push, and Telegram channels are sent when
+   * Optional Slack, Discord, Teams, SMS, push, and Telegram channels are sent when
    * their per-type preference and channel configuration allow delivery.
    */
   async notifyUser(
@@ -159,10 +169,10 @@ export class NotificationsService {
         return;
       }
 
-      const { preferences: prefs, slackWebhookUrl, discordWebhookUrl, telegramChatId } = await this.getOrCreatePreferenceRecord(user.id);
+      const { preferences: prefs, slackWebhookUrl, discordWebhookUrl, teamsWebhookUrl, telegramChatId } = await this.getOrCreatePreferenceRecord(user.id);
       const quietHours = (prefs as StoredPreferences)._quietHours;
       const deliverAfter = type === NotificationType.SYSTEM_ALERT && data?.urgent === true ? null : this.getQuietHoursEnd(new Date(), quietHours);
-      const { inApp, email: emailEnabled, slack: slackEnabled, sms: smsEnabled, discord: discordEnabled, push: pushEnabled, telegram: telegramEnabled } = normalizeChannelPrefs(prefs[type], type);
+      const { inApp, email: emailEnabled, slack: slackEnabled, sms: smsEnabled, discord: discordEnabled, teams: teamsEnabled, push: pushEnabled, telegram: telegramEnabled } = normalizeChannelPrefs(prefs[type], type);
 
       if (!inApp) return;
 
@@ -187,7 +197,7 @@ export class NotificationsService {
       });
 
       if (!deliverAfter && emailEnabled && user.email) {
-        await this.sendEmail(
+        const emailError = await this.deliverEmail(
           user.email,
           title,
           message,
@@ -196,20 +206,24 @@ export class NotificationsService {
           data,
           user.locale ?? DEFAULT_LOCALE,
         );
-        await this.prisma.notification.update({
-          where: { id: notification.id },
-          data: { emailSent: true },
-        });
+        await this.recordDelivery(notification.id, 'EMAIL', emailError);
+        if (!emailError) {
+          await this.prisma.notification.update({
+            where: { id: notification.id },
+            data: { emailSent: true },
+          });
+        }
       }
 
       if (!deliverAfter && slackEnabled && slackWebhookUrl) {
-        await this.sendSlackMessage(
+        const slackError = await this.sendSlackMessage(
           slackWebhookUrl,
           type,
           title,
           message,
           data,
         );
+        await this.recordDelivery(notification.id, 'SLACK', slackError);
       }
 
       // Send SMS if enabled, user has verified phone, type is allowed, and rate limit not exceeded
@@ -237,6 +251,21 @@ export class NotificationsService {
           title,
           message,
           data,
+        );
+      }
+
+      if (!deliverAfter && teamsEnabled && teamsWebhookUrl) {
+        void this.sendTeamsMessage(
+          teamsWebhookUrl,
+          type,
+          title,
+          message,
+          data,
+        ).catch((error) =>
+          this.logger.error(
+            `Teams notification dispatch error for ${type}`,
+            (error as Error).message,
+          ),
         );
       }
 
@@ -324,7 +353,7 @@ export class NotificationsService {
 
       // Force email delivery regardless of digest preference when the user has an email
       if (user.email && !deliverAfter) {
-        await this.sendEmail(
+        const emailError = await this.deliverEmail(
           user.email,
           title,
           message,
@@ -333,10 +362,13 @@ export class NotificationsService {
           data,
           user.locale ?? DEFAULT_LOCALE,
         );
-        await this.prisma.notification.update({
-          where: { id: notification.id },
-          data: { emailSent: true },
-        });
+        await this.recordDelivery(notification.id, 'EMAIL', emailError);
+        if (!emailError) {
+          await this.prisma.notification.update({
+            where: { id: notification.id },
+            data: { emailSent: true },
+          });
+        }
       }
 
       this.gateway?.pushToUser(user.id, notification);
@@ -425,6 +457,26 @@ export class NotificationsService {
     );
   }
 
+  async sendTeamsTestNotification(userId: string) {
+    const { teamsWebhookUrl } = await this.getOrCreatePreferenceRecord(userId);
+    if (!teamsWebhookUrl) {
+      throw new BadRequestException('Configure a Teams webhook URL first');
+    }
+
+    const sent = await this.sendTeamsMessage(
+      teamsWebhookUrl,
+      NotificationType.SYSTEM_ALERT,
+      'Test Notification',
+      'This is a test notification to verify your Microsoft Teams webhook is working correctly.',
+    );
+    if (!sent) {
+      throw new ServiceUnavailableException(
+        'The Microsoft Teams webhook test could not be delivered',
+      );
+    }
+    return { success: true };
+  }
+
   async getOrCreatePreferences(userId: string): Promise<PreferenceMap> {
     const record = await this.getOrCreatePreferenceRecord(userId);
     return record.preferences;
@@ -434,6 +486,7 @@ export class NotificationsService {
     preferences: PreferenceMap;
     slackWebhookUrl: string | null;
     discordWebhookUrl: string | null;
+    teamsWebhookUrl: string | null;
     telegramChatId: string | null;
   }> {
     const record = await this.prisma.notificationPreference.upsert({
@@ -445,6 +498,7 @@ export class NotificationsService {
       preferences: record.preferences as PreferenceMap,
       slackWebhookUrl: record.slackWebhookUrl ?? null,
       discordWebhookUrl: record.discordWebhookUrl ?? null,
+      teamsWebhookUrl: record.teamsWebhookUrl ?? null,
       telegramChatId: record.telegramChatId ?? null,
     };
   }
@@ -488,11 +542,15 @@ export class NotificationsService {
     if (dto.digestFrequency) {
       merged._meta = { ...current._meta, digestFrequency: dto.digestFrequency };
     }
+    if (dto.reportFrequency) {
+      merged._meta = { ...merged._meta, reportFrequency: dto.reportFrequency };
+    }
 
     const data: {
       preferences: StoredPreferences;
       slackWebhookUrl?: string | null;
       discordWebhookUrl?: string | null;
+      teamsWebhookUrl?: string | null;
     } = {
       preferences: merged,
     };
@@ -507,6 +565,12 @@ export class NotificationsService {
         dto.discordWebhookUrl === "" || dto.discordWebhookUrl === null
           ? null
           : dto.discordWebhookUrl;
+    }
+    if (dto.teamsWebhookUrl !== undefined) {
+      data.teamsWebhookUrl =
+        dto.teamsWebhookUrl === "" || dto.teamsWebhookUrl === null
+          ? null
+          : dto.teamsWebhookUrl;
     }
 
     await this.prisma.notificationPreference.update({
@@ -527,8 +591,19 @@ export class NotificationsService {
     return prefs._meta?.digestFrequency ?? DEFAULT_DIGEST_FREQUENCY;
   }
 
+  /**
+   * Resolves the caller's opt-in cadence for the personal shipment report.
+   * Missing values mean 'off': reports are strictly opt-in.
+   */
+  async getReportFrequency(userId: string): Promise<ReportFrequency> {
+    const prefs = (await this.getOrCreatePreferences(
+      userId,
+    )) as StoredPreferences;
+    return prefs._meta?.reportFrequency ?? DEFAULT_REPORT_FREQUENCY;
+  }
+
   async getPreferencesResponse(userId: string) {
-    const { preferences, slackWebhookUrl, discordWebhookUrl, telegramChatId } =
+    const { preferences, slackWebhookUrl, discordWebhookUrl, teamsWebhookUrl, telegramChatId } =
       await this.getOrCreatePreferenceRecord(userId);
     const stored = preferences as StoredPreferences;
     const { _meta, _quietHours, ...typePreferences } = stored;
@@ -542,6 +617,7 @@ export class NotificationsService {
     return {
       ...resolvedTypePreferences,
       digestFrequency: _meta?.digestFrequency ?? DEFAULT_DIGEST_FREQUENCY,
+      reportFrequency: _meta?.reportFrequency ?? DEFAULT_REPORT_FREQUENCY,
       quietHours: _quietHours ?? {
         enabled: false,
         start: "22:00",
@@ -550,6 +626,7 @@ export class NotificationsService {
       },
       slackWebhookUrl,
       discordWebhookUrl,
+      teamsWebhookUrl,
       telegramLinked: telegramChatId !== null,
     };
   }
@@ -670,6 +747,10 @@ export class NotificationsService {
         const existing = normalizeChannelPrefs(merged[notifType]);
         merged[notifType] = { ...existing, email: false };
       }
+      // The report email shares this unsubscribe link, so make the opt-out
+      // durable: re-enabling a single notification email must not quietly
+      // resume scheduled reports.
+      merged._meta = { ...merged._meta, reportFrequency: 'off' };
     } else {
       const notifType = type as NotificationType;
       const existing = normalizeChannelPrefs(merged[notifType]);
@@ -949,7 +1030,54 @@ export class NotificationsService {
     }
   }
 
+  /**
+   * Records a single channel delivery attempt (#635). `error` null = success.
+   * Never throws — logging must not break notification delivery.
+   */
+  private async recordDelivery(
+    notificationId: string,
+    channel: 'EMAIL' | 'SLACK' | 'IN_APP',
+    error: string | null,
+  ) {
+    try {
+      await this.prisma.notificationDelivery.create({
+        data: {
+          notificationId,
+          channel,
+          status: error ? 'FAILED' : 'SUCCESS',
+          error: error ? error.slice(0, NOTIFICATION_DELIVERY_ERROR_MAX) : null,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(`Failed to record ${channel} delivery for ${notificationId}: ${(err as Error).message}`);
+    }
+  }
+
+  /** GET /notifications/:id/deliveries — owner or admin only. */
+  async getDeliveries(notificationId: string, requester: { id: string; role?: string }) {
+    const notification = await this.prisma.notification.findUnique({
+      where: { id: notificationId },
+      select: { id: true, userId: true },
+    });
+    if (!notification) throw new NotFoundException('Notification not found');
+    if (notification.userId !== requester.id && requester.role !== UserRole.ADMIN) {
+      throw new ForbiddenException('Only the notification owner or an admin can view deliveries');
+    }
+    return this.prisma.notificationDelivery.findMany({
+      where: { notificationId },
+      orderBy: { attemptedAt: 'asc' },
+    });
+  }
+
+  /** Sends an email; resolves true on success, false otherwise. */
   async sendEmail(
+    ...args: Parameters<NotificationsService['deliverEmail']>
+  ): Promise<boolean> {
+    return (await this.deliverEmail(...args)) === null;
+  }
+
+  /** Sends an email; resolves null on success, or the error message on failure (#635). */
+  async deliverEmail(
     to: string,
     subject: string,
     text: string,
@@ -958,13 +1086,13 @@ export class NotificationsService {
     data?: Record<string, any>,
     locale: string = DEFAULT_LOCALE,
     userId?: string,
-  ): Promise<boolean> {
+  ): Promise<string | null> {
     // Never send to addresses that hard-bounced or complained (#434).
     if (await this.isEmailSuppressed(to)) {
       this.logger.warn(
         `Email to ${to} skipped — address is on the suppression list`,
       );
-      return false;
+      return 'Address is on the email suppression list';
     }
     try {
       let resolvedUserId = userId;
@@ -1024,10 +1152,10 @@ export class NotificationsService {
         ...(headers ? { headers } : {}),
       });
       this.logger.log(`Email sent to ${to}: ${localizedSubject}`);
-      return true;
+      return null;
     } catch (error) {
       this.logger.error(`Email failed to ${to}`, error.message);
-      return false;
+      return String(error?.message ?? error);
     }
   }
 
@@ -1049,6 +1177,7 @@ export class NotificationsService {
   /**
    * Posts a Slack Incoming Webhook payload for a notification event.
    * Failures are logged and never throw — Slack must not break in-app/email.
+   * Returns null on success, or the error message on failure.
    */
   async sendSlackMessage(
     webhookUrl: string,
@@ -1113,18 +1242,19 @@ ${type}`,
 
       if (!response.ok) {
         const body = await response.text().catch(() => "");
-        this.logger.error(
-          `Slack webhook failed (${response.status}): ${body || response.statusText}`,
-        );
-        return;
+        const msg = `Slack webhook failed (${response.status}): ${body || response.statusText}`;
+        this.logger.error(msg);
+        return msg;
       }
 
       this.logger.log(`Slack notification sent for ${type}: ${title}`);
+      return null;
     } catch (error) {
       this.logger.error(
         `Slack notification failed for ${type}`,
         (error as Error).message,
       );
+      return (error as Error).message;
     }
   }
 
@@ -1307,6 +1437,99 @@ ${type}`,
         `Discord notification failed for ${type}`,
         (error as Error).message,
       );
+    }
+  }
+
+  /**
+   * Posts an Adaptive Card to a Microsoft Teams Incoming Webhook.
+   * Failures are logged and returned so they never interrupt other channels.
+   */
+  async sendTeamsMessage(
+    webhookUrl: string,
+    type: NotificationType,
+    title: string,
+    message: string,
+    data?: Record<string, any>,
+  ): Promise<boolean> {
+    const shipmentId = data?.shipmentId ? String(data.shipmentId) : undefined;
+    const milestoneIndex =
+      data?.milestoneIndex !== undefined
+        ? String(data.milestoneIndex)
+        : undefined;
+    const facts = [
+      ...(shipmentId ? [{ title: 'Shipment', value: shipmentId }] : []),
+      ...(milestoneIndex !== undefined
+        ? [{ title: 'Milestone', value: milestoneIndex }]
+        : []),
+      { title: 'Type', value: type },
+    ];
+    const payload = {
+      type: 'message',
+      attachments: [
+        {
+          contentType: 'application/vnd.microsoft.card.adaptive',
+          contentUrl: null,
+          content: {
+            $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
+            type: 'AdaptiveCard',
+            version: '1.4',
+            body: [
+              {
+                type: 'TextBlock',
+                text: `ChainSettle — ${title}`,
+                weight: 'Bolder',
+                size: 'Medium',
+                wrap: true,
+              },
+              { type: 'TextBlock', text: message, wrap: true },
+              { type: 'FactSet', facts },
+            ],
+          },
+        },
+      ],
+    };
+
+    const post = () =>
+      fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+    try {
+      let response = await post();
+      if (response.status === 429) {
+        const retryAfter = response.headers.get('retry-after');
+        const retryAfterSeconds = retryAfter ? Number(retryAfter) : NaN;
+        const retryAt = retryAfter ? Date.parse(retryAfter) : NaN;
+        const waitMs = Number.isFinite(retryAfterSeconds)
+          ? retryAfterSeconds * 1000
+          : Number.isFinite(retryAt)
+            ? Math.max(0, retryAt - Date.now())
+            : 5000;
+        this.logger.warn(
+          `Teams webhook rate limited, waiting ${waitMs}ms before retry`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        response = await post();
+      }
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        this.logger.error(
+          `Teams webhook failed (${response.status}): ${body || response.statusText}`,
+        );
+        return false;
+      }
+
+      this.logger.log(`Teams notification sent for ${type}: ${title}`);
+      return true;
+    } catch (error) {
+      this.logger.error(
+        `Teams notification failed for ${type}`,
+        (error as Error).message,
+      );
+      return false;
     }
   }
 }

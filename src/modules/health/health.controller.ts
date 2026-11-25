@@ -115,7 +115,11 @@ export class HealthController {
   @Get('version')
   @ApiOperation({ summary: 'Running build version, git commit, build time, Node version and uptime' })
   version() {
-    return { ...resolveBuildInfo(), uptimeSeconds: Math.floor(process.uptime()) };
+    return {
+      ...resolveBuildInfo(),
+      contractWasmHash: this.stellar.getContractWasmHash(),
+      uptimeSeconds: Math.floor(process.uptime()),
+    };
   }
 
   private ipfsHealthCheck(): HealthIndicatorResult {

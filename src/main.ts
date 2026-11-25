@@ -7,6 +7,7 @@ initTracing();
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger, RequestMethod, VersioningType } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { ProblemDetailsDto } from './common/dto/problem-details.dto';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import * as compression from 'compression';
@@ -234,6 +235,16 @@ async function bootstrap() {
     expressApp.disable('x-powered-by');
   }
 
+  // Trusted proxy setting (#656): req.ip only honours X-Forwarded-For when set.
+  // Accepts Express values: "true", a hop count, or a comma-separated IP/CIDR list.
+  const trustProxy = process.env.TRUST_PROXY?.trim();
+  if (trustProxy && expressApp?.set) {
+    expressApp.set(
+      'trust proxy',
+      trustProxy === 'true' ? true : /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy,
+    );
+  }
+
   // CORS — strict origin allowlist.
   app.enableCors({
     origin:
@@ -293,9 +304,21 @@ async function bootstrap() {
     .addTag('notifications', 'User notifications')
     .addTag('auth', 'Authentication via Stellar address')
     .addTag('health', 'Health check endpoints')
+    .addTag('dev', 'Development helpers (testnet/futurenet only; 404 on mainnet)')
     .build();
 
-  const document = SwaggerModule.createDocument(app, swaggerConfig);
+  const document = SwaggerModule.createDocument(app, swaggerConfig, {
+    extraModels: [ProblemDetailsDto],
+  });
+  // Every error response is RFC 9457 problem details.
+  document.components = document.components ?? {};
+  document.components.responses = {
+    ...(document.components.responses ?? {}),
+    ProblemDetails: {
+      description: 'Error (RFC 9457 problem details)',
+      content: { 'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetailsDto' } } },
+    },
+  };
   SwaggerModule.setup('docs', app, document, {
     swaggerOptions: { persistAuthorization: true },
   });

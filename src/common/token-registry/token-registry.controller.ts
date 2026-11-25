@@ -7,6 +7,7 @@ import { UserRole } from '@prisma/client';
 import { Roles } from '../decorators/roles.decorator';
 import { RegisterTokenDto } from './dto/register-token.dto';
 import { UpdateTokenDto } from './dto/update-token.dto';
+import { AuthenticatedUser, CurrentUser } from '../decorators/current-user.decorator';
 
 const CACHE_KEY = 'token_registry:list';
 const CACHE_TTL = 300; // 5 minutes
@@ -77,5 +78,23 @@ export class AdminTokenRegistryController {
   @ApiResponse({ status: 409, description: 'Decimls cannot change after shipment usage' })
   async updateToken(@Param('address') address: string, @Body() dto: UpdateTokenDto) {
     return this.tokenRegistry.updateToken(address, dto);
+  }
+
+  @Post(':address/deprecate')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: '[Admin] Deprecate a token — blocks new shipments, existing ones continue' })
+  @ApiResponse({ status: 201, description: 'Token deprecated' })
+  @ApiResponse({ status: 404, description: 'Token not found' })
+  deprecateToken(@Param('address') address: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.tokenRegistry.setDeprecated(address, true, { id: user.id, address: user.stellarAddress });
+  }
+
+  @Post(':address/undeprecate')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: '[Admin] Clear the deprecated flag on a token' })
+  @ApiResponse({ status: 201, description: 'Token re-activated' })
+  @ApiResponse({ status: 404, description: 'Token not found' })
+  undeprecateToken(@Param('address') address: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.tokenRegistry.setDeprecated(address, false, { id: user.id, address: user.stellarAddress });
   }
 }

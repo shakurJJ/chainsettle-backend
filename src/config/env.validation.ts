@@ -64,6 +64,14 @@ export const envValidationSchema = Joi.object({
   DATABASE_POOL_TIMEOUT: Joi.number().integer().min(1).max(300).default(10),
 
   // Cold-storage archival of completed/cancelled shipments (days; default 90)
+  // Postgres statement timeouts (ms). API queries are cancelled past
+  // DB_STATEMENT_TIMEOUT_MS; jobs/exports use the longer DB_JOB_STATEMENT_TIMEOUT_MS.
+  DB_STATEMENT_TIMEOUT_MS: Joi.number().integer().min(100).max(600000).default(30000),
+  DB_JOB_STATEMENT_TIMEOUT_MS: Joi.number().integer().min(100).max(3600000).default(300000),
+  // Audit log retention: rows older than this are archived to compressed JSONL then deleted.
+  AUDIT_LOG_RETENTION_DAYS: Joi.number().integer().min(1).max(3650).default(365),
+  AUDIT_LOG_ARCHIVE_DIR: Joi.string().default('./archives/audit-logs'),
+  AUDIT_LOG_ARCHIVAL_CRON: cronExpression.default('30 3 * * *'),
   SHIPMENT_ARCHIVAL_DAYS: Joi.number().integer().min(1).max(3650).default(90),
   // Cron schedule for the archival job (default: daily at 03:00 server time)
   SHIPMENT_ARCHIVAL_CRON: cronExpression.default('0 3 * * *'),
@@ -80,8 +88,21 @@ export const envValidationSchema = Joi.object({
   STELLAR_HORIZON_URLS: Joi.string(),
   STELLAR_HEALTH_INTERVAL_MS: Joi.number().integer().min(1000).default(15000),
   CHAINSETTTLE_CONTRACT_ID: Joi.string().required(),
+  // Optional hex WASM hash; startup fails if the deployed contract differs (#648)
+  EXPECTED_CONTRACT_WASM_HASH: Joi.string().hex().length(64).optional(),
   USDC_TOKEN_ADDRESS: Joi.string().required(),
   STELLAR_SECRET_KEY: Joi.string().required(),
+  // Fee-bump sponsorship for relayed transactions (#649)
+  FEE_SPONSOR_SECRET_KEY: Joi.string().pattern(/^S[A-Z2-7]{55}$/).optional(),
+  FEE_SPONSOR_DAILY_CAP_STROOPS: Joi.number().integer().min(0).default(10_000_000),
+  // Friendbot dev helper (#650)
+  FRIENDBOT_URL: Joi.string().uri().optional(),
+  DEV_FUND_RATE_LIMIT_SECONDS: Joi.number().integer().min(1).default(3600),
+  // Escrow TVL gauge refresh interval (#651)
+  ESCROW_METRICS_REFRESH_MS: Joi.number().integer().min(1000).default(60000),
+  // Soroban contract TTL monitoring (#652)
+  CONTRACT_TTL_CHECK_INTERVAL_MS: Joi.number().integer().min(60000).default(3600000),
+  CONTRACT_TTL_ALERT_THRESHOLD_LEDGERS: Joi.number().integer().min(1).default(120960),
 
   // Email
   EMAIL_WEBHOOK_SECRET: Joi.string().optional(),
@@ -155,6 +176,8 @@ export const envValidationSchema = Joi.object({
 
   // FX rate service (#231)
   FX_RATE_API_URL: Joi.string().uri().allow('').optional(),
+  ADMIN_ALLOWED_CIDRS: Joi.string().allow('').optional(),
+  TRUST_PROXY: Joi.string().allow('').optional(),
   FX_RATE_CACHE_TTL_SECONDS: Joi.number().integer().min(1).default(300),
   // How many minutes after the last successful fetch a rate is considered stale.
   // Defaults to the cache TTL window (5 minutes). Stale rates are still served

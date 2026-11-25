@@ -140,6 +140,7 @@ export class PerformanceService {
         totalAmount: true,
         tokenDecimals: true,
         tokenSymbol: true,
+        fxRateAtCreation: true,
         milestones: {
           where: { deletedAt: null },
           select: {
@@ -165,13 +166,19 @@ export class PerformanceService {
     let proofToConfirmMs = 0;
     let proofToConfirmCount = 0;
     const volumeByToken = new Map<string, number>();
+    let lockedVolumeUsd = 0;
     const rejectionsByReason: Partial<Record<ProofRejectionReason, number>> = {};
 
     for (const s of shipments) {
       if (s.status === ShipmentStatus.COMPLETED) {
         completedShipments++;
         const human = Number(this.stellar.toHumanAmount(s.totalAmount, s.tokenDecimals));
-        volumeByToken.set(s.tokenSymbol, (volumeByToken.get(s.tokenSymbol) ?? 0) + human);
+        // #653: prefer the rate locked at creation so historical USD is stable.
+        if (s.fxRateAtCreation != null) {
+          lockedVolumeUsd += human * s.fxRateAtCreation;
+        } else {
+          volumeByToken.set(s.tokenSymbol, (volumeByToken.get(s.tokenSymbol) ?? 0) + human);
+        }
       }
 
       let disputed = false;
@@ -214,7 +221,7 @@ export class PerformanceService {
       if (disputed) disputedShipments++;
     }
 
-    let totalVolumeUsd = 0;
+    let totalVolumeUsd = lockedVolumeUsd;
     let volumeComplete = true;
     for (const [symbol, amount] of volumeByToken) {
       const rate = await this.fxRate.getUsdRate(symbol);

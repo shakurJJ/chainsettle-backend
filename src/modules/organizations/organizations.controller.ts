@@ -8,6 +8,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -18,6 +19,8 @@ import {
   AddOrganizationMemberDto,
   ChangeOrganizationRoleDto,
   CreateOrganizationDto,
+  OrganizationAuditLogQueryDto,
+  OrganizationDefaultsDto,
 } from './dto/organization.dto';
 
 @ApiTags('organizations')
@@ -72,5 +75,31 @@ export class OrganizationsController {
   @ApiOperation({ summary: 'Remove a member (or leave) — access is revoked immediately' })
   removeMember(@Param('id') id: string, @Param('userId') userId: string, @CurrentUser() user: AuthenticatedUser) {
     return this.organizations.removeMember(id, user.id, userId);
+  }
+
+  @Get(':id/audit-logs')
+  @ApiOperation({ summary: 'Organization activity feed (members + org shipments) — requires ADMIN' })
+  auditLogs(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: OrganizationAuditLogQueryDto,
+  ) {
+    return this.organizations.getAuditLogs(id, user.id, query);
+  }
+
+  @Get(':id/defaults')
+  @ApiOperation({ summary: 'Get default shipment settings for the organization' })
+  getDefaults(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.organizations.getDefaults(id, user.id);
+  }
+
+  @Patch(':id/defaults')
+  @ApiOperation({ summary: 'Set default shipment settings (token, arbiter, milestones) — requires ADMIN' })
+  updateDefaults(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: OrganizationDefaultsDto,
+  ) {
+    return this.organizations.updateDefaults(id, user.id, dto);
   }
 }
