@@ -233,6 +233,8 @@ POST /api/v1/webhooks/:id/deliveries/:deliveryId/retry
 
 Clears `permanentlyFailedAt` and immediately re-attempts delivery regardless of prior exhaustion.
 
+> **Troubleshooting:** If deliveries are failing, being auto-disabled, or you need to replay a date range, follow the [Webhook delivery failures runbook](./runbooks/webhook-delivery-failures.md).
+
 ---
 
 ## Minimal receiver (Express)
