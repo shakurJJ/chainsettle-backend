@@ -35,6 +35,7 @@ import { RecurringSchedulesModule } from './modules/recurring-schedules/recurrin
 import { MilestonesModule } from './modules/milestones/milestones.module';
 import { EventsModule } from './modules/events/events.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
+import { EmailModule } from './modules/email/email.module';
 import { HealthModule } from './modules/health/health.module';
 import { AuditLogsModule } from './modules/audit-logs/audit-logs.module';
 import { AuditLogInterceptor } from './modules/audit-logs/audit-log.interceptor';
@@ -108,6 +109,7 @@ import { SearchModule } from './modules/search/search.module';
     MilestonesModule,
     EventsModule,
     NotificationsModule,
+    EmailModule,
     HealthModule,
     AuditLogsModule,
     WebhooksModule,
