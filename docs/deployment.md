@@ -207,6 +207,8 @@ For readiness (post-deploy gate):
 GET /api/v1/health/ready
 ```
 
+For posting platform announcements and safely putting the API into maintenance mode (including client handling of 503 responses), see [announcements-and-maintenance-mode.md](./announcements-and-maintenance-mode.md).
+
 ---
 
 ## 10. Zero-downtime deploy considerations (event poller)
