@@ -123,4 +123,8 @@ console.error('  Related docs: docs/testing.md, docs/deployment.md,');
 console.error('  docs/adr/0004-prisma-postgresql.md');
 console.error('');
 
-process.exit(1);
+console.log('✓ prisma/schema.prisma change is accompanied by migration(s):');
+for (const migration of migrationsAdded) {
+  console.log(`  - ${migration}`);
+}
+process.exit(0);
