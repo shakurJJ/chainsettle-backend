@@ -5,6 +5,8 @@ import { NotificationsService } from './notifications.service';
 import { NotificationsController } from './notifications.controller';
 import { NotificationsGateway } from './notifications.gateway';
 import { NotificationDigestJob } from './notification-digest.job';
+import { ShipmentReportService } from './shipment-report.service';
+import { ShipmentReportJob } from './shipment-report.job';
 import { NotificationCleanupJob } from './notification-cleanup.job';
 import { WebhooksModule } from '../webhooks/webhooks.module';
 import { PushNotificationService } from './push-notification.service';
@@ -23,7 +25,16 @@ import { TelegramService } from './telegram.service';
     }),
     WebhooksModule,
   ],
-  providers: [NotificationsService, NotificationsGateway, NotificationDigestJob, PushNotificationService, WebPushService, TelegramService],
+  providers: [
+    NotificationsService,
+    NotificationsGateway,
+    NotificationDigestJob,
+    ShipmentReportService,
+    ShipmentReportJob,
+    PushNotificationService,
+    WebPushService,
+    TelegramService,
+  ],
   controllers: [NotificationsController],
   exports: [NotificationsService, NotificationsGateway, PushNotificationService, WebPushService, TelegramService],
 })
