@@ -303,6 +303,7 @@ async function bootstrap() {
     .addTag('notifications', 'User notifications')
     .addTag('auth', 'Authentication via Stellar address')
     .addTag('health', 'Health check endpoints')
+    .addTag('dev', 'Development helpers (testnet/futurenet only; 404 on mainnet)')
     .build();
 
   const document = SwaggerModule.createDocument(app, swaggerConfig);

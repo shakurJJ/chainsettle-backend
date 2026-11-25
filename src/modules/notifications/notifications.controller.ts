@@ -97,6 +97,14 @@ export class NotificationsController {
     return this.notificationsService.sendTestNotification(userId);
   }
 
+  @Get(':id/deliveries')
+  @ApiOperation({
+    summary: 'Per-channel delivery log for a notification (owner or admin only)',
+  })
+  getDeliveries(@Param('id') id: string, @CurrentUser() user: { id: string; role?: string }) {
+    return this.notificationsService.getDeliveries(id, user);
+  }
+
   @Get('digest-preview')
   @ApiOperation({ summary: 'Preview the next scheduled email digest' })
   async getDigestPreview(@CurrentUser('id') userId: string) {

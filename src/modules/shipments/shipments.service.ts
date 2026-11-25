@@ -89,7 +89,7 @@ export class ShipmentsService {
    * * If templateId is provided, pre-populate fields from the template.
    * Explicit fields in the request override template values.
    */
-  async create(dto: CreateShipmentDto) {
+  async create(dto: CreateShipmentDto, orgDefaults: { tokenAddress?: string; arbiterAddress?: string; milestones?: any[] } = {}) {
     const existing = await this.prisma.shipment.findUnique({
       where: { id: dto.shipmentId },
     });
@@ -128,9 +128,10 @@ export class ShipmentsService {
     // Merge template data with explicit request values (request overrides template)
     const supplierAddress = dto.supplierAddress ?? templateData.supplierAddress;
     const logisticsAddress = dto.logisticsAddress ?? templateData.logisticsAddress;
-    const arbiterAddress = dto.arbiterAddress ?? templateData.arbiterAddress;
-    const tokenAddress = dto.tokenAddress ?? templateData.tokenAddress;
-    const milestones = dto.milestones ?? templateData.milestones;
+    // Precedence: explicit request > template > organization defaults (#646)
+    const arbiterAddress = dto.arbiterAddress ?? templateData.arbiterAddress ?? orgDefaults.arbiterAddress;
+    const tokenAddress = dto.tokenAddress ?? templateData.tokenAddress ?? orgDefaults.tokenAddress;
+    const milestones = dto.milestones ?? templateData.milestones ?? orgDefaults.milestones;
 
     if (arbiterAddress && [dto.buyerAddress, supplierAddress, logisticsAddress].some(a => a && a.toLowerCase() === arbiterAddress.toLowerCase())) throw new BadRequestException({ code: 'ARBITER_CONFLICT', message: 'Arbiter cannot be a shipment party' });
 

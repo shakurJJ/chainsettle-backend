@@ -462,11 +462,27 @@ model Notification {
   createdAt    DateTime         @default(now())
 
   // Relations
-  user User @relation(fields: [userId], references: [id])
+  user       User                   @relation(fields: [userId], references: [id])
+  deliveries NotificationDelivery[]
 
   @@index([userId])
   @@index([read])
   @@map("notifications")
+}
+
+/// One row per channel delivery attempt for a notification (email, slack, ...).
+model NotificationDelivery {
+  id             String   @id @default(uuid())
+  notificationId String
+  channel        String   // EMAIL | SLACK | IN_APP
+  status         String   // SUCCESS | FAILED
+  error          String?  // truncated error message
+  attemptedAt    DateTime @default(now())
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([notificationId])
+  @@map("notification_deliveries")
 }
 
 
@@ -629,9 +645,10 @@ model AuditLog {
 model NotificationPreference {
   id              String   @id @default(uuid())
   userId          String   @unique
-  preferences     Json     // Record<NotificationType, channel flags including inApp, email, slack, sms, discord, push and telegram>
+  preferences     Json     // Record<NotificationType, channel flags including inApp, email, slack, sms, discord, teams, push and telegram>
   slackWebhookUrl String?  // Incoming Slack webhook URL; null disables Slack delivery
   discordWebhookUrl String? // Incoming Discord webhook URL; null disables Discord delivery
+  teamsWebhookUrl String?  // Incoming Microsoft Teams webhook URL; null disables Teams delivery
   telegramChatId   String?  @unique
   telegramLinkCodeHash String? @unique
   telegramLinkExpiresAt DateTime?
@@ -645,6 +662,11 @@ model NotificationPreference {
   @@map("notification_preferences")
 }
 
+enum WebhookEndpointStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+}
+
 model WebhookEndpoint {
   id         String    @id @default(uuid())
   userId     String
@@ -653,6 +675,12 @@ model WebhookEndpoint {
   events     String[]  // NotificationType values this endpoint subscribes to
   headers    Json?     // Encrypted custom headers: { "name": "encrypted-value", ... }
   active     Boolean   @default(true)
+  /// PENDING_VERIFICATION endpoints receive no events until the challenge handshake passes.
+  status     WebhookEndpointStatus @default(ACTIVE)
+  verifiedAt DateTime?
+  /// Optional batching: deliver up to batchSize events (max 100) per request, flushed after batchWindowMs.
+  batchSize     Int?
+  batchWindowMs Int?
   createdAt  DateTime  @default(now())
 
   user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -732,9 +760,12 @@ model ApiKey {
   revokedAt   DateTime?          // null = active, set = revoked
   rotatedFromId   String?        // ID of the predecessor key this was rotated from
   gracePeriodEndsAt DateTime?    // when set, the revoked predecessor key is still valid until this time
+  organizationId    String?      // set for organization-owned keys (#647); userId is then the creator
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
+  @@index([organizationId])
   @@index([keyHash])
   @@index([userId])
   @@index([expiresAt])
@@ -970,8 +1001,12 @@ model Organization {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// Default shipment settings (tokenAddress, arbiterAddress, milestones) applied when omitted (#646)
+  defaults  Json?
+
   creator User                 @relation("OrganizationCreator", fields: [createdBy], references: [id])
   members OrganizationMember[]
+  apiKeys ApiKey[]
 
   @@map("organizations")
 }

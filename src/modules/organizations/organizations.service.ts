@@ -6,8 +6,15 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { OrganizationRole } from '@prisma/client';
+import { OrganizationRole, Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { TokenRegistryService } from '../../common/token-registry/token-registry.service';
+
+export interface OrganizationDefaults {
+  tokenAddress?: string;
+  arbiterAddress?: string;
+  milestones?: any[];
+}
 
 /** Higher number = more privileges. */
 const ROLE_RANK: Record<OrganizationRole, number> = {
@@ -39,7 +46,10 @@ export function participantAddressesOf(s: ShipmentParticipants): string[] {
 export class OrganizationsService {
   private readonly logger = new Logger(OrganizationsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tokenRegistry: TokenRegistryService,
+  ) {}
 
   async create(userId: string, name: string) {
     const trimmed = name?.trim();
@@ -193,5 +203,119 @@ export class OrganizationsService {
       where: { orgId, role: OrganizationRole.OWNER },
     });
     if (owners <= 1) throw new BadRequestException('An organization must keep at least one OWNER');
+  }
+
+  // ── Audit log feed (#645) ────────────────────────────────────────────────
+
+  /**
+   * Audit entries for actions by org members or on shipments involving a
+   * member's address. OWNER/ADMIN only; the where-clause is always scoped to
+   * this org's members and shipments so other orgs' entries never leak.
+   */
+  async getAuditLogs(
+    orgId: string,
+    callerId: string,
+    filters: { entityType?: string; startDate?: string; endDate?: string; page?: number; limit?: number },
+  ) {
+    await this.requireRole(orgId, callerId, OrganizationRole.ADMIN);
+    const page = filters.page ?? 1;
+    const limit = Math.min(filters.limit ?? 50, 200);
+
+    const members = await this.prisma.organizationMember.findMany({
+      where: { orgId },
+      select: { userId: true, user: { select: { stellarAddress: true } } },
+    });
+    const userIds = members.map((m) => m.userId);
+    const addresses = members.map((m) => m.user.stellarAddress).filter(Boolean);
+    const shipments = await this.prisma.shipment.findMany({
+      where: {
+        OR: [
+          { buyerAddress: { in: addresses } },
+          { supplierAddress: { in: addresses } },
+          { logisticsAddress: { in: addresses } },
+          { arbiterAddress: { in: addresses } },
+        ],
+      },
+      select: { id: true },
+    });
+    const shipmentIds = shipments.map((s) => s.id);
+
+    const where: Prisma.AuditLogWhereInput = {
+      AND: [
+        {
+          OR: [
+            { userId: { in: userIds } },
+            { actorId: { in: userIds } },
+            { entityType: 'shipment', entityId: { in: shipmentIds } },
+          ],
+        },
+        filters.entityType ? { entityType: filters.entityType } : {},
+        filters.startDate || filters.endDate
+          ? {
+              createdAt: {
+                ...(filters.startDate && { gte: new Date(filters.startDate) }),
+                ...(filters.endDate && { lte: new Date(filters.endDate) }),
+              },
+            }
+          : {},
+      ],
+    };
+
+    const [data, total] = await Promise.all([
+      this.prisma.auditLog.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.auditLog.count({ where }),
+    ]);
+    return { data, meta: { total, page, limit, totalPages: Math.ceil(total / limit) } };
+  }
+
+  // ── Default shipment settings (#646) ─────────────────────────────────────
+
+  async getDefaults(orgId: string, callerId: string): Promise<OrganizationDefaults> {
+    await this.requireRole(orgId, callerId, OrganizationRole.VIEWER);
+    const org = await this.prisma.organization.findUnique({ where: { id: orgId }, select: { defaults: true } });
+    return (org?.defaults as OrganizationDefaults) ?? {};
+  }
+
+  /** Defaults to apply to a shipment created on behalf of the org (MEMBER+). */
+  async getDefaultsForCreator(orgId: string, callerId: string): Promise<OrganizationDefaults> {
+    await this.requireRole(orgId, callerId, OrganizationRole.MEMBER);
+    const org = await this.prisma.organization.findUnique({ where: { id: orgId }, select: { defaults: true } });
+    return (org?.defaults as OrganizationDefaults) ?? {};
+  }
+
+  async updateDefaults(orgId: string, callerId: string, defaults: OrganizationDefaults) {
+    await this.requireRole(orgId, callerId, OrganizationRole.ADMIN);
+    if (defaults.tokenAddress) {
+      const token = this.tokenRegistry.getToken(defaults.tokenAddress);
+      if (token.symbol === 'UNKNOWN' || token.enabled === false) {
+        throw new BadRequestException(`Token ${defaults.tokenAddress} is not an enabled registry token`);
+      }
+    }
+    if (defaults.milestones?.length) {
+      const sum = defaults.milestones.reduce((t, m) => t + (m.paymentPercent || 0), 0);
+      if (sum !== 100) throw new BadRequestException(`Milestone payment percentages must sum to 100. Got ${sum}.`);
+    }
+    const clean = JSON.parse(JSON.stringify(defaults));
+    const org = await this.prisma.organization.update({
+      where: { id: orgId },
+      data: { defaults: clean },
+      select: { id: true, defaults: true },
+    });
+    return org.defaults;
+  }
+
+  // ── Organization-owned API keys (#647) ───────────────────────────────────
+
+  /** True when any member of the org is a participant of the shipment. */
+  async orgParticipatesInShipment(orgId: string, shipment: ShipmentParticipants) {
+    const count = await this.prisma.organizationMember.count({
+      where: { orgId, user: { stellarAddress: { in: participantAddressesOf(shipment) } } },
+    });
+    return count > 0;
   }
 }
