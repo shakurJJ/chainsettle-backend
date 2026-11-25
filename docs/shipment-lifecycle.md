@@ -235,6 +235,12 @@ PENDING ──────> ACCEPTED
 - Once accepted, arbiter executes on-chain resolution matching the proposal
 - Rejected or withdrawn proposals have no on-chain effect
 
+### Inviting Counterparties
+
+Before a shipment can progress, the buyer must invite a supplier (and optionally an arbiter) by email. Invitations are token-based and support recipients who do not yet have an account.
+
+See [invitations.md](./invitations.md) for the end-to-end invitation flow (invite, email, sign-up, accept) and token lifecycle.
+
 ### Cancellation
 
 Shipments may be cancelled only in `ACTIVE` status:

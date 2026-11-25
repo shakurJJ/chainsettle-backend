@@ -122,4 +122,6 @@ export default registerAs('app', () => ({
   env: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '3000', 10),
   secretsProvider: getSecretsProvider(),
+  kycProvider: (process.env.KYC_PROVIDER || 'hmac').toLowerCase(),
+  kycWebhookSecret: process.env.KYC_WEBHOOK_SECRET,
 }));

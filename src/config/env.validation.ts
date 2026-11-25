@@ -182,7 +182,9 @@ export const envValidationSchema = Joi.object({
 
   // Shipments at or above this value may require multi-signature approval (#234)
   MULTISIG_VALUE_THRESHOLD_STROOPS: Joi.string().default('1000000000000'), // 100,000 USDC at 7 decimals
-  KYC_WEBHOOK_SECRET: Joi.string().allow('').default(''),
+  // Pluggable KYC provider adapter (#679). Extend the allowed list as adapters are added.
+  KYC_PROVIDER: Joi.string().valid('hmac').default('hmac'),
+  KYC_WEBHOOK_SECRET: Joi.string().allow('').optional(),
   // How long a VERIFIED KYC status remains valid before re-verification is required (#429).
   KYC_VALIDITY_DAYS: Joi.number().integer().min(1).default(365),
   // GraphQL cost controls (#432)

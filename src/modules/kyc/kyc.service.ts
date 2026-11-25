@@ -1,16 +1,17 @@
 import {
   ConflictException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHmac, randomUUID } from 'crypto';
 import { KycStatus } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AuditLogService } from '../audit-logs/audit-log.service';
 import { KycWebhookDto } from './dto/kyc-webhook.dto';
+import { KYC_PROVIDER, KycProvider } from './kyc-provider.interface';
 
 export type KycTier = 'none' | 'basic' | 'enhanced';
 
@@ -28,7 +29,6 @@ export class KycService {
   /** Source of truth for both `meetsThreshold()` and `getRequirements()` — see #285. */
   private readonly threshold: bigint;
   private readonly enhancedThreshold: bigint;
-  private readonly webhookSecret: string;
   /** How long a VERIFIED status stays valid before re-verification is required (#429). */
   readonly validityDays: number;
 
@@ -36,12 +36,12 @@ export class KycService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly auditLog: AuditLogService,
+    @Inject(KYC_PROVIDER) private readonly provider: KycProvider,
   ) {
     this.threshold = BigInt(this.config.get<string>('KYC_VALUE_THRESHOLD_STROOPS', '1000000000000'));
     this.enhancedThreshold = BigInt(
       this.config.get<string>('KYC_ENHANCED_VALUE_THRESHOLD_STROOPS', '10000000000000'),
     );
-    this.webhookSecret = this.config.get<string>('KYC_WEBHOOK_SECRET', '');
     this.validityDays = Number(this.config.get<number>('KYC_VALIDITY_DAYS', 365));
   }
 
@@ -92,7 +92,7 @@ export class KycService {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new NotFoundException('User not found');
 
-    const reference = randomUUID();
+    const { reference } = await this.provider.createSession(user);
 
     await this.prisma.user.update({
       where: { id: userId },
@@ -138,28 +138,24 @@ export class KycService {
    * configured) and applies the verification result to the matching user.
    */
   async handleWebhook(dto: KycWebhookDto, signature?: string): Promise<{ message: string }> {
-    if (this.webhookSecret) {
-      const expected = createHmac('sha256', this.webhookSecret)
-        .update(JSON.stringify(dto))
-        .digest('hex');
-      if (!signature || signature !== expected) {
-        throw new UnauthorizedException('Invalid KYC webhook signature');
-      }
-    } else {
-      this.logger.warn('KYC_WEBHOOK_SECRET is not configured — accepting webhook without signature verification');
+    const valid = await this.provider.verifySignature(dto, signature);
+    if (!valid) {
+      throw new UnauthorizedException('Invalid KYC webhook signature');
     }
+
+    const { reference, stellarAddress, status } = this.provider.parseWebhook(dto);
 
     const user = await this.prisma.user.findFirst({
       where: {
-        OR: [{ kycReference: dto.reference }, { stellarAddress: dto.stellarAddress }],
+        OR: [{ kycReference: reference }, { stellarAddress }],
       },
     });
 
     if (!user) {
-      throw new NotFoundException(`No user found for reference "${dto.reference}" / address "${dto.stellarAddress}"`);
+      throw new NotFoundException(`No user found for reference "${reference}" / address "${stellarAddress}"`);
     }
 
-    const kycStatus = KycStatus[dto.status];
+    const kycStatus = KycStatus[status];
     const expiryData =
       kycStatus === KycStatus.VERIFIED
         ? (() => {
@@ -175,18 +171,18 @@ export class KycService {
 
     await this.prisma.user.update({
       where: { id: user.id },
-      data: { kycStatus, kycReference: dto.reference, ...expiryData },
+      data: { kycStatus, kycReference: reference, ...expiryData },
     });
 
     await this.auditLog.record({
-      actorAddress: dto.stellarAddress,
+      actorAddress: stellarAddress,
       action: 'KYC_STATUS_UPDATED',
       resourceType: 'User',
       resourceId: user.id,
-      metadata: { reference: dto.reference, kycStatus },
+      metadata: { reference, kycStatus },
     });
 
-    this.logger.log(`KYC status for user ${user.id} updated to ${kycStatus} (reference ${dto.reference})`);
+    this.logger.log(`KYC status for user ${user.id} updated to ${kycStatus} (reference ${reference})`);
     return { message: 'KYC status updated' };
   }
 
