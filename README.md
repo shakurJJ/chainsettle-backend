@@ -77,6 +77,8 @@ The backend is the **bridge between the Stellar blockchain and the frontend**. I
 > Machine-to-machine authentication via API keys (create, rotate, revoke, scopes, security best practices): [docs/api-keys.md](./docs/api-keys.md)
 >
 > GraphQL API (endpoint, authentication, all queries/subscriptions, depth/complexity limits, DataLoader batching, GraphQL vs REST guidance): [docs/graphql.md](./docs/graphql.md)
+>
+> Organizations (teams, roles, shared shipment access): [docs/organizations.md](./docs/organizations.md)
 
 ---
 
