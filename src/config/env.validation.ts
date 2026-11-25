@@ -80,6 +80,8 @@ export const envValidationSchema = Joi.object({
   STELLAR_HORIZON_URLS: Joi.string(),
   STELLAR_HEALTH_INTERVAL_MS: Joi.number().integer().min(1000).default(15000),
   CHAINSETTTLE_CONTRACT_ID: Joi.string().required(),
+  // Optional hex WASM hash; startup fails if the deployed contract differs (#648)
+  EXPECTED_CONTRACT_WASM_HASH: Joi.string().hex().length(64).optional(),
   USDC_TOKEN_ADDRESS: Joi.string().required(),
   STELLAR_SECRET_KEY: Joi.string().required(),
 

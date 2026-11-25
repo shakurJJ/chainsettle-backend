@@ -17,7 +17,7 @@ export class ShipmentReadAccessGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest();
-    const user = req.user as { id?: string; stellarAddress?: string; role?: UserRole };
+    const user = req.user as { id?: string; stellarAddress?: string; role?: UserRole; _apiKeyOrganizationId?: string };
     const shipmentId = (req.params?.id ?? req.params?.shipmentId) as string;
 
     if (!user?.stellarAddress) {
@@ -39,6 +39,15 @@ export class ShipmentReadAccessGuard implements CanActivate {
       caller === shipment.logisticsAddress ||
       caller === shipment.arbiterAddress
     ) {
+      return true;
+    }
+
+    // Organization-owned API key (#647): act with the org's scope.
+    if (
+      user._apiKeyOrganizationId &&
+      (await this.organizations?.orgParticipatesInShipment(user._apiKeyOrganizationId, shipment))
+    ) {
+      req.shipmentAccess = 'organization';
       return true;
     }
 
