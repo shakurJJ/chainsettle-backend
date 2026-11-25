@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 /**
- * Gate: fail when prisma/schema.prisma changes without a matching migration
- * under prisma/migrations/, so that a contributor cannot land a schema edit
- * that only `prisma migrate deploy` will later discover (and manifest as
- * missing columns at deploy time).
+ * Pre-commit gate: fail when `prisma/schema.prisma` changes without a matching
+ * new migration under `prisma/migrations/`, so a schema edit cannot land
+ * without the SQL that `prisma migrate deploy` needs in CI/staging/production.
  *
- * See docs/testing.md / docs/deployment.md, where `prisma migrate deploy` is
- * described as "CI / staging / production: applies already-committed
- * migrations only – never creates new ones".
+ * How it decides:
+ *   1. If the working tree does not change prisma/schema.prisma relative to
+ *      HEAD, there is nothing to check — exit 0. This keeps the script safe to
+ *      run in CI, where the hook has nothing pending.
+ *   2. If the schema did change, at least one migration folder containing a
+ *      `migration.sql` must exist in the working tree that is not already in
+ *      HEAD (i.e. a newly added migration).
  *
  * Which changes are inspected:
  *   - pre-commit (default): the staged changes (`git diff --cached`).
@@ -15,67 +18,117 @@
  *     on the branch since it diverged from that ref (`git diff BASE...HEAD`).
  *
  * Exit codes:
- *   0 – schema unchanged, or changed together with a new/updated
- *       prisma/migrations/<name>/migration.sql.
- *   1 – schema changed without a migration (or git could not be read).
+ *   0 – schema unchanged, or schema changed with a new migration.
+ *   1 – schema changed without a new migration (or git could not be read).
  */
 'use strict';
 
 const { spawnSync } = require('child_process');
-const fs = require('fs');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..');
-const SCHEMA_FILE = 'prisma/schema.prisma';
-const MIGRATION_SQL = /^prisma\/migrations\/[^/]+\/migration\.sql$/;
+const schemaRelativePath = 'prisma/schema.prisma';
+const schemaPath = path.join(root, schemaRelativePath);
+const migrationsRelativePath = 'prisma/migrations';
+const migrationsDir = path.join(root, migrationsRelativePath);
 
-if (!fs.existsSync(path.join(root, SCHEMA_FILE))) {
-  console.error('schema.prisma not found at', path.join(root, SCHEMA_FILE));
+if (!fs.existsSync(schemaPath)) {
+  console.error('schema.prisma not found at', schemaPath);
   process.exit(1);
 }
 
-function changedFiles() {
-  const base = process.env.PRISMA_CHECK_BASE;
-  const args = base
-    ? ['diff', '--name-only', `${base}...HEAD`]
-    : ['diff', '--cached', '--name-only'];
-  const res = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
-  if (res.status !== 0) {
-    console.error(`Failed to read changes with \`git ${args.join(' ')}\`.`);
-    if (res.stderr) console.error(res.stderr);
-    process.exit(1);
-  }
-  return res.stdout.split('\n').map((f) => f.trim()).filter(Boolean);
+if (!fs.existsSync(migrationsDir)) {
+  console.error(`${migrationsRelativePath} directory not found at`, migrationsDir);
+  process.exit(1);
 }
 
-const files = changedFiles();
-const schemaChanged = files.includes(SCHEMA_FILE);
-const migrations = files.filter((f) => MIGRATION_SQL.test(f));
+function git(args) {
+  const result = spawnSync('git', args, {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (result.status !== 0) {
+    console.error(`Failed to run: git ${args.join(' ')}`);
+    if (result.stderr) console.error(result.stderr.trim());
+    console.error('Make sure this is run from a Git checkout.');
+    process.exit(1);
+  }
+  return result.stdout;
+}
+
+/** Migration folder names present on disk, newest state, that contain SQL. */
+const workingTreeMigrations = fs
+  .readdirSync(migrationsDir)
+  .filter((entry) => {
+    const full = path.join(migrationsDir, entry);
+    return (
+      fs.statSync(full).isDirectory() &&
+      fs.existsSync(path.join(full, 'migration.sql'))
+    );
+  })
+  .sort();
+
+/** Migration folder names committed in HEAD. */
+function headMigrationFolders() {
+  const files = git([
+    'ls-tree',
+    '-r',
+    '--name-only',
+    'HEAD',
+    '--',
+    migrationsRelativePath,
+  ])
+    .split('\n')
+    .filter(Boolean);
+
+  return new Set(
+    files
+      .filter((file) => file.endsWith('/migration.sql'))
+      .map((file) => path.basename(path.dirname(file))),
+  );
+}
+
+const schemaChanged =
+  git(['diff', '--name-only', 'HEAD', '--', schemaRelativePath]).trim() !== '';
 
 if (!schemaChanged) {
-  console.log('✓ prisma/schema.prisma unchanged — no migration required');
+  console.log('✓ prisma/schema.prisma is unchanged — no migration needed.');
   process.exit(0);
 }
 
-if (migrations.length > 0) {
-  console.log('✓ prisma/schema.prisma changed together with a migration:');
-  for (const m of migrations) console.log(`  ${m}`);
+const alreadyCommitted = headMigrationFolders();
+const newMigrations = workingTreeMigrations.filter(
+  (folder) => !alreadyCommitted.has(folder),
+);
+
+if (newMigrations.length > 0) {
+  console.log('✓ prisma/schema.prisma changed with matching migration(s):');
+  for (const folder of newMigrations) {
+    console.log(`  ${migrationsRelativePath}/${folder}`);
+  }
   process.exit(0);
 }
 
 console.error('✗ prisma/schema.prisma changed without a matching migration.');
 console.error('');
-console.error('  - prisma migrate deploy (CI / staging / production) applies only');
-console.error('    already-committed migrations and will not create columns added');
-console.error('    by the schema change.');
+console.error('  prisma migrate deploy (CI / staging / production) applies only');
+console.error('  already-committed migrations, so it would not create the columns');
+console.error('  or indexes added by this schema change.');
 console.error('');
-console.error('  To resolve this issue:');
-console.error('  1. Run `npx prisma migrate dev --name <desc>` locally against a live');
-console.error('     PostgreSQL to create the migration from the schema change.');
-console.error('  2. Commit both the schema change and the new folder under');
-console.error('     prisma/migrations/ (the migration.sql file).');
+console.error('  To resolve this:');
+console.error('  1. Run `npx prisma migrate dev --name <desc>` against a live');
+console.error('     PostgreSQL database to create the migration.');
+console.error(`  2. Commit both prisma/schema.prisma and the new folder under`);
+console.error(`     ${migrationsRelativePath}/ (including migration.sql).`);
+console.error('  3. Assign the new migration to the branch that changes schema.prisma.');
 console.error('');
 console.error('  Related docs: docs/testing.md, docs/deployment.md,');
 console.error('  docs/adr/0004-prisma-postgresql.md');
 console.error('');
-process.exit(1);
+
+console.log('✓ prisma/schema.prisma change is accompanied by migration(s):');
+for (const migration of migrationsAdded) {
+  console.log(`  - ${migration}`);
+}
+process.exit(0);

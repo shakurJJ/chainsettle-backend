@@ -15,7 +15,7 @@ import { AuditLogsModule } from "../audit-logs/audit-logs.module";
 import { IpfsModule } from "../../common/ipfs/ipfs.module";
 import { ContactsController } from "./contacts.controller";
 import { ContactsService } from "./contacts.service";
-import { AdminUsersController } from "./admin-users.controller";
+import { AdminUsersController, AdminRoleRequestsController } from "./admin-users.controller";
 
 @Module({
   imports: [
@@ -37,7 +37,7 @@ import { AdminUsersController } from "./admin-users.controller";
     ApiKeysController,
     UsersController,
     ContactsController,
-    AdminUsersController,
+    AdminUsersController, AdminRoleRequestsController,
   ],
   providers: [
     AuthService,

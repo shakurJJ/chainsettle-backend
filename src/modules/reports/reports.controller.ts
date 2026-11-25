@@ -1,9 +1,9 @@
-import { Controller, Get, Param, Res, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiParam, ApiProduces, ApiResponse, ApiTags } from '@nestjs/swagger';
-import { Response } from 'express';
+import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AuthenticatedUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ReportsService } from './reports.service';
+import { AgingReportQueryDto } from './dto/aging-report-query.dto';
 
 @ApiTags('reports')
 @ApiBearerAuth()
@@ -12,24 +12,32 @@ import { ReportsService } from './reports.service';
 export class ReportsController {
   constructor(private readonly reports: ReportsService) {}
 
-  @Get('statements/:month')
-  @ApiOperation({ summary: "Download the caller's monthly account statement (PDF)" })
-  @ApiParam({ name: 'month', example: '2026-10', description: 'YYYY-MM' })
-  @ApiProduces('application/pdf')
-  @ApiResponse({ status: 200, description: 'Statement PDF' })
-  @ApiResponse({ status: 400, description: "Invalid month (YYYY-MM)" })
-  async statement(
-    @Param('month') month: string,
+  /**
+   * GET /api/v1/reports/aging
+   *
+   * Receivables aging for the authenticated supplier: unreleased milestone
+   * value bucketed by days past due, grouped by settlement token.
+   */
+  @Get('aging')
+  @ApiOperation({
+    summary: 'Receivables aging for the calling supplier',
+    description:
+      'Buckets the value of PENDING and PROOF_SUBMITTED milestones that are past their due date ' +
+      'into 0-30, 31-60, 61-90 and 90+ day buckets, grouped by token. ' +
+      'Only shipments where the caller is the supplier are included. ' +
+      'Pass includeUsdTotal=true for a USD valuation of each token total.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Aging buckets per token (empty byToken when nothing is past due)',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  getAgingReport(
+    @Query() query: AgingReportQueryDto,
     @CurrentUser() user: AuthenticatedUser,
-    @Res() res: Response,
   ) {
-    const pdf = await this.reports.getStatementPdf(user.stellarAddress, month);
-    res.set({
-      'Content-Type': 'application/pdf',
-      'Content-Disposition': `attachment; filename="statement-${month}.pdf"`,
-      'Content-Length': pdf.length,
-      'Cache-Control': 'private, no-store',
+    return this.reports.getAgingReport(user.stellarAddress ?? user.sub, {
+      includeUsdTotal: query.includeUsdTotal === true,
     });
-    res.end(pdf);
   }
 }

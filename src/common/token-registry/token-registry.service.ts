@@ -17,6 +17,8 @@ export interface TokenInfo {
   minValue?: string;
   /** Maximum shipment value in the token's smallest unit (#304). Unset = no ceiling. */
   maxValue?: string;
+  /** ISO timestamp when an admin deprecated the token (#654). Unset = active. */
+  deprecatedAt?: string;
 }
 
 export type TokenEntry = {
@@ -27,6 +29,8 @@ export type TokenEntry = {
   displayName: string;
   minValue: string | null;
   maxValue: string | null;
+  deprecated: boolean;
+  deprecatedAt: string | null;
 };
 
 // Tokens pre-populated at compile time. Both USDC and EURC use 7 decimal
@@ -146,7 +150,39 @@ export class TokenRegistryService {
       displayName: token.displayName ?? token.symbol,
       minValue: token.minValue ?? null,
       maxValue: token.maxValue ?? null,
+      deprecated: token.deprecatedAt != null,
+      deprecatedAt: token.deprecatedAt ?? null,
     };
+  }
+
+  /**
+   * Marks a token deprecated (or clears the flag). Deprecated tokens are
+   * rejected for new shipments; existing shipments are unaffected (#654).
+   */
+  async setDeprecated(address: string, deprecated: boolean, actor: { id?: string; address: string }) {
+    const normalized = address?.toUpperCase();
+    const existing = this.registry.get(normalized);
+    if (!existing) {
+      throw new NotFoundException(`Token address ${normalized} not found in registry`);
+    }
+
+    const next: TokenInfo = { ...existing };
+    if (deprecated) next.deprecatedAt = existing.deprecatedAt ?? new Date().toISOString();
+    else delete next.deprecatedAt;
+
+    this.registry.set(normalized, next);
+    await this.redis.del('token_registry:list');
+
+    await this.auditLog.record({
+      actorId: actor.id,
+      actorAddress: actor.address,
+      action: deprecated ? 'TOKEN_DEPRECATED' : 'TOKEN_UNDEPRECATED',
+      resourceType: 'TokenRegistry',
+      resourceId: normalized,
+      metadata: { before: existing.deprecatedAt ?? null, after: next.deprecatedAt ?? null },
+    });
+
+    return this.toEntry(normalized, next);
   }
 
   private assertBoundsOrdered(minValue?: string, maxValue?: string) {

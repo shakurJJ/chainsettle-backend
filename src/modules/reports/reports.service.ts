@@ -1,195 +1,237 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { MilestoneStatus } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { RedisService } from '../../common/redis/redis.service';
+import { FxRateService } from '../../common/fx/fx-rate.service';
 
-export const MONTH_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/;
-const PAST_MONTH_TTL_S = 7 * 24 * 60 * 60;
-const CURRENT_MONTH_TTL_S = 15 * 60;
+/** Age buckets, in days past the milestone's due date. */
+export const AGING_BUCKETS = ['0-30', '31-60', '61-90', '90+'] as const;
+export type AgingBucket = (typeof AGING_BUCKETS)[number];
 
-export interface StatementLine {
-  date: Date;
-  type: 'SHIPMENT_CREATED' | 'PAYMENT_RELEASED' | 'REFUND';
-  role: 'BUYER' | 'SUPPLIER';
-  shipmentId: string;
-  amount: bigint;
-  token: string;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/** Milestone states whose value is still owed to the supplier. */
+const UNRELEASED_STATUSES = [MilestoneStatus.PENDING, MilestoneStatus.PROOF_SUBMITTED];
+
+export interface AgingBucketAmount {
+  /** Human-readable token amount, e.g. "1234.5000000". */
+  amount: string;
+  /** Amount in the token's smallest unit (stroops). */
+  valueRaw: string;
+  milestoneCount: number;
 }
 
-export interface StatementData {
-  month: string;
-  address: string;
-  lines: StatementLine[];
-  totals: {
-    shipmentsCreated: number;
-    shipmentVolume: bigint;
-    paymentsReleased: bigint;
-    refunds: bigint;
+export interface TokenAging {
+  tokenAddress: string;
+  tokenSymbol: string;
+  tokenDecimals: number;
+  buckets: Record<AgingBucket, AgingBucketAmount>;
+  /** Sum of all four buckets. */
+  total: AgingBucketAmount;
+  /** USD value of `total`; null unless includeUsdTotal was requested and a rate is cached. */
+  totalUsd: number | null;
+}
+
+export interface AgingReport {
+  supplierAddress: string;
+  asOf: string;
+  buckets: readonly AgingBucket[];
+  byToken: TokenAging[];
+  /** USD value of every token total; null unless includeUsdTotal was requested. */
+  totalUsd: number | null;
+  /** False when a token was left out of the USD total because it has no cached FX rate. */
+  usdComplete: boolean;
+}
+
+/**
+ * Maps days past due onto an aging bucket. Anything not yet due (negative age)
+ * is not a receivable and returns null.
+ */
+export function bucketForAgeDays(ageDays: number): AgingBucket | null {
+  if (!Number.isFinite(ageDays) || ageDays < 0) return null;
+  if (ageDays <= 30) return '0-30';
+  if (ageDays <= 60) return '31-60';
+  if (ageDays <= 90) return '61-90';
+  return '90+';
+}
+
+function emptyBucket(): AgingBucketAmount {
+  return { amount: '', valueRaw: '0', milestoneCount: 0 };
+}
+
+function emptyBuckets(): Record<AgingBucket, AgingBucketAmount> {
+  return {
+    '0-30': emptyBucket(),
+    '31-60': emptyBucket(),
+    '61-90': emptyBucket(),
+    '90+': emptyBucket(),
   };
 }
 
+/** Exact raw-units → human amount, without floating-point rounding. */
+export function formatRawAmount(raw: bigint, decimals: number): string {
+  const negative = raw < 0n;
+  const abs = negative ? -raw : raw;
+  const base = 10n ** BigInt(decimals);
+  const whole = abs / base;
+  const fraction =
+    decimals === 0
+      ? ''
+      : (abs % base)
+          .toString()
+          .padStart(decimals, '0')
+          .replace(/0+$/, '');
+  return `${negative ? '-' : ''}${whole}${fraction ? `.${fraction}` : ''}`;
+}
+
+function round(value: number, dp = 2): number {
+  const factor = 10 ** dp;
+  return Math.round(value * factor) / factor;
+}
+
+/**
+ * Receivables aging for suppliers (#659): unreleased (PENDING / PROOF_SUBMITTED)
+ * milestone value bucketed by how long it has been past its due date, grouped
+ * by settlement token.
+ *
+ * Only the caller's own shipments are read — the supplier address always comes
+ * from the authenticated user, never from a request parameter.
+ */
 @Injectable()
 export class ReportsService {
-  private readonly logger = new Logger(ReportsService.name);
-
   constructor(
     private readonly prisma: PrismaService,
-    private readonly redis: RedisService,
+    private readonly fxRate: FxRateService,
   ) {}
 
-  static monthRange(month: string): { start: Date; end: Date } {
-    const m = MONTH_PATTERN.exec(month);
-    if (!m) throw new BadRequestException('month must be in YYYY-MM format');
-    const year = Number(m[1]);
-    const mon = Number(m[2]) - 1;
-    const start = new Date(Date.UTC(year, mon, 1));
-    if (start.getTime() > Date.now()) {
-      throw new BadRequestException('month must not be in the future');
-    }
-    return { start, end: new Date(Date.UTC(year, mon + 1, 1)) };
-  }
+  async getAgingReport(
+    supplierAddress: string,
+    options: { includeUsdTotal?: boolean; asOf?: Date } = {},
+  ): Promise<AgingReport> {
+    const asOf = options.asOf ?? new Date();
+    const includeUsdTotal = options.includeUsdTotal === true;
 
-  /** Aggregates the caller's activity as buyer and supplier for the month. */
-  async buildStatement(address: string, month: string): Promise<StatementData> {
-    const { start, end } = ReportsService.monthRange(month);
-    const db = this.prisma.jobs;
-    const party = { OR: [{ buyerAddress: address }, { supplierAddress: address }] };
-    const roleOf = (s: { buyerAddress: string }) =>
-      (s.buyerAddress === address ? 'BUYER' : 'SUPPLIER') as StatementLine['role'];
-
-    const [created, released, cancelled] = await Promise.all([
-      db.shipment.findMany({
-        where: { ...party, createdAt: { gte: start, lt: end } },
-        select: { id: true, buyerAddress: true, totalAmount: true, tokenSymbol: true, createdAt: true },
-      }),
-      db.milestone.findMany({
-        where: {
-          confirmedAt: { gte: start, lt: end },
-          paymentReleased: { not: null },
-          shipment: party,
+    const milestones = await this.prisma.read.milestone.findMany({
+      where: {
+        status: { in: UNRELEASED_STATUSES },
+        deletedAt: null,
+        dueAt: { lt: asOf },
+        shipment: {
+          supplierAddress,
+          isDraft: false,
         },
-        select: {
-          shipmentId: true,
-          paymentReleased: true,
-          confirmedAt: true,
-          shipment: { select: { buyerAddress: true, tokenSymbol: true } },
-        },
-      }),
-      db.shipment.findMany({
-        where: { ...party, cancelledAt: { gte: start, lt: end } },
-        select: {
-          id: true,
-          buyerAddress: true,
-          totalAmount: true,
-          releasedAmount: true,
-          tokenSymbol: true,
-          cancelledAt: true,
-        },
-      }),
-    ]);
-
-    const lines: StatementLine[] = [
-      ...created.map((s) => ({
-        date: s.createdAt,
-        type: 'SHIPMENT_CREATED' as const,
-        role: roleOf(s),
-        shipmentId: s.id,
-        amount: s.totalAmount,
-        token: s.tokenSymbol,
-      })),
-      ...released.map((m) => ({
-        date: m.confirmedAt!,
-        type: 'PAYMENT_RELEASED' as const,
-        role: roleOf(m.shipment),
-        shipmentId: m.shipmentId,
-        amount: m.paymentReleased!,
-        token: m.shipment.tokenSymbol,
-      })),
-      ...cancelled.map((s) => ({
-        date: s.cancelledAt!,
-        type: 'REFUND' as const,
-        role: roleOf(s),
-        shipmentId: s.id,
-        amount: s.totalAmount - s.releasedAmount,
-        token: s.tokenSymbol,
-      })),
-    ].sort((a, b) => a.date.getTime() - b.date.getTime());
-
-    const sum = (type: StatementLine['type']) =>
-      lines.filter((l) => l.type === type).reduce((acc, l) => acc + l.amount, 0n);
-
-    return {
-      month,
-      address,
-      lines,
-      totals: {
-        shipmentsCreated: created.length,
-        shipmentVolume: sum('SHIPMENT_CREATED'),
-        paymentsReleased: sum('PAYMENT_RELEASED'),
-        refunds: sum('REFUND'),
       },
+      select: {
+        dueAt: true,
+        paymentPercent: true,
+        shipment: {
+          select: {
+            totalAmount: true,
+            tokenAddress: true,
+            tokenSymbol: true,
+            tokenDecimals: true,
+          },
+        },
+      },
+    });
+
+    interface TokenAccumulator {
+      tokenAddress: string;
+      tokenSymbol: string;
+      tokenDecimals: number;
+      buckets: Record<AgingBucket, AgingBucketAmount>;
+    }
+
+    const byToken = new Map<string, TokenAccumulator>();
+
+    for (const milestone of milestones) {
+      if (!milestone.dueAt) continue;
+
+      const ageDays = Math.floor((asOf.getTime() - milestone.dueAt.getTime()) / MS_PER_DAY);
+      const bucket = bucketForAgeDays(ageDays);
+      if (!bucket) continue;
+
+      const { shipment } = milestone;
+      // Milestone value in raw token units; integer maths keeps it exact.
+      const valueRaw = (shipment.totalAmount * BigInt(milestone.paymentPercent)) / 100n;
+      if (valueRaw === 0n) continue;
+
+      let token = byToken.get(shipment.tokenAddress);
+      if (!token) {
+        token = {
+          tokenAddress: shipment.tokenAddress,
+          tokenSymbol: shipment.tokenSymbol,
+          tokenDecimals: shipment.tokenDecimals,
+          buckets: emptyBuckets(),
+        };
+        byToken.set(shipment.tokenAddress, token);
+      }
+
+      const target = token.buckets[bucket];
+      target.valueRaw = (BigInt(target.valueRaw) + valueRaw).toString();
+      target.milestoneCount += 1;
+    }
+
+    const report: AgingReport = {
+      supplierAddress,
+      asOf: asOf.toISOString(),
+      buckets: AGING_BUCKETS,
+      byToken: [],
+      totalUsd: includeUsdTotal ? 0 : null,
+      usdComplete: true,
     };
-  }
 
-  /** Returns the statement PDF, cached per user and month. */
-  async getStatementPdf(address: string, month: string): Promise<Buffer> {
-    ReportsService.monthRange(month);
-    const key = `chainsettle:statements:${address}:${month}`;
-    const cached = await this.redis.get(key).catch(() => null);
-    if (cached) return Buffer.from(cached, 'base64');
+    let totalUsd = 0;
 
-    const pdf = await this.renderPdf(await this.buildStatement(address, month));
+    const tokens = [...byToken.values()].sort((a, b) =>
+      a.tokenSymbol.localeCompare(b.tokenSymbol),
+    );
 
-    const now = new Date();
-    const currentMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-    const ttl = month === currentMonth ? CURRENT_MONTH_TTL_S : PAST_MONTH_TTL_S;
-    await this.redis.set(key, pdf.toString('base64'), ttl).catch((err) => {
-      this.logger.warn(`Failed to cache statement ${key}: ${err.message}`);
-    });
-    return pdf;
-  }
+    for (const token of tokens) {
+      const buckets = emptyBuckets();
+      let totalRaw = 0n;
+      let milestoneCount = 0;
 
-  private formatAmount(amount: bigint, decimals = 7): string {
-    const neg = amount < 0n;
-    const abs = neg ? -amount : amount;
-    const base = 10n ** BigInt(decimals);
-    const frac = (abs % base).toString().padStart(decimals, '0').replace(/0+$/, '');
-    return `${neg ? '-' : ''}${abs / base}${frac ? `.${frac}` : ''}`;
-  }
-
-  renderPdf(data: StatementData): Promise<Buffer> {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const PDFDocument = require('pdfkit');
-    const doc = new PDFDocument({ margin: 40, size: 'A4' });
-    const chunks: Buffer[] = [];
-    return new Promise((resolve, reject) => {
-      doc.on('data', (c: Buffer) => chunks.push(c));
-      doc.on('end', () => resolve(Buffer.concat(chunks)));
-      doc.on('error', reject);
-
-      doc.fontSize(18).text('ChainSettle — Monthly Account Statement');
-      doc.moveDown(0.5).fontSize(10);
-      doc.text(`Account: ${data.address}`);
-      doc.text(`Period: ${data.month}`);
-      doc.text(`Generated: ${new Date().toISOString()}`);
-
-      doc.moveDown().fontSize(12).text('Summary');
-      doc.fontSize(10);
-      doc.text(`Shipments created: ${data.totals.shipmentsCreated}`);
-      doc.text(`Shipment volume: ${this.formatAmount(data.totals.shipmentVolume)}`);
-      doc.text(`Payments released: ${this.formatAmount(data.totals.paymentsReleased)}`);
-      doc.text(`Refunds: ${this.formatAmount(data.totals.refunds)}`);
-
-      doc.moveDown().fontSize(12).text('Activity');
-      doc.fontSize(9);
-      if (data.lines.length === 0) {
-        doc.text('No activity this month.');
+      for (const bucket of AGING_BUCKETS) {
+        const value = BigInt(token.buckets[bucket].valueRaw);
+        milestoneCount += token.buckets[bucket].milestoneCount;
+        totalRaw += value;
+        buckets[bucket] = {
+          amount: formatRawAmount(value, token.tokenDecimals),
+          valueRaw: value.toString(),
+          milestoneCount: token.buckets[bucket].milestoneCount,
+        };
       }
-      for (const l of data.lines) {
-        doc.text(
-          `${l.date.toISOString().slice(0, 10)}  ${l.type.padEnd(17)} ${l.role.padEnd(9)} ${l.shipmentId}  ${this.formatAmount(l.amount)} ${l.token}`,
-        );
+
+      let totalUsdForToken: number | null = null;
+      if (includeUsdTotal) {
+        const rate = await this.fxRate.getUsdRate(token.tokenSymbol);
+        if (rate) {
+          const human = Number(totalRaw) / 10 ** token.tokenDecimals;
+          totalUsdForToken = round(human * rate.rate);
+          totalUsd += totalUsdForToken;
+        } else {
+          report.usdComplete = false;
+        }
       }
-      doc.end();
-    });
+
+      report.byToken.push({
+        tokenAddress: token.tokenAddress,
+        tokenSymbol: token.tokenSymbol,
+        tokenDecimals: token.tokenDecimals,
+        buckets,
+        total: {
+          amount: formatRawAmount(totalRaw, token.tokenDecimals),
+          valueRaw: totalRaw.toString(),
+          milestoneCount,
+        },
+        totalUsd: totalUsdForToken,
+      });
+    }
+
+    if (includeUsdTotal) {
+      report.totalUsd = round(totalUsd);
+    }
+
+    return report;
   }
 }

@@ -1,4 +1,12 @@
-import { Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnApplicationBootstrap,
+  OnModuleDestroy,
+  OnModuleInit,
+  Optional,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   Networks,
@@ -33,7 +41,7 @@ import { RpcPool, parseUrlList } from './rpc-pool';
  * by the user's wallet (Freighter) in the frontend.
  */
 @Injectable()
-export class StellarService implements OnModuleInit, OnModuleDestroy {
+export class StellarService implements OnModuleInit, OnModuleDestroy, OnApplicationBootstrap {
   private readonly logger = new Logger(StellarService.name);
 
   private rpcPool: RpcPool<SorobanRpc.Server>;
@@ -42,6 +50,7 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
   private network: string;
   private networkPassphrase: string;
   private contractId: string;
+  private contractWasmHash: string | null = null;
 
   constructor(
     private readonly config: ConfigService,
@@ -125,6 +134,44 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
    *
    * @remarks Does not make any network calls.
    */
+  /**
+   * Verifies the configured contract runs the expected WASM (#648). When
+   * `EXPECTED_CONTRACT_WASM_HASH` is set and the on-chain hash differs (or
+   * cannot be fetched), logs the mismatch and exits the process.
+   */
+  async onApplicationBootstrap() {
+    const expected = this.config.get<string>('EXPECTED_CONTRACT_WASM_HASH')?.trim().toLowerCase();
+    try {
+      this.contractWasmHash = await this.fetchContractWasmHash();
+    } catch (err) {
+      this.logger.warn(`Could not fetch contract WASM hash: ${(err as Error).message}`);
+    }
+    if (!expected) return;
+    if (this.contractWasmHash !== expected) {
+      this.logger.error(
+        `Contract WASM hash mismatch for ${this.contractId}: expected ${expected}, got ${this.contractWasmHash ?? 'unavailable'}`,
+      );
+      process.exit(1);
+    }
+    this.logger.log(`Contract WASM hash verified: ${expected}`);
+  }
+
+  /** Reads the contract instance ledger entry and returns its WASM hash (hex). */
+  async fetchContractWasmHash(): Promise<string | null> {
+    const key = new Contract(this.contractId).getFootprint();
+    const res = await this.rpcClient.getLedgerEntries(key);
+    const entry = res.entries?.[0];
+    if (!entry) return null;
+    const executable = entry.val.contractData().val().instance().executable();
+    if (executable.switch() !== xdr.ContractExecutableType.contractExecutableWasm()) return null;
+    return executable.wasmHash().toString('hex');
+  }
+
+  /** WASM hash of the deployed contract fetched at startup, or null. */
+  getContractWasmHash(): string | null {
+    return this.contractWasmHash;
+  }
+
   onModuleDestroy() {
     if (this.healthTimer) clearInterval(this.healthTimer);
   }

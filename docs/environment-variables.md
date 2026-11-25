@@ -89,3 +89,15 @@ provider rather than committed to `.env`:
 
 See [deployment.md](./deployment.md) for production setup and the
 [README](../README.md) for local development.
+
+## Fee sponsorship, dev helpers and monitoring
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FEE_SPONSOR_SECRET_KEY` | — | Secret key of the platform account that pays fee-bumps for `POST /chain/submit` with `sponsor: true`. Sponsorship is disabled when unset. Never logged. |
+| `FEE_SPONSOR_DAILY_CAP_STROOPS` | `10000000` | Maximum fees sponsored per user per UTC day (stroops). |
+| `FRIENDBOT_URL` | network default | Override the Friendbot URL used by `POST /dev/fund` (testnet/futurenet only). |
+| `DEV_FUND_RATE_LIMIT_SECONDS` | `3600` | Minimum interval between `POST /dev/fund` calls for the same address. |
+| `ESCROW_METRICS_REFRESH_MS` | `60000` | Refresh interval for `chainsettle_escrow_locked_amount`. |
+| `CONTRACT_TTL_CHECK_INTERVAL_MS` | `3600000` | Interval of the Soroban storage TTL check. |
+| `CONTRACT_TTL_ALERT_THRESHOLD_LEDGERS` | `120960` | Alert when an entry has fewer ledgers than this before archival. |

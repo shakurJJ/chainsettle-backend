@@ -13,7 +13,7 @@ import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
 import { randomUUID } from "crypto";
 import { Keypair } from "@stellar/stellar-sdk";
-import { UserRole, ShipmentStatus } from "@prisma/client";
+import { UserRole, ShipmentStatus, RoleRequestStatus } from "@prisma/client";
 import { PrismaService } from "../../common/prisma/prisma.service";
 import { RedisService } from "../../common/redis/redis.service";
 import { IpfsService } from "../../common/ipfs/ipfs.service";
@@ -39,6 +39,8 @@ import { maskIpAddress } from "../../common/utils/ip.util";
  *
  * NOTE: Full signature verification requires the Stellar SDK's keypair.verify().
  */
+const ADMIN_ROLE_REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -921,6 +923,106 @@ export class AuthService {
     });
 
     return this.getProfile(id);
+  }
+
+  /**
+   * Role change entry point for PATCH /admin/users/:id/role (#655).
+   * Promotions to ADMIN create a pending request that a different admin must
+   * approve within 24 hours; all other role changes apply immediately.
+   */
+  async requestUserRoleChange(
+    id: string,
+    callerId: string,
+    callerAddress: string,
+    newRole: UserRole,
+  ) {
+    if (newRole !== UserRole.ADMIN) {
+      return this.updateUserRole(id, callerId, callerAddress, newRole);
+    }
+
+    const user = await this.prisma.user.findUnique({ where: { id } });
+    if (!user) throw new NotFoundException("User not found");
+    if (user.role === UserRole.ADMIN) {
+      throw new ConflictException("User is already an admin");
+    }
+
+    const existing = await this.prisma.adminRoleRequest.findFirst({
+      where: { targetUserId: id, status: RoleRequestStatus.PENDING, expiresAt: { gt: new Date() } },
+    });
+    if (existing) return { pending: true, request: existing };
+
+    const request = await this.prisma.adminRoleRequest.create({
+      data: {
+        targetUserId: id,
+        requestedBy: callerId,
+        expiresAt: new Date(Date.now() + ADMIN_ROLE_REQUEST_TTL_MS),
+      },
+    });
+
+    await this.auditLog.record({
+      actorId: callerId,
+      actorAddress: callerAddress,
+      action: "ADMIN_ROLE_REQUESTED",
+      resourceType: "AdminRoleRequest",
+      resourceId: request.id,
+      metadata: { targetUserId: id, from: user.role, expiresAt: request.expiresAt.toISOString() },
+    });
+
+    return { pending: true, request };
+  }
+
+  /** POST /admin/role-requests/:id/approve (#655). */
+  async approveAdminRoleRequest(requestId: string, callerId: string, callerAddress: string) {
+    const request = await this.prisma.adminRoleRequest.findUnique({ where: { id: requestId } });
+    if (!request) throw new NotFoundException("Role request not found");
+
+    if (request.status !== RoleRequestStatus.PENDING) {
+      throw new ConflictException(`Role request is ${request.status.toLowerCase()}`);
+    }
+    if (request.requestedBy === callerId) {
+      await this.auditLog.record({
+        actorId: callerId,
+        actorAddress: callerAddress,
+        action: "ADMIN_ROLE_APPROVAL_REJECTED",
+        resourceType: "AdminRoleRequest",
+        resourceId: requestId,
+        metadata: { reason: "self_approval" },
+      });
+      throw new ForbiddenException("The requester cannot approve their own request");
+    }
+    if (request.expiresAt.getTime() <= Date.now()) {
+      await this.prisma.adminRoleRequest.update({
+        where: { id: requestId },
+        data: { status: RoleRequestStatus.EXPIRED },
+      });
+      await this.auditLog.record({
+        actorId: callerId,
+        actorAddress: callerAddress,
+        action: "ADMIN_ROLE_REQUEST_EXPIRED",
+        resourceType: "AdminRoleRequest",
+        resourceId: requestId,
+        metadata: { targetUserId: request.targetUserId },
+      });
+      throw new ConflictException("Role request has expired");
+    }
+
+    // Conditional update guards against two admins approving concurrently.
+    const { count } = await this.prisma.adminRoleRequest.updateMany({
+      where: { id: requestId, status: RoleRequestStatus.PENDING },
+      data: { status: RoleRequestStatus.APPROVED, approvedBy: callerId, approvedAt: new Date() },
+    });
+    if (count === 0) throw new ConflictException("Role request is no longer pending");
+
+    await this.auditLog.record({
+      actorId: callerId,
+      actorAddress: callerAddress,
+      action: "ADMIN_ROLE_APPROVED",
+      resourceType: "AdminRoleRequest",
+      resourceId: requestId,
+      metadata: { targetUserId: request.targetUserId, requestedBy: request.requestedBy },
+    });
+
+    return this.updateUserRole(request.targetUserId, callerId, callerAddress, UserRole.ADMIN);
   }
 
   async findAllUsers(filters: {

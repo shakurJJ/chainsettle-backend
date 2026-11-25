@@ -6,7 +6,14 @@ import { TerminusModule } from '@nestjs/terminus';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { envValidationSchema } from './config/env.validation';
 import { RolesGuard } from './common/guards/roles.guard';
+import { AdminIpAllowlistGuard } from './common/guards/admin-ip-allowlist.guard';
 import { GqlThrottlerGuard } from './common/guards/gql-throttler.guard';
+import { ImpersonationGuard } from './common/guards/impersonation.guard';
+import { DeprecationInterceptor } from './common/interceptors/deprecation.interceptor';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { ThrottlerExceptionFilter } from './common/filters/throttler-exception.filter';
+import { I18nModule } from './i18n/i18n.module';
+import { LocaleMiddleware } from './i18n/locale.middleware';
 
 import { PrismaModule } from './common/prisma/prisma.module';
 import { StellarModule } from './common/stellar/stellar.module';
@@ -33,6 +40,7 @@ import { AuditLogInterceptor } from './modules/audit-logs/audit-log.interceptor'
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { ChainModule } from './modules/chain/chain.module';
+import { DevModule } from './modules/dev/dev.module';
 import { KycModule } from './modules/kyc/kyc.module';
 import { ArbitersModule } from './modules/arbiters/arbiters.module';
 import { FeatureFlagsModule } from './modules/feature-flags/feature-flags.module';
@@ -42,6 +50,7 @@ import { AdminDashboardModule } from './modules/admin-dashboard/admin-dashboard.
 import { AdminDisputesModule } from './modules/admin-dashboard/admin-disputes.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { SettlementProposalsModule } from './modules/milestones/settlement-proposals.module';
+import { ReportsModule } from './modules/reports/reports.module';
 
 @Module({
   imports: [
@@ -83,6 +92,7 @@ import { SettlementProposalsModule } from './modules/milestones/settlement-propo
     TokenRegistryModule,
     MetricsModule,
     FxModule,
+    I18nModule,
 
     // Feature modules
     AuthModule,
@@ -96,6 +106,7 @@ import { SettlementProposalsModule } from './modules/milestones/settlement-propo
     AuditLogsModule,
     WebhooksModule,
     ChainModule,
+    DevModule,
     KycModule,
     ArbitersModule,
     InvitationsModule,
@@ -105,9 +116,14 @@ import { SettlementProposalsModule } from './modules/milestones/settlement-propo
     AdminDisputesModule,
     ReportsModule,
     SettlementProposalsModule,
+    ReportsModule,
   ],
   providers: [
     // Apply global throttler guard to REST and GraphQL (sets X-RateLimit-* on success and 429)
+    {
+      provide: APP_GUARD,
+      useClass: AdminIpAllowlistGuard,
+    },
     {
       provide: APP_GUARD,
       useClass: GqlThrottlerGuard,
