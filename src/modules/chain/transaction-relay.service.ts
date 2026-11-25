@@ -14,6 +14,7 @@ import {
 } from '@stellar/stellar-sdk';
 import { StellarService } from '../../common/stellar/stellar.service';
 import { NotificationsGateway } from '../notifications/notifications.gateway';
+import { FeeSponsorService } from './fee-sponsor.service';
 
 const MAX_SEND_RETRIES = 3;
 const POLL_INTERVAL_MS = 2_000;
@@ -32,9 +33,10 @@ export class TransactionRelayService {
   constructor(
     private readonly stellar: StellarService,
     private readonly gateway: NotificationsGateway,
+    private readonly feeSponsor: FeeSponsorService,
   ) {}
 
-  async submit(signedXdr: string, caller: { id: string; stellarAddress: string }) {
+  async submit(signedXdr: string, caller: { id: string; stellarAddress: string }, sponsor = false) {
     const tx = this.decode(signedXdr);
     const inner = tx instanceof FeeBumpTransaction ? tx.innerTransaction : tx;
 
@@ -49,14 +51,32 @@ export class TransactionRelayService {
       );
     }
 
-    const sent = await this.sendWithRetry(tx);
+    let sponsored: Awaited<ReturnType<FeeSponsorService['sponsor']>> | undefined;
+    if (sponsor) {
+      if (tx instanceof FeeBumpTransaction) {
+        throw new BadRequestException('Cannot sponsor a transaction that is already a fee bump');
+      }
+      sponsored = await this.feeSponsor.sponsor(inner, caller.id);
+    }
+
+    let sent: SorobanRpc.Api.SendTransactionResponse;
+    try {
+      sent = await this.sendWithRetry(sponsored?.tx ?? tx);
+    } catch (err) {
+      await sponsored?.release();
+      throw err;
+    }
+    if (sponsored) {
+      if (sent.status === 'ERROR') await sponsored.release();
+      else await this.feeSponsor.record(caller.id, sponsored.fee);
+    }
     if (sent.status === 'ERROR') {
       this.pushStatus(caller.id, sent.hash, 'FAILED', sent.errorResult?.toXDR('base64'));
       return { hash: sent.hash, status: 'FAILED' };
     }
 
     void this.trackFinalStatus(sent.hash, caller.id);
-    return { hash: sent.hash, status: sent.status };
+    return { hash: sent.hash, status: sent.status, sponsored: !!sponsored };
   }
 
   private decode(signedXdr: string): Transaction | FeeBumpTransaction {
