@@ -643,9 +643,10 @@ model AuditLog {
 model NotificationPreference {
   id              String   @id @default(uuid())
   userId          String   @unique
-  preferences     Json     // Record<NotificationType, channel flags including inApp, email, slack, sms, discord, push and telegram>
+  preferences     Json     // Record<NotificationType, channel flags including inApp, email, slack, sms, discord, teams, push and telegram>
   slackWebhookUrl String?  // Incoming Slack webhook URL; null disables Slack delivery
   discordWebhookUrl String? // Incoming Discord webhook URL; null disables Discord delivery
+  teamsWebhookUrl String?  // Incoming Microsoft Teams webhook URL; null disables Teams delivery
   telegramChatId   String?  @unique
   telegramLinkCodeHash String? @unique
   telegramLinkExpiresAt DateTime?
