@@ -212,6 +212,8 @@ Milestones may optionally have a `dueAt` timestamp. When the deadline passes wit
 - Buyer may approve or deny via `PATCH /extension-requests/:id`
 - If approved, `dueAt` is updated to the `proposedDueAt` value
 
+See [Milestone Extensions & Checklists](./milestone-extensions-and-checklists.md#deadline-extension-requests) for the full extension-request state diagram, who can act on each state, and example requests.
+
 ### Checklist Items (`MilestoneChecklistItem`)
 
 Buyers may define required proof items for a milestone (e.g., "Bill of Lading", "Certificate of Origin"):
@@ -219,6 +221,8 @@ Buyers may define required proof items for a milestone (e.g., "Bill of Lading", 
 - Created while milestone is `PENDING` via `POST /shipments/:id/milestones/:index/checklist`
 - Supplier/logistics checks off items when uploading proof
 - If `required: true` items remain incomplete, proof submission may be blocked (frontend validation)
+
+See [Milestone Extensions & Checklists](./milestone-extensions-and-checklists.md#checklist-items) for checklist item CRUD, how items relate to proof submission, and the notifications sent at each step.
 
 ### Settlement Proposals (`SettlementProposal`)
 
