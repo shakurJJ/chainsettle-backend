@@ -1,9 +1,10 @@
 import { IsIn, IsObject, IsOptional, IsString, IsUrl, ValidateIf, Matches } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 import { NotificationType } from '@prisma/client';
-import { DigestFrequency } from '../notifications.service';
+import { DigestFrequency, ReportFrequency } from '../notifications.service';
 
 const DIGEST_FREQUENCIES: DigestFrequency[] = ['instant', 'daily', 'weekly'];
+const REPORT_FREQUENCIES: ReportFrequency[] = ['off', 'weekly', 'monthly'];
 
 export class UpdatePreferencesDto {
   @ApiProperty({ required: false, example: { enabled: true, start: '22:00', end: '08:00', timezone: 'Africa/Lagos' } })
@@ -29,6 +30,16 @@ export class UpdatePreferencesDto {
   @IsOptional()
   @IsIn(DIGEST_FREQUENCIES)
   digestFrequency?: DigestFrequency;
+
+  @ApiProperty({
+    description:
+      'Opt-in cadence for the personal shipment report email. Use "off" to stop receiving it.',
+    enum: REPORT_FREQUENCIES,
+    required: false,
+  })
+  @IsOptional()
+  @IsIn(REPORT_FREQUENCIES)
+  reportFrequency?: ReportFrequency;
 
   @ApiProperty({
     description:

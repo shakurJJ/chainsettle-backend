@@ -97,11 +97,12 @@ export class NotificationsController {
     return this.notificationsService.sendTestNotification(userId);
   }
 
-  @Post('teams/test')
-  @Throttle({ default: { limit: 1, ttl: 5 * 60 * 1000 } })
-  @ApiOperation({ summary: 'Test the configured Microsoft Teams webhook' })
-  sendTeamsTestNotification(@CurrentUser('id') userId: string) {
-    return this.notificationsService.sendTeamsTestNotification(userId);
+  @Get(':id/deliveries')
+  @ApiOperation({
+    summary: 'Per-channel delivery log for a notification (owner or admin only)',
+  })
+  getDeliveries(@Param('id') id: string, @CurrentUser() user: { id: string; role?: string }) {
+    return this.notificationsService.getDeliveries(id, user);
   }
 
   @Get('digest-preview')

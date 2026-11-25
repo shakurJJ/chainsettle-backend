@@ -269,6 +269,26 @@ describe("NotificationsService — preferences", () => {
         }),
       );
     });
+
+    it("defaults reportFrequency to off and persists an opt-in", async () => {
+      const prisma = buildPrisma();
+      const service = await buildService(prisma);
+
+      expect(await service.getReportFrequency("user-1")).toBe("off");
+
+      await service.updatePreferences("user-1", { reportFrequency: "monthly" });
+
+      expect(prisma.notificationPreference.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId: "user-1" },
+          data: expect.objectContaining({
+            preferences: expect.objectContaining({
+              _meta: expect.objectContaining({ reportFrequency: "monthly" }),
+            }),
+          }),
+        }),
+      );
+    });
   });
 
   describe("grouped shipment notifications", () => {
@@ -776,6 +796,8 @@ describe("NotificationsService — snooze", () => {
       for (const t of ALL_TYPES) {
         expect(updatedPrefs[t].email).toBe(false);
       }
+      // Reports share the ALL unsubscribe link, so the opt-out must stick.
+      expect(updatedPrefs._meta.reportFrequency).toBe("off");
     });
 
     it('throws NotFoundException if user in token does not exist', async () => {

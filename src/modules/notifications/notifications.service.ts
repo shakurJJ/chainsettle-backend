@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 import * as fs from 'fs';
@@ -7,7 +7,7 @@ import * as crypto from 'crypto';
 import * as Handlebars from 'handlebars';
 import { WebPushService } from './web-push.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { NotificationType } from '@prisma/client';
+import { NotificationType, UserRole } from '@prisma/client';
 import { NotificationsGateway } from './notifications.gateway';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { PushNotificationService } from './push-notification.service';
@@ -15,6 +15,8 @@ import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 import { DEFAULT_LOCALE, I18nService } from '../../i18n/i18n.service';
 import { SmsProviderFactory } from '../../common/providers/sms.provider';
 import { TelegramService } from './telegram.service';
+
+const NOTIFICATION_DELIVERY_ERROR_MAX = 1_000;
 
 type ChannelPrefs = {
   inApp: boolean;
@@ -28,8 +30,12 @@ type ChannelPrefs = {
 };
 type PreferenceMap = Record<NotificationType, ChannelPrefs>;
 export type DigestFrequency = "instant" | "daily" | "weekly";
+export type ReportFrequency = "off" | "weekly" | "monthly";
 type StoredPreferences = PreferenceMap & {
-  _meta?: { digestFrequency?: DigestFrequency };
+  _meta?: {
+    digestFrequency?: DigestFrequency;
+    reportFrequency?: ReportFrequency;
+  };
   _quietHours?: {
     enabled: boolean;
     start: string;
@@ -48,6 +54,7 @@ type NotificationGroup = {
 };
 
 const DEFAULT_DIGEST_FREQUENCY: DigestFrequency = "daily";
+export const DEFAULT_REPORT_FREQUENCY: ReportFrequency = "off";
 
 // SMS is only allowed for these notification types
 export const SMS_ALLOWED_TYPES: NotificationType[] = [
@@ -181,7 +188,7 @@ export class NotificationsService {
       });
 
       if (!deliverAfter && emailEnabled && user.email) {
-        await this.sendEmail(
+        const emailError = await this.deliverEmail(
           user.email,
           title,
           message,
@@ -190,20 +197,24 @@ export class NotificationsService {
           data,
           user.locale ?? DEFAULT_LOCALE,
         );
-        await this.prisma.notification.update({
-          where: { id: notification.id },
-          data: { emailSent: true },
-        });
+        await this.recordDelivery(notification.id, 'EMAIL', emailError);
+        if (!emailError) {
+          await this.prisma.notification.update({
+            where: { id: notification.id },
+            data: { emailSent: true },
+          });
+        }
       }
 
       if (!deliverAfter && slackEnabled && slackWebhookUrl) {
-        await this.sendSlackMessage(
+        const slackError = await this.sendSlackMessage(
           slackWebhookUrl,
           type,
           title,
           message,
           data,
         );
+        await this.recordDelivery(notification.id, 'SLACK', slackError);
       }
 
       // Send SMS if enabled, user has verified phone, type is allowed, and rate limit not exceeded
@@ -332,7 +343,7 @@ export class NotificationsService {
 
       // Force email delivery regardless of digest preference when the user has an email
       if (user.email && !deliverAfter) {
-        await this.sendEmail(
+        const emailError = await this.deliverEmail(
           user.email,
           title,
           message,
@@ -341,10 +352,13 @@ export class NotificationsService {
           data,
           user.locale ?? DEFAULT_LOCALE,
         );
-        await this.prisma.notification.update({
-          where: { id: notification.id },
-          data: { emailSent: true },
-        });
+        await this.recordDelivery(notification.id, 'EMAIL', emailError);
+        if (!emailError) {
+          await this.prisma.notification.update({
+            where: { id: notification.id },
+            data: { emailSent: true },
+          });
+        }
       }
 
       this.gateway?.pushToUser(user.id, notification);
@@ -524,6 +538,9 @@ export class NotificationsService {
     if (dto.digestFrequency) {
       merged._meta = { ...current._meta, digestFrequency: dto.digestFrequency };
     }
+    if (dto.reportFrequency) {
+      merged._meta = { ...merged._meta, reportFrequency: dto.reportFrequency };
+    }
 
     const data: {
       preferences: StoredPreferences;
@@ -570,6 +587,17 @@ export class NotificationsService {
     return prefs._meta?.digestFrequency ?? DEFAULT_DIGEST_FREQUENCY;
   }
 
+  /**
+   * Resolves the caller's opt-in cadence for the personal shipment report.
+   * Missing values mean 'off': reports are strictly opt-in.
+   */
+  async getReportFrequency(userId: string): Promise<ReportFrequency> {
+    const prefs = (await this.getOrCreatePreferences(
+      userId,
+    )) as StoredPreferences;
+    return prefs._meta?.reportFrequency ?? DEFAULT_REPORT_FREQUENCY;
+  }
+
   async getPreferencesResponse(userId: string) {
     const { preferences, slackWebhookUrl, discordWebhookUrl, teamsWebhookUrl, telegramChatId } =
       await this.getOrCreatePreferenceRecord(userId);
@@ -585,6 +613,7 @@ export class NotificationsService {
     return {
       ...resolvedTypePreferences,
       digestFrequency: _meta?.digestFrequency ?? DEFAULT_DIGEST_FREQUENCY,
+      reportFrequency: _meta?.reportFrequency ?? DEFAULT_REPORT_FREQUENCY,
       quietHours: _quietHours ?? {
         enabled: false,
         start: "22:00",
@@ -714,6 +743,10 @@ export class NotificationsService {
         const existing = normalizeChannelPrefs(merged[notifType]);
         merged[notifType] = { ...existing, email: false };
       }
+      // The report email shares this unsubscribe link, so make the opt-out
+      // durable: re-enabling a single notification email must not quietly
+      // resume scheduled reports.
+      merged._meta = { ...merged._meta, reportFrequency: 'off' };
     } else {
       const notifType = type as NotificationType;
       const existing = normalizeChannelPrefs(merged[notifType]);
@@ -993,7 +1026,54 @@ export class NotificationsService {
     }
   }
 
+  /**
+   * Records a single channel delivery attempt (#635). `error` null = success.
+   * Never throws — logging must not break notification delivery.
+   */
+  private async recordDelivery(
+    notificationId: string,
+    channel: 'EMAIL' | 'SLACK' | 'IN_APP',
+    error: string | null,
+  ) {
+    try {
+      await this.prisma.notificationDelivery.create({
+        data: {
+          notificationId,
+          channel,
+          status: error ? 'FAILED' : 'SUCCESS',
+          error: error ? error.slice(0, NOTIFICATION_DELIVERY_ERROR_MAX) : null,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(`Failed to record ${channel} delivery for ${notificationId}: ${(err as Error).message}`);
+    }
+  }
+
+  /** GET /notifications/:id/deliveries — owner or admin only. */
+  async getDeliveries(notificationId: string, requester: { id: string; role?: string }) {
+    const notification = await this.prisma.notification.findUnique({
+      where: { id: notificationId },
+      select: { id: true, userId: true },
+    });
+    if (!notification) throw new NotFoundException('Notification not found');
+    if (notification.userId !== requester.id && requester.role !== UserRole.ADMIN) {
+      throw new ForbiddenException('Only the notification owner or an admin can view deliveries');
+    }
+    return this.prisma.notificationDelivery.findMany({
+      where: { notificationId },
+      orderBy: { attemptedAt: 'asc' },
+    });
+  }
+
+  /** Sends an email; resolves true on success, false otherwise. */
   async sendEmail(
+    ...args: Parameters<NotificationsService['deliverEmail']>
+  ): Promise<boolean> {
+    return (await this.deliverEmail(...args)) === null;
+  }
+
+  /** Sends an email; resolves null on success, or the error message on failure (#635). */
+  async deliverEmail(
     to: string,
     subject: string,
     text: string,
@@ -1002,13 +1082,13 @@ export class NotificationsService {
     data?: Record<string, any>,
     locale: string = DEFAULT_LOCALE,
     userId?: string,
-  ): Promise<boolean> {
+  ): Promise<string | null> {
     // Never send to addresses that hard-bounced or complained (#434).
     if (await this.isEmailSuppressed(to)) {
       this.logger.warn(
         `Email to ${to} skipped — address is on the suppression list`,
       );
-      return false;
+      return 'Address is on the email suppression list';
     }
     try {
       let resolvedUserId = userId;
@@ -1068,10 +1148,10 @@ export class NotificationsService {
         ...(headers ? { headers } : {}),
       });
       this.logger.log(`Email sent to ${to}: ${localizedSubject}`);
-      return true;
+      return null;
     } catch (error) {
       this.logger.error(`Email failed to ${to}`, error.message);
-      return false;
+      return String(error?.message ?? error);
     }
   }
 
@@ -1093,6 +1173,7 @@ export class NotificationsService {
   /**
    * Posts a Slack Incoming Webhook payload for a notification event.
    * Failures are logged and never throw — Slack must not break in-app/email.
+   * Returns null on success, or the error message on failure.
    */
   async sendSlackMessage(
     webhookUrl: string,
@@ -1157,18 +1238,19 @@ ${type}`,
 
       if (!response.ok) {
         const body = await response.text().catch(() => "");
-        this.logger.error(
-          `Slack webhook failed (${response.status}): ${body || response.statusText}`,
-        );
-        return;
+        const msg = `Slack webhook failed (${response.status}): ${body || response.statusText}`;
+        this.logger.error(msg);
+        return msg;
       }
 
       this.logger.log(`Slack notification sent for ${type}: ${title}`);
+      return null;
     } catch (error) {
       this.logger.error(
         `Slack notification failed for ${type}`,
         (error as Error).message,
       );
+      return (error as Error).message;
     }
   }
 
