@@ -12,6 +12,11 @@
  *      `migration.sql` must exist in the working tree that is not already in
  *      HEAD (i.e. a newly added migration).
  *
+ * Which changes are inspected:
+ *   - pre-commit (default): the staged changes (`git diff --cached`).
+ *   - CI: set PRISMA_CHECK_BASE (e.g. `origin/main`) to inspect every change
+ *     on the branch since it diverged from that ref (`git diff BASE...HEAD`).
+ *
  * Exit codes:
  *   0 – schema unchanged, or schema changed with a new migration.
  *   1 – schema changed without a new migration (or git could not be read).

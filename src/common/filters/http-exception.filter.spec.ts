@@ -1,12 +1,25 @@
 import { ArgumentsHost, HttpException, HttpStatus } from '@nestjs/common';
 import { I18nService } from '../../i18n/i18n.service';
-import { HttpExceptionFilter, buildErrorBody } from './http-exception.filter';
+import {
+  HttpExceptionFilter,
+  buildErrorBody,
+  isStatementTimeout,
+  PROBLEM_JSON,
+  DB_STATEMENT_TIMEOUT_CODE,
+} from './http-exception.filter';
 
 function createHost(request: Record<string, unknown>) {
-  const response = {
+  // The filter writes `res.status(s).type(PROBLEM_JSON).send(JSON.stringify(body))`;
+  // `json` receives the parsed body so assertions can inspect it directly.
+  const response: Record<string, jest.Mock> = {
     status: jest.fn().mockReturnThis(),
+    type: jest.fn().mockReturnThis(),
     json: jest.fn().mockReturnThis(),
   };
+  response.send = jest.fn((payload: string) => {
+    response.json(JSON.parse(payload));
+    return response;
+  });
   const host = {
     switchToHttp: () => ({
       getRequest: () => request,
@@ -21,6 +34,12 @@ describe('buildErrorBody', () => {
     const result = buildErrorBody(400, '/api/shipments', 'Invalid request');
 
     expect(result).toEqual({
+      type: 'https://chainsettle.dev/problems/bad-request',
+      title: 'Bad Request',
+      status: 400,
+      detail: 'Invalid request',
+      instance: '/api/shipments',
+      code: 'BAD_REQUEST',
       success: false,
       statusCode: 400,
       timestamp: expect.any(String),
@@ -35,6 +54,40 @@ describe('buildErrorBody', () => {
     const result = buildErrorBody(404, '/api/shipments/123', message);
 
     expect(result.message).toEqual(message);
+  });
+
+  it('prefers an explicit code, then a code on the message, then the status name', () => {
+    expect(buildErrorBody(503, '/x', 'timeout', 'DB_STATEMENT_TIMEOUT').code).toBe('DB_STATEMENT_TIMEOUT');
+    expect(buildErrorBody(409, '/x', { code: 'SHIPMENT_EXISTS', message: 'dup' }).code).toBe('SHIPMENT_EXISTS');
+    expect(buildErrorBody(404, '/x', 'gone').code).toBe('NOT_FOUND');
+  });
+
+  it('derives detail from string, array and nested message', () => {
+    expect(buildErrorBody(400, '/x', ['a is required', 'b is required']).detail).toBe(
+      'a is required; b is required',
+    );
+    expect(buildErrorBody(400, '/x', { message: 'Validation failed' }).detail).toBe('Validation failed');
+    expect(buildErrorBody(400, '/x', undefined).detail).toBe('');
+  });
+
+  it('builds a kebab-case problem type URI from the code', () => {
+    expect(buildErrorBody(429, '/x', 'slow down').type).toBe(
+      'https://chainsettle.dev/problems/too-many-requests',
+    );
+  });
+});
+
+describe('isStatementTimeout', () => {
+  it('detects SQLSTATE 57014 and the Postgres cancel message', () => {
+    expect(isStatementTimeout({ code: '57014' })).toBe(true);
+    expect(isStatementTimeout({ meta: { code: '57014' } })).toBe(true);
+    expect(isStatementTimeout(new Error('ERROR: canceling statement due to statement timeout'))).toBe(true);
+  });
+
+  it('ignores other errors', () => {
+    expect(isStatementTimeout(null)).toBe(false);
+    expect(isStatementTimeout(new Error('connection refused'))).toBe(false);
+    expect(isStatementTimeout({ code: 'P2002' })).toBe(false);
   });
 });
 
@@ -59,6 +112,12 @@ describe('HttpExceptionFilter', () => {
 
       expect(response.status).toHaveBeenCalledWith(HttpStatus.NOT_FOUND);
       expect(response.json).toHaveBeenCalledWith({
+        type: 'https://chainsettle.dev/problems/not-found',
+        title: 'Not Found',
+        status: 404,
+        detail: 'Not Found',
+        instance: '/api/shipments',
+        code: 'NOT_FOUND',
         success: false,
         statusCode: 404,
         timestamp: expect.any(String),
@@ -81,12 +140,77 @@ describe('HttpExceptionFilter', () => {
 
       expect(response.status).toHaveBeenCalledWith(HttpStatus.BAD_REQUEST);
       expect(response.json).toHaveBeenCalledWith({
+        type: 'https://chainsettle.dev/problems/bad-request',
+        title: 'Bad Request',
+        status: 400,
+        detail: 'Validation failed',
+        instance: '/api/test',
+        code: 'BAD_REQUEST',
         success: false,
         statusCode: 400,
         timestamp: expect.any(String),
         path: '/api/test',
-        message: { message: 'Validation failed', errors: ['field1', 'field2'] },
+        // Translation reduces an object response to its message.
+        message: 'Validation failed',
       });
+    });
+  });
+
+  describe('problem+json response', () => {
+    it('sends the body as application/problem+json', () => {
+      const { host, response } = createHost({ url: '/api/shipments', headers: {} });
+
+      filter.catch(new HttpException('Not Found', HttpStatus.NOT_FOUND), host);
+
+      expect(response.type).toHaveBeenCalledWith(PROBLEM_JSON);
+      expect(response.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('preserves an error code supplied by the exception', () => {
+      const { host, response } = createHost({ url: '/api/shipments', headers: {} });
+
+      filter.catch(
+        new HttpException({ code: 'SHIPMENT_NOT_FOUND', message: 'Shipment not found' }, HttpStatus.NOT_FOUND),
+        host,
+      );
+
+      expect(response.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 404,
+          code: 'SHIPMENT_NOT_FOUND',
+          type: 'https://chainsettle.dev/problems/shipment-not-found',
+        }),
+      );
+    });
+  });
+
+  describe('statement timeout handling', () => {
+    it('maps a Postgres statement timeout to 503 DB_STATEMENT_TIMEOUT', () => {
+      const { host, response } = createHost({ url: '/api/shipments/export', method: 'GET', headers: {} });
+
+      filter.catch(new Error('canceling statement due to statement timeout'), host);
+
+      expect(response.status).toHaveBeenCalledWith(HttpStatus.SERVICE_UNAVAILABLE);
+      expect(response.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 503,
+          statusCode: 503,
+          code: DB_STATEMENT_TIMEOUT_CODE,
+          title: 'Service Unavailable',
+          instance: '/api/shipments/export',
+        }),
+      );
+    });
+
+    it('maps a Prisma error carrying SQLSTATE 57014 to 503', () => {
+      const { host, response } = createHost({ url: '/api/search', method: 'GET', headers: {} });
+
+      filter.catch({ code: '57014', message: 'query cancelled' }, host);
+
+      expect(response.status).toHaveBeenCalledWith(HttpStatus.SERVICE_UNAVAILABLE);
+      expect(response.json).toHaveBeenCalledWith(
+        expect.objectContaining({ code: DB_STATEMENT_TIMEOUT_CODE }),
+      );
     });
   });
 
@@ -102,6 +226,12 @@ describe('HttpExceptionFilter', () => {
 
       expect(response.status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
       expect(response.json).toHaveBeenCalledWith({
+        type: 'https://chainsettle.dev/problems/internal-server-error',
+        title: 'Internal Server Error',
+        status: 500,
+        detail: 'Internal server error',
+        instance: '/api/broken',
+        code: 'INTERNAL_SERVER_ERROR',
         success: false,
         statusCode: 500,
         timestamp: expect.any(String),
@@ -121,6 +251,12 @@ describe('HttpExceptionFilter', () => {
 
       expect(response.status).toHaveBeenCalledWith(HttpStatus.PAYLOAD_TOO_LARGE);
       expect(response.json).toHaveBeenCalledWith({
+        type: 'https://chainsettle.dev/problems/payload-too-large',
+        title: 'Payload Too Large',
+        status: 413,
+        detail: 'Request body too large',
+        instance: '/api/upload',
+        code: 'PAYLOAD_TOO_LARGE',
         success: false,
         statusCode: 413,
         timestamp: expect.any(String),
@@ -250,12 +386,11 @@ describe('HttpExceptionFilter', () => {
 
       expect(response.json).toHaveBeenCalledWith(
         expect.objectContaining({
-          message: {
-            message: [
-              'Solo el comprador del envío puede confirmar hitos',
-              'Milestone not found',
-            ],
-          },
+          message: [
+            'Solo el comprador del envío puede confirmar hitos',
+            'Milestone not found',
+          ],
+          detail: 'Solo el comprador del envío puede confirmar hitos; Milestone not found',
         }),
       );
     });
@@ -274,9 +409,8 @@ describe('HttpExceptionFilter', () => {
 
       expect(response.json).toHaveBeenCalledWith(
         expect.objectContaining({
-          message: {
-            message: 'Error interno del servidor',
-          },
+          message: 'Error interno del servidor',
+          detail: 'Error interno del servidor',
         }),
       );
     });

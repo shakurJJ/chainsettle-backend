@@ -64,6 +64,14 @@ export const envValidationSchema = Joi.object({
   DATABASE_POOL_TIMEOUT: Joi.number().integer().min(1).max(300).default(10),
 
   // Cold-storage archival of completed/cancelled shipments (days; default 90)
+  // Postgres statement timeouts (ms). API queries are cancelled past
+  // DB_STATEMENT_TIMEOUT_MS; jobs/exports use the longer DB_JOB_STATEMENT_TIMEOUT_MS.
+  DB_STATEMENT_TIMEOUT_MS: Joi.number().integer().min(100).max(600000).default(30000),
+  DB_JOB_STATEMENT_TIMEOUT_MS: Joi.number().integer().min(100).max(3600000).default(300000),
+  // Audit log retention: rows older than this are archived to compressed JSONL then deleted.
+  AUDIT_LOG_RETENTION_DAYS: Joi.number().integer().min(1).max(3650).default(365),
+  AUDIT_LOG_ARCHIVE_DIR: Joi.string().default('./archives/audit-logs'),
+  AUDIT_LOG_ARCHIVAL_CRON: cronExpression.default('30 3 * * *'),
   SHIPMENT_ARCHIVAL_DAYS: Joi.number().integer().min(1).max(3650).default(90),
   // Cron schedule for the archival job (default: daily at 03:00 server time)
   SHIPMENT_ARCHIVAL_CRON: cronExpression.default('0 3 * * *'),

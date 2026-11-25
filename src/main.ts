@@ -7,6 +7,7 @@ initTracing();
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger, RequestMethod, VersioningType } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { ProblemDetailsDto } from './common/dto/problem-details.dto';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import * as compression from 'compression';
@@ -306,7 +307,18 @@ async function bootstrap() {
     .addTag('dev', 'Development helpers (testnet/futurenet only; 404 on mainnet)')
     .build();
 
-  const document = SwaggerModule.createDocument(app, swaggerConfig);
+  const document = SwaggerModule.createDocument(app, swaggerConfig, {
+    extraModels: [ProblemDetailsDto],
+  });
+  // Every error response is RFC 9457 problem details.
+  document.components = document.components ?? {};
+  document.components.responses = {
+    ...(document.components.responses ?? {}),
+    ProblemDetails: {
+      description: 'Error (RFC 9457 problem details)',
+      content: { 'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetailsDto' } } },
+    },
+  };
   SwaggerModule.setup('docs', app, document, {
     swaggerOptions: { persistAuthorization: true },
   });

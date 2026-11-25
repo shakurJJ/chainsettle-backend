@@ -9,13 +9,21 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   private readonly poolTimeout: number;
   /** Optional read-replica client. When unset, `read` returns the primary. */
   private replicaClient: PrismaClient | null = null;
+  /** Client with a longer statement timeout for jobs and exports (lazy). */
+  private jobsClient: PrismaClient | null = null;
+  private readonly jobsUrl: string;
 
   constructor(config: ConfigService) {
     const isDev = process.env.NODE_ENV !== 'production';
     const connectionLimit = config.get<number>('DATABASE_CONNECTION_LIMIT', 10);
     const poolTimeout = config.get<number>('DATABASE_POOL_TIMEOUT', 10);
     const databaseUrl = config.get<string>('DATABASE_URL', '');
-    const url = PrismaService.withPoolParams(databaseUrl, connectionLimit, poolTimeout);
+    const statementTimeout = config.get<number>('DB_STATEMENT_TIMEOUT_MS', 30000);
+    const jobStatementTimeout = config.get<number>('DB_JOB_STATEMENT_TIMEOUT_MS', 300000);
+    const url = PrismaService.withStatementTimeout(
+      PrismaService.withPoolParams(databaseUrl, connectionLimit, poolTimeout),
+      statementTimeout,
+    );
 
     super({
       datasources: { db: { url } },
@@ -24,13 +32,16 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 
     this.connectionLimit = connectionLimit;
     this.poolTimeout = poolTimeout;
+    this.jobsUrl = PrismaService.withStatementTimeout(
+      PrismaService.withPoolParams(databaseUrl, Math.max(2, Math.ceil(connectionLimit / 2)), poolTimeout),
+      jobStatementTimeout,
+    );
 
     const replicaUrl = config.get<string>('DATABASE_REPLICA_URL');
     if (replicaUrl) {
-      const replicaPooled = PrismaService.withPoolParams(
-        replicaUrl,
-        connectionLimit,
-        poolTimeout,
+      const replicaPooled = PrismaService.withStatementTimeout(
+        PrismaService.withPoolParams(replicaUrl, connectionLimit, poolTimeout),
+        statementTimeout,
       );
       this.replicaClient = new PrismaClient({
         datasources: { db: { url: replicaPooled } },
@@ -59,6 +70,17 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     return this.replicaClient ?? this;
   }
 
+  /**
+   * Prisma client for background jobs and large exports. Uses
+   * DB_JOB_STATEMENT_TIMEOUT_MS instead of the stricter API timeout.
+   */
+  get jobs(): PrismaClient {
+    if (!this.jobsClient) {
+      this.jobsClient = new PrismaClient({ datasources: { db: { url: this.jobsUrl } } });
+    }
+    return this.jobsClient;
+  }
+
   get isReplicaEnabled(): boolean {
     return this.replicaClient !== null;
   }
@@ -70,6 +92,13 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   ): string {
     const separator = databaseUrl.includes('?') ? '&' : '?';
     return `${databaseUrl}${separator}connection_limit=${connectionLimit}&pool_timeout=${poolTimeout}`;
+  }
+
+  /** Applies a server-side statement_timeout via the libpq `options` parameter. */
+  static withStatementTimeout(url: string, timeoutMs: number): string {
+    if (!timeoutMs || timeoutMs <= 0) return url;
+    const separator = url.includes('?') ? '&' : '?';
+    return `${url}${separator}options=${encodeURIComponent(`-c statement_timeout=${timeoutMs}`)}`;
   }
 
   async onModuleInit() {
@@ -94,6 +123,9 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     if (this.replicaClient) {
       await this.replicaClient.$disconnect();
       this.logger.log('Database disconnected (replica)');
+    }
+    if (this.jobsClient) {
+      await this.jobsClient.$disconnect();
     }
   }
 }
