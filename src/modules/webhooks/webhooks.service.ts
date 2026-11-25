@@ -4,6 +4,7 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
+  Optional,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Cron, CronExpression } from "@nestjs/schedule";
@@ -11,6 +12,11 @@ import * as crypto from "crypto";
 import axios, { AxiosError, AxiosRequestConfig, AxiosResponse } from "axios";
 import { PrismaService } from "../../common/prisma/prisma.service";
 import { MetricsService } from "../../common/metrics/metrics.service";
+import { QueueService } from "../../common/queue/queue.service";
+import {
+  JOB_WEBHOOK_DELIVERY,
+  QUEUE_WEBHOOKS,
+} from "../../common/queue/queue.constants";
 import { AuditLogService } from "../audit-logs/audit-log.service";
 import { NotificationType, Prisma, WebhookEndpointStatus } from "@prisma/client";
 import { CreateWebhookDto } from "./dto/create-webhook.dto";
@@ -156,6 +162,7 @@ export class WebhooksService {
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
     private readonly metrics: MetricsService,
+    @Optional() private readonly queue?: QueueService,
   ) {
     this.deliveryTimeoutMs = this.normalizePositiveInteger(
       this.config.get<number | string>("WEBHOOK_DELIVERY_TIMEOUT_MS", 10_000),
@@ -546,6 +553,12 @@ export class WebhooksService {
 
   // ── Delivery ───────────────────────────────────────────────────────────────
 
+  /**
+   * Fans an event out to subscribed endpoints (#661). Each delivery is
+   * persisted first — it has to survive a restart — and then handed to the
+   * Redis-backed `webhooks` queue. When the queue is disabled or unavailable
+   * the delivery still happens in-process.
+   */
   async dispatch(
     eventType: NotificationType,
     payload: Record<string, unknown>,
@@ -679,6 +692,33 @@ export class WebhooksService {
       where: { id: deliveryId, endpointId },
     });
     if (!delivery) throw new NotFoundException("Webhook delivery not found");
+
+    // A manual retry is a fresh set of attempts, so reset the row and hand it
+    // to the queue with a unique job id (the original job may be finished).
+    if (this.queue?.isEnabled()) {
+      await this.prisma.webhookDelivery.update({
+        where: { id: deliveryId },
+        data: {
+          statusCode: null,
+          responseBody: null,
+          attemptCount: 0,
+          nextRetryAt: null,
+          permanentlyFailedAt: null,
+        },
+      });
+
+      if (
+        await this.enqueueDelivery(
+          deliveryId,
+          `${deliveryId}:retry:${Date.now()}`,
+        )
+      ) {
+        this.logger.log(
+          `[webhook] Manual retry of delivery ${deliveryId} queued for endpoint ${endpointId}`,
+        );
+        return { message: "Webhook delivery queued for retry" };
+      }
+    }
 
     const payloadCheck = this.preparePayloadForDelivery(
       delivery.eventType,
@@ -881,51 +921,161 @@ export class WebhooksService {
 
     this.logger.debug(`[retry-queue] Processing ${due.length} due deliveries`);
 
+    // With BullMQ a retry already lives in Redis as a delayed job, so this
+    // sweep only re-queues rows whose job was lost (e.g. Redis flushed). The
+    // delivery id doubles as the job id, so re-adding a live job is a no-op.
+    const queueEnabled = this.queue?.isEnabled() ?? false;
+
     await Promise.allSettled(
-      due.map((delivery) => this.executeRetry(delivery.endpoint, delivery)),
+      due.map(async (delivery) => {
+        if (queueEnabled && (await this.enqueueDelivery(delivery.id))) {
+          return;
+        }
+        await this.executeRetry(delivery.endpoint, delivery);
+      }),
     );
   }
 
   // ── Internal helpers ───────────────────────────────────────────────────────
 
-  private async deliverOnce(
+  /**
+   * Persists a delivery row and enqueues it for the worker. If the queue is
+   * disabled or Redis rejects the job, the delivery is attempted inline.
+   */
+  private async dispatchToEndpoint(
     ep: EndpointWithOptionalEncryptedHeaders,
     eventType: string,
     payload: unknown,
   ) {
     const payloadCheck = this.preparePayloadForDelivery(eventType, payload);
-    const body = payloadCheck.body;
-    const ts = nowUnixSeconds();
-    const signature = signBody(ep.secret, body);
-    const signatureV2 = signBodyV2(ep.secret, ts, body);
 
     const delivery = await this.prisma.webhookDelivery.create({
       data: {
         endpointId: ep.id,
         eventType,
         payload: payload as Prisma.InputJsonValue,
-        attemptCount: 1,
+        attemptCount: 0,
       },
     });
 
-    const startedAt = Date.now();
     if (payloadCheck.exceedsLimit) {
-      await this.prisma.webhookDelivery.update({
-        where: { id: delivery.id },
-        data: {
-          statusCode: null,
-          responseBody: `Payload exceeds max size (${payloadCheck.bytes}/${this.maxPayloadBytes} bytes)`,
-          nextRetryAt: null,
-          permanentlyFailedAt: new Date(),
-        },
-      });
-      this.recordDeliveryMetric(startedAt, null);
+      await this.failOversizedPayload(delivery.id, payloadCheck);
 
       this.logger.warn(
         `[webhook] Delivery ${delivery.id} not sent for endpoint ${ep.id}: payload exceeds configured max of ${this.maxPayloadBytes} bytes`,
       );
       return;
     }
+
+    const queued = await this.enqueueDelivery(delivery.id);
+    if (!queued) {
+      await this.attemptDelivery(
+        ep,
+        delivery,
+        payloadCheck,
+        MAX_AUTO_ATTEMPTS,
+      );
+    }
+  }
+
+  /**
+   * Adds a delivery job. The delivery id doubles as the job id, so enqueueing
+   * the same delivery twice (outbox retry, retry sweep) is a no-op.
+   */
+  private async enqueueDelivery(
+    deliveryId: string,
+    jobId: string = deliveryId,
+  ): Promise<boolean> {
+    if (!this.queue?.isEnabled()) return false;
+
+    try {
+      await this.queue.add(
+        QUEUE_WEBHOOKS,
+        JOB_WEBHOOK_DELIVERY,
+        { deliveryId },
+        { jobId },
+      );
+      return true;
+    } catch (err) {
+      this.logger.error(
+        `[webhook] Failed to enqueue delivery ${deliveryId}; delivering inline: ${(err as Error).message}`,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Worker entry point for the `webhooks` queue (#661): sends one persisted
+   * delivery and records the outcome. `retryable` tells the processor whether
+   * BullMQ should retry with exponential back-off.
+   */
+  async processQueuedDelivery(
+    deliveryId: string,
+    maxAttempts: number = MAX_AUTO_ATTEMPTS,
+  ): Promise<{ retryable: boolean }> {
+    const delivery = await this.prisma.webhookDelivery.findUnique({
+      where: { id: deliveryId },
+      include: { endpoint: true },
+    });
+
+    if (!delivery) {
+      this.logger.warn(
+        `[webhook] Queued delivery ${deliveryId} no longer exists — skipping`,
+      );
+      return { retryable: false };
+    }
+    if (delivery.deliveredAt || delivery.permanentlyFailedAt) {
+      return { retryable: false };
+    }
+
+    const payloadCheck = this.preparePayloadForDelivery(
+      delivery.eventType,
+      delivery.payload as Record<string, unknown>,
+    );
+
+    if (payloadCheck.exceedsLimit) {
+      await this.failOversizedPayload(delivery.id, payloadCheck);
+      return { retryable: false };
+    }
+
+    return this.attemptDelivery(
+      delivery.endpoint,
+      delivery,
+      payloadCheck,
+      maxAttempts,
+    );
+  }
+
+  /** Marks a delivery whose payload exceeds the configured limit as failed. */
+  private async failOversizedPayload(
+    deliveryId: string,
+    payloadCheck: { bytes: number },
+  ): Promise<void> {
+    await this.prisma.webhookDelivery.update({
+      where: { id: deliveryId },
+      data: {
+        statusCode: null,
+        responseBody: `Payload exceeds max size (${payloadCheck.bytes}/${this.maxPayloadBytes} bytes)`,
+        nextRetryAt: null,
+        permanentlyFailedAt: new Date(),
+      },
+    });
+    this.recordDeliveryMetric(Date.now(), null);
+  }
+
+  /** Sends a delivery, updates its row and reports whether a retry is warranted. */
+  private async attemptDelivery(
+    ep: EndpointWithOptionalEncryptedHeaders,
+    delivery: { id: string; attemptCount: number },
+    payloadCheck: { body: string; bytes: number; exceedsLimit: boolean },
+    maxAttempts: number,
+  ): Promise<{ retryable: boolean }> {
+    const body = payloadCheck.body;
+    const ts = nowUnixSeconds();
+    const signature = signBody(ep.secret, body);
+    const signatureV2 = signBodyV2(ep.secret, ts, body);
+    const attemptCount = delivery.attemptCount + 1;
+    const startedAt = Date.now();
 
     try {
       const res = await postGuarded(ep.url, body, {
@@ -944,18 +1094,47 @@ export class WebhooksService {
           statusCode: res.status,
           responseBody: String(res.data ?? "").slice(0, 1_000),
           deliveredAt: new Date(),
+          attemptCount,
           nextRetryAt: null,
+          permanentlyFailedAt: null,
         },
       });
       this.recordDeliveryMetric(startedAt, res.status);
+      return { retryable: false };
     } catch (err) {
-      this.recordDeliveryMetric(startedAt, (err as AxiosError).response?.status ?? null);
-      await this.handleFailure(
-        delivery,
-        ep.secret,
-        ep.url,
-        err as AxiosError | Error,
-      );
+      const statusCode: number | null =
+        (err as AxiosError).response?.status ?? null;
+      const responseBody = String(
+        (err as AxiosError).response?.data ?? (err as Error).message ?? "",
+      ).slice(0, 1_000);
+      const retryable =
+        isRetryable(err as AxiosError | Error) && attemptCount < maxAttempts;
+      const nextRetryAt = retryable ? nextRetryDate(attemptCount) : null;
+
+      await this.prisma.webhookDelivery.update({
+        where: { id: delivery.id },
+        data: {
+          statusCode,
+          responseBody,
+          attemptCount,
+          nextRetryAt,
+          permanentlyFailedAt: retryable ? null : new Date(),
+        },
+      });
+      this.recordDeliveryMetric(startedAt, statusCode);
+
+      if (retryable) {
+        this.logger.warn(
+          `[webhook] Delivery ${delivery.id} failed (attempt ${attemptCount}/${maxAttempts}). ` +
+            `Next retry at ${nextRetryAt!.toISOString()}`,
+        );
+      } else {
+        this.logger.warn(
+          `[webhook] Delivery ${delivery.id} permanently failed after ${attemptCount} attempt(s)`,
+        );
+      }
+
+      return { retryable };
     }
   }
 

@@ -34,6 +34,8 @@ The backend is the **bridge between the Stellar blockchain and the frontend**. I
 > For definitions of domain terms used throughout the codebase (shipment, milestone, arbiter, proof, dispute, escalation, reconciliation, reputation) see [docs/glossary.md](./docs/glossary.md).
 >
 > For how notifications travel from domain events to in-app, email, Slack, Discord, Telegram, FCM push, and webhook channels — including preferences, digests, and the delivery pipeline — see [docs/notifications.md](./docs/notifications.md).
+>
+> Webhook delivery, email sending and exports run on Redis-backed BullMQ queues — see [docs/queues.md](./docs/queues.md) for retry policy, metrics and the admin view.
 
 ```
 ┌─────────────────────────────────────────────────────┐

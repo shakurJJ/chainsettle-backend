@@ -12,6 +12,7 @@ import { OutboxModule } from '../outbox/outbox.module';
 import { PushNotificationService } from './push-notification.service';
 import { WebPushService } from './web-push.service';
 import { TelegramService } from './telegram.service';
+import { EmailProcessor } from './email.processor';
 
 @Module({
   imports: [

@@ -127,6 +127,21 @@ export const envValidationSchema = Joi.object({
   // Redis
   REDIS_URL: Joi.string().uri({ scheme: ['redis', 'rediss'] }).required(),
 
+  // BullMQ background queues (#661)
+  QUEUE_ENABLED: Joi.boolean().default(true),
+  QUEUE_PREFIX: Joi.string().default('chainsettle'),
+  QUEUE_WEBHOOK_CONCURRENCY: Joi.number().integer().min(1).max(100).default(10),
+  QUEUE_WEBHOOK_ATTEMPTS: Joi.number().integer().min(1).max(20).default(5),
+  QUEUE_WEBHOOK_BACKOFF_MS: Joi.number().integer().min(100).max(3_600_000).default(30_000),
+  QUEUE_EMAIL_CONCURRENCY: Joi.number().integer().min(1).max(100).default(5),
+  QUEUE_EMAIL_ATTEMPTS: Joi.number().integer().min(1).max(20).default(5),
+  QUEUE_EMAIL_BACKOFF_MS: Joi.number().integer().min(100).max(3_600_000).default(5_000),
+  QUEUE_EXPORT_CONCURRENCY: Joi.number().integer().min(1).max(100).default(2),
+  QUEUE_EXPORT_ATTEMPTS: Joi.number().integer().min(1).max(20).default(3),
+  QUEUE_EXPORT_BACKOFF_MS: Joi.number().integer().min(100).max(3_600_000).default(10_000),
+  // How long a finished CSV/PDF export stays downloadable (default 1 hour).
+  EXPORT_RESULT_TTL_MS: Joi.number().integer().min(60_000).default(3_600_000),
+
   // IPFS (Pinata)
   IPFS_GATEWAY_URL: Joi.string().uri().default('https://gateway.pinata.cloud/ipfs'),
   IPFS_API_KEY: Joi.string().allow('').default(''),

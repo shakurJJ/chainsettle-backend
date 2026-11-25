@@ -32,7 +32,26 @@ missing or malformed.
 
 | Name | Required | Default | Description | Module |
 |---|---|---|---|---|
-| `REDIS_URL` | Yes | — | Redis connection string (rate limiting, cache, poller lock) 🔒 | `src/config/configuration.ts` |
+| `REDIS_URL` | Yes | — | Redis connection string (rate limiting, cache, poller lock, BullMQ queues) 🔒 | `src/config/configuration.ts` |
+
+## Background queues (BullMQ)
+
+See [queues.md](./queues.md) for retry semantics, metrics and the admin view.
+
+| Name | Required | Default | Description | Module |
+|---|---|---|---|---|
+| `QUEUE_ENABLED` | No | `true` | Disable BullMQ and fall back to in-process webhook/email delivery | `src/common/queue/queue.service.ts` |
+| `QUEUE_PREFIX` | No | `chainsettle` | Redis key prefix for every queue | `src/common/queue/queue.service.ts` |
+| `QUEUE_WEBHOOK_CONCURRENCY` | No | `10` | Concurrent webhook deliveries per worker | `src/common/queue/queue-policy.ts` |
+| `QUEUE_WEBHOOK_ATTEMPTS` | No | `5` | Total webhook delivery attempts | `src/common/queue/queue-policy.ts` |
+| `QUEUE_WEBHOOK_BACKOFF_MS` | No | `30000` | Base webhook retry delay (exponential) | `src/common/queue/queue-policy.ts` |
+| `QUEUE_EMAIL_CONCURRENCY` | No | `5` | Concurrent email jobs per worker | `src/common/queue/queue-policy.ts` |
+| `QUEUE_EMAIL_ATTEMPTS` | No | `5` | Total email send attempts | `src/common/queue/queue-policy.ts` |
+| `QUEUE_EMAIL_BACKOFF_MS` | No | `5000` | Base email retry delay (exponential) | `src/common/queue/queue-policy.ts` |
+| `QUEUE_EXPORT_CONCURRENCY` | No | `2` | Concurrent export jobs per worker | `src/common/queue/queue-policy.ts` |
+| `QUEUE_EXPORT_ATTEMPTS` | No | `3` | Total export attempts | `src/common/queue/queue-policy.ts` |
+| `QUEUE_EXPORT_BACKOFF_MS` | No | `10000` | Base export retry delay (exponential) | `src/common/queue/queue-policy.ts` |
+| `EXPORT_RESULT_TTL_MS` | No | `3600000` | How long a finished export stays downloadable | `src/modules/shipments/shipments-export.processor.ts` |
 
 ## Authentication
 

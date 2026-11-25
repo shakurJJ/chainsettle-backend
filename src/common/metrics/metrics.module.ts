@@ -4,6 +4,7 @@ import { makeCounterProvider, makeGaugeProvider, makeHistogramProvider } from '@
 import { OutboxStatus, ShipmentStatus } from '@prisma/client';
 import { Gauge } from 'prom-client';
 import { PrismaService } from '../prisma/prisma.service';
+import { QueueService } from '../queue/queue.service';
 import { MetricsService } from './metrics.service';
 import {
   EVENTS_PROCESSED_COUNTER,
@@ -18,6 +19,9 @@ import {
   JOB_RUNS_COUNTER,
   OUTBOX_EVENTS_COUNTER,
   OUTBOX_BACKLOG_GAUGE,
+  QUEUE_DEPTH_GAUGE,
+  QUEUE_JOBS_COUNTER,
+  QUEUE_JOB_DURATION_HISTOGRAM,
 } from './metrics.service';
 import { resolveBuildInfo } from '../build-info';
 import { ESCROW_LOCKED_GAUGE, EscrowLockedMetricsService } from './escrow-locked.service';
@@ -63,6 +67,24 @@ export async function collectOutboxBacklog(this: Gauge<string>, prisma: PrismaSe
     }
   } catch (err) {
     logger.warn(`Failed to refresh ${OUTBOX_BACKLOG_GAUGE}: ${err.message}`);
+  }
+}
+
+/**
+ * Refreshes chainsettle_queue_depth on every /metrics scrape (#661) from the
+ * BullMQ queues' own counts, so a growing waiting/delayed series surfaces a
+ * backlog and a growing failed series surfaces jobs that exhausted retries.
+ */
+export async function collectQueueDepth(this: Gauge<string>, queues: QueueService) {
+  try {
+    const stats = await queues.getStats();
+    for (const { name, counts } of stats) {
+      for (const [state, value] of Object.entries(counts)) {
+        this.set({ queue: name, state }, value);
+      }
+    }
+  } catch (err) {
+    logger.warn(`Failed to refresh ${QUEUE_DEPTH_GAUGE}: ${err.message}`);
   }
 }
 
@@ -131,6 +153,24 @@ export async function collectOpenDisputes(this: Gauge<string>, prisma: PrismaSer
       labelNames: ['status'],
       inject: [PrismaService],
       collect: collectOutboxBacklog,
+    }),
+    makeCounterProvider({
+      name: QUEUE_JOBS_COUNTER,
+      help: 'Total BullMQ jobs finished by queue workers, by result',
+      labelNames: ['queue', 'result'],
+    }),
+    makeHistogramProvider({
+      name: QUEUE_JOB_DURATION_HISTOGRAM,
+      help: 'BullMQ job processing duration in seconds',
+      labelNames: ['queue'],
+      buckets: [0.1, 0.5, 1, 5, 10, 30, 60, 300],
+    }),
+    makeGaugeProvider({
+      name: QUEUE_DEPTH_GAUGE,
+      help: 'Jobs in each BullMQ queue by state',
+      labelNames: ['queue', 'state'],
+      inject: [QueueService],
+      collect: collectQueueDepth,
     }),
     makeGaugeProvider({
       name: SHIPMENTS_BY_STATUS_GAUGE,

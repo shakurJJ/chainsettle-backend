@@ -15,6 +15,12 @@ import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 import { DEFAULT_LOCALE, I18nService } from '../../i18n/i18n.service';
 import { SmsProviderFactory } from '../../common/providers/sms.provider';
 import { TelegramService } from './telegram.service';
+import { QueueService } from '../../common/queue/queue.service';
+import {
+  JOB_SEND_EMAIL,
+  QUEUE_EMAILS,
+  SendEmailJobData,
+} from '../../common/queue/queue.constants';
 
 const NOTIFICATION_DELIVERY_ERROR_MAX = 1_000;
 
@@ -126,6 +132,7 @@ export class NotificationsService {
     @Optional() private readonly smsProviderFactory: SmsProviderFactory,
     @Optional() private readonly webPush: WebPushService,
     @Optional() private readonly telegram: TelegramService,
+    @Optional() private readonly queue?: QueueService,
   ) {
     this.transporter = nodemailer.createTransport({
       host: this.config.get("SMTP_HOST"),
