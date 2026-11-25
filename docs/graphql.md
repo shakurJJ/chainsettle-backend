@@ -18,6 +18,10 @@ ChainSettle exposes a GraphQL API alongside its REST endpoints. Both layers shar
   - [shipmentUpdated](#shipmentupdated)
   - [milestoneUpdated](#milestoneupdated)
 - [Query Limits](#query-limits)
+- [Persisted Queries (APQ)](#persisted-queries-apq)
+  - [Automatic Persisted Queries](#automatic-persisted-queries)
+  - [Allowlist mode](#allowlist-mode)
+  - [Extracting queries from the frontend](#extracting-queries-from-the-frontend)
 - [DataLoader Batching](#dataloader-batching)
 - [GraphQL vs REST: When to Use Which](#graphql-vs-rest-when-to-use-which)
 - [Introspection and Playground](#introspection-and-playground)
@@ -510,6 +514,109 @@ To keep complexity low: request only the fields you need, pass explicit `limit` 
 
 ---
 
+## Persisted Queries (APQ)
+
+The GraphQL endpoint supports **Automatic Persisted Queries (APQ)**. Instead of sending the full query text on every request, clients send a SHA-256 hash of the query; the server looks the query up in a Redis-backed cache and only asks the client to resend the full text if it has never seen that hash before. This reduces request payload size and shrinks the attack surface for ad-hoc queries.
+
+### Automatic Persisted Queries
+
+APQ is enabled by default. Any Apollo Client instance with `createPersistedQueryLink()` (or the built-in APQ support in Apollo Client 3+) works without further configuration:
+
+```typescript
+import { ApolloClient, InMemoryCache, HttpLink } from '@apollo/client';
+import { createPersistedQueryLink } from '@apollo/client/link/persisted-queries';
+import { sha256 } from 'crypto-hash';
+
+const client = new ApolloClient({
+  link: createPersistedQueryLink({ sha256 }).concat(
+    new HttpLink({
+      uri: 'https://api.example.com/graphql',
+      headers: { Authorization: `Bearer ${jwt}` },
+    }),
+  ),
+  cache: new InMemoryCache(),
+});
+```
+
+How it works:
+
+1. The client sends `extensions.persistedQuery = { version: 1, sha256Hash: "<hash>" }` with **no** `query` field.
+2. If the server has the query cached (Redis), it executes it and returns the result.
+3. If not, the server responds with `PersistedQueryNotFound`. The client automatically retries, this time including both the hash and the full query text.
+4. The server validates, caches the query under its hash in Redis, and executes it.
+
+Relevant environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GRAPHQL_APQ_ENABLED` | `true` | Set to `false` to disable APQ entirely (clients must always send full query text). |
+| `GRAPHQL_APQ_TTL_SECONDS` | `86400` | How long a persisted query stays in the Redis cache. |
+| `GRAPHQL_PERSISTED_ONLY` | `false` | Allowlist mode — see below. |
+
+The Redis cache is shared across all API instances, so a query persisted by one instance is immediately available to the others.
+
+### Allowlist mode
+
+Setting `GRAPHQL_PERSISTED_ONLY=true` turns the endpoint into an **allowlist-only** server: any request whose query hash is not in the allowlist is rejected, even if the client sends the full query text. This is the recommended configuration for production deployments where the set of queries is known ahead of time.
+
+```bash
+GRAPHQL_PERSISTED_ONLY=true
+GRAPHQL_ALLOWLIST_PATH=graphql/allowlist.json
+```
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GRAPHQL_PERSISTED_ONLY` | `false` | When `true`, only queries whose SHA-256 hash appears in the allowlist are executed. |
+| `GRAPHQL_ALLOWLIST_PATH` | `graphql/allowlist.json` | Path to the allowlist file (relative to the project root). |
+
+Rejected requests receive:
+
+```json
+{
+  "errors": [{
+    "message": "PersistedQueryNotSupported: query is not in the persisted query allowlist",
+    "extensions": { "code": "PERSISTED_QUERY_NOT_ALLOWED" }
+  }]
+}
+```
+
+> Note: the allowlist is loaded once at startup. Restart the API (or redeploy) after regenerating it.
+
+### Extracting queries from the frontend
+
+The allowlist is generated from the GraphQL documents used by the frontend. The extraction script scans the frontend source directory for `query`, `mutation`, and `subscription` documents in `.ts`, `.tsx`, `.js`, `.jsx`, and `.graphql`/`.gql` files, normalizes each document (whitespace and comments stripped, fields sorted), computes its SHA-256 hash, and writes the hashes to the allowlist file.
+
+Run it via the npm script:
+
+```bash
+npm run graphql:extract-queries
+```
+
+The script accepts the following options (all optional):
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--src <dir>` | `frontend/src` | Directory to scan for GraphQL documents. |
+| `--out <file>` | `graphql/allowlist.json` | Output allowlist file. |
+| `--check` | — | Do not write; exit non-zero if the allowlist is out of date (useful in CI). |
+
+Example output (`graphql/allowlist.json`):
+
+```json
+{
+  "version": 1,
+  "generatedAt": "2024-01-01T00:00:00.000Z",
+  "hashes": [
+    "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+    "9a8b7c6d5e4f30211203f4e5d6c7b8a99a8b7c6d5e4f30211203f4e5d6c7b8a9"
+  ]
+}
+```
+
+Commit the regenerated allowlist whenever frontend queries change, and add `npm run graphql:extract-queries -- --check` to CI so a stale allowlist fails the build. Because the hash is computed over the normalized document, reformatting a query (indentation, comments) does not change its hash — but renaming a field or changing arguments does.
+
+---
+
 ## DataLoader Batching
 
 Nested fields on `ShipmentGql` and `MilestoneGql` are resolved through per-request DataLoaders:
@@ -547,3 +654,5 @@ In development (`NODE_ENV` ≠ `production`):
 - **Introspection** is enabled — tools like GraphQL Code Generator and Insomnia can pull the schema automatically.
 
 In production both are disabled to avoid schema enumeration. Use `npm run generate:sdk` (which generates from the REST OpenAPI spec) or export the schema from a development instance if you need a static schema file.
+
+When `GRAPHQL_PERSISTED_ONLY=true`, introspection is also effectively unavailable to ad-hoc clients: only the queries in the allowlist can be executed, so schema exploration must be done against a development instance.
