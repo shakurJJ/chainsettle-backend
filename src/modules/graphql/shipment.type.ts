@@ -1,4 +1,4 @@
-import { ObjectType, Field, ID, Int, Float } from '@nestjs/graphql';
+import { ObjectType, InputType, Field, ID, Int, Float } from '@nestjs/graphql';
 
 @ObjectType()
 export class ProofSubmissionGql {
@@ -73,6 +73,45 @@ export class ChainEventGql {
 
   @Field()
   createdAt: Date;
+}
+
+@ObjectType()
+export class CommentGql {
+  @Field(() => ID)
+  id: string;
+
+  @Field()
+  shipmentId: string;
+
+  @Field()
+  authorId: string;
+
+  @Field()
+  body: string;
+
+  @Field()
+  visibility: string;
+
+  @Field()
+  createdAt: Date;
+
+  @Field({ nullable: true })
+  deletedAt?: Date;
+}
+
+@InputType()
+export class AddCommentInput {
+  @Field()
+  body: string;
+
+  @Field({ nullable: true, description: 'Comment visibility, defaults to the service default' })
+  visibility?: string;
+}
+
+@InputType()
+export class EditCommentInput {
+  @Field()
+  body: string;
 }
 
 @ObjectType()

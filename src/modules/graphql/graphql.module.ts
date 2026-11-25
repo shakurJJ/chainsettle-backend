@@ -6,6 +6,7 @@ import { JwtModule, JwtService } from '@nestjs/jwt';
 import { ShipmentResolver } from './shipment.resolver';
 import { MilestoneResolver } from './milestone.resolver';
 import { ShipmentSubscriptionResolver } from './shipment-subscription.resolver';
+import { CommentResolver } from './comment.resolver';
 import { ShipmentsModule } from '../shipments/shipments.module';
 import { MilestonesModule } from '../milestones/milestones.module';
 import { EventsModule } from '../events/events.module';
@@ -102,6 +103,6 @@ async function authenticateConnection(
     MilestonesModule,
     EventsModule,
   ],
-  providers: [ShipmentResolver, MilestoneResolver, ShipmentSubscriptionResolver],
+  providers: [ShipmentResolver, MilestoneResolver, ShipmentSubscriptionResolver, CommentResolver],
 })
 export class GraphqlModule {}

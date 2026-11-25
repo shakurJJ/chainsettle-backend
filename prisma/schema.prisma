@@ -259,6 +259,8 @@ model Shipment {
 
   @@index([buyerAddress, status, createdAt])
   @@index([supplierAddress, status, createdAt])
+  @@index([logisticsAddress, status, createdAt])
+  @@index([arbiterAddress, status, createdAt])
   @@index([updatedAt])
   @@map("shipments")
 }
@@ -290,6 +292,13 @@ model Contact {
   label          String
   defaultRole    UserRole?
   notes          String?
+  /// Generated tsvector over label + notes, used by GET /search (#669).
+  /// Maintained by a raw SQL generated column + GIN index added in the
+  /// migration (Prisma cannot express generated tsvector columns):
+  ///   ALTER TABLE contacts ADD COLUMN search_vector tsvector
+  ///     GENERATED ALWAYS AS (to_tsvector('simple', coalesce(label,'') || ' ' || coalesce(notes,''))) STORED;
+  ///   CREATE INDEX contacts_search_vector_idx ON contacts USING GIN (search_vector);
+  searchVector   Unsupported("tsvector")?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -297,6 +306,7 @@ model Contact {
 
   @@unique([ownerId, stellarAddress])
   @@index([ownerId, label])
+  @@index([ownerId])
   @@map("contacts")
 }
 
@@ -603,6 +613,13 @@ model ShipmentComment {
   pinnedAt      DateTime?         // set when pinned; null when unpinned (max 3 per shipment)
   parentCommentId String?         // set when this comment is a reply to another comment (#299)
   milestoneIndex  Int?            // optional milestone this comment is scoped to (#396)
+  /// Generated tsvector over body, used by GET /search (#669).
+  /// Maintained by a raw SQL generated column + GIN index added in the
+  /// migration (Prisma cannot express generated tsvector columns):
+  ///   ALTER TABLE shipment_comments ADD COLUMN body_search tsvector
+  ///     GENERATED ALWAYS AS (to_tsvector('simple', coalesce(body,''))) STORED;
+  ///   CREATE INDEX shipment_comments_body_search_idx ON shipment_comments USING GIN (body_search);
+  bodySearch    Unsupported("tsvector")?
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
   deletedAt     DateTime?
@@ -616,6 +633,7 @@ model ShipmentComment {
   @@index([authorId])
   @@index([parentCommentId])
   @@index([shipmentId, milestoneIndex])
+  @@index([shipmentId, deletedAt])
   @@map("shipment_comments")
 }
 

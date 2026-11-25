@@ -1,9 +1,13 @@
-import { Resolver, Query, Args, ID, ResolveField, Parent, Context } from '@nestjs/graphql';
+import { Resolver, Query, Mutation, Args, ID, ResolveField, Parent, Context } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { ShipmentGql, MilestoneGql, ChainEventGql } from './shipment.type';
+import { CommentGql } from './comment.type';
 import { ShipmentsService } from '../shipments/shipments.service';
 import { EventsService } from '../events/events.service';
+import { CommentsService } from '../comments/comments.service';
+import { ShipmentEventsPublisher } from '../events/shipment-events.publisher';
 import { GqlJwtAuthGuard } from './gql-jwt-auth.guard';
+import { GqlThrottlerGuard } from './gql-throttler.guard';
 import { AuthenticatedUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { GqlLoaders } from './graphql.loaders';
 import { assertParticipant } from './graphql.access';
@@ -15,6 +19,8 @@ export class ShipmentResolver {
   constructor(
     private readonly shipmentsService: ShipmentsService,
     private readonly events: EventsService,
+    private readonly commentsService: CommentsService,
+    private readonly eventsPublisher: ShipmentEventsPublisher,
   ) {}
 
   @Query(() => ShipmentGql, { description: 'Fetch a shipment with its milestones and recent events' })
@@ -60,6 +66,57 @@ export class ShipmentResolver {
     if (shipment.recentEvents?.length) return shipment.recentEvents;
     const result = await this.events.findAll({ shipmentId: shipment.id, limit: 10 });
     return result.data;
+  }
+
+  @Mutation(() => CommentGql, { description: 'Add a comment to a shipment' })
+  @UseGuards(GqlThrottlerGuard)
+  async addComment(
+    @Args('shipmentId', { type: () => ID }) shipmentId: string,
+    @Args('body') body: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<CommentGql> {
+    const shipment = await this.shipmentsService.findOne(shipmentId, user?.id);
+    assertParticipant(shipment as any, user);
+    const comment = await this.commentsService.create(
+      { shipmentId, body },
+      { id: user.id, stellarAddress: user.stellarAddress } as any,
+    );
+    this.eventsPublisher.publishCommentCreated(shipmentId, comment);
+    return comment as any;
+  }
+
+  @Mutation(() => CommentGql, { description: 'Edit an existing shipment comment' })
+  @UseGuards(GqlThrottlerGuard)
+  async editComment(
+    @Args('id', { type: () => ID }) id: string,
+    @Args('body') body: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<CommentGql> {
+    const existing = await this.commentsService.findOne(id);
+    const shipment = await this.shipmentsService.findOne(existing.shipmentId, user?.id);
+    assertParticipant(shipment as any, user);
+    const comment = await this.commentsService.update(
+      id,
+      { body },
+      { id: user.id, stellarAddress: user.stellarAddress } as any,
+    );
+    return comment as any;
+  }
+
+  @Mutation(() => Boolean, { description: 'Delete a shipment comment' })
+  @UseGuards(GqlThrottlerGuard)
+  async deleteComment(
+    @Args('id', { type: () => ID }) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<boolean> {
+    const existing = await this.commentsService.findOne(id);
+    const shipment = await this.shipmentsService.findOne(existing.shipmentId, user?.id);
+    assertParticipant(shipment as any, user);
+    await this.commentsService.remove(id, {
+      id: user.id,
+      stellarAddress: user.stellarAddress,
+    } as any);
+    return true;
   }
 
   private toGql(s: any): ShipmentGql {

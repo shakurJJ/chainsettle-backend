@@ -32,7 +32,7 @@ import { ShipmentsExportProcessor } from './shipments-export.processor';
     LateDeliveryJob,
     ShipmentsExportProcessor,
   ],
-  exports: [ShipmentsService, ShipmentApprovalsService, SavedFiltersService, LateDeliveryJob],
+  exports: [ShipmentsService, ShipmentApprovalsService, SavedFiltersService, CommentsService, LateDeliveryJob],
 })
 export class ShipmentsModule { }
 

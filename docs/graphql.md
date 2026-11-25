@@ -14,9 +14,14 @@ ChainSettle exposes a GraphQL API alongside its REST endpoints. Both layers shar
   - [shipments](#shipments)
   - [milestones](#milestones)
   - [milestone](#milestone)
+- [Mutations](#mutations)
+  - [addComment](#addcomment)
+  - [editComment](#editcomment)
+  - [deleteComment](#deletecomment)
 - [Subscriptions](#subscriptions)
   - [shipmentUpdated](#shipmentupdated)
   - [milestoneUpdated](#milestoneupdated)
+  - [commentAdded](#commentadded)
 - [Query Limits](#query-limits)
 - [Persisted Queries (APQ)](#persisted-queries-apq)
   - [Automatic Persisted Queries](#automatic-persisted-queries)
@@ -125,6 +130,15 @@ type ChainEventGql {
   ledger: Int!
   txHash: String!
   createdAt: DateTime!
+}
+
+type CommentGql {
+  id: ID!
+  shipmentId: String!
+  authorAddress: String!
+  body: String!
+  createdAt: DateTime!
+  updatedAt: DateTime!
 }
 ```
 
@@ -351,6 +365,150 @@ curl -s -X POST https://api.example.com/graphql \
 
 ---
 
+## Mutations
+
+The comment thread on a shipment can be managed entirely through GraphQL. The three comment mutations delegate to the same `CommentsService` used by the REST endpoints, so validation, access rules, and throttling behave identically across both layers.
+
+### Access rules
+
+All comment mutations enforce the same participant rule as the queries: the caller's Stellar address must match one of `buyerAddress`, `supplierAddress`, `logisticsAddress`, or `arbiterAddress` on the shipment. Admin users bypass this check. Violations return `403 Forbidden`.
+
+Additional per-mutation rules:
+
+| Mutation | Rule |
+|----------|------|
+| `addComment` | Caller must be a participant on the shipment |
+| `editComment` | Caller must be the comment's author (admins may edit any comment) |
+| `deleteComment` | Caller must be the comment's author (admins may delete any comment) |
+
+### Throttling
+
+Comment mutations are rate-limited per user, using the same throttler configuration as the REST comment endpoints. Exceeding the limit returns a `429 Too Many Requests` error with the standard `THROTTLED` extension code.
+
+### addComment
+
+Creates a comment on a shipment and publishes a `commentAdded` subscription event to all subscribers watching that shipment.
+
+**Signature**
+
+```graphql
+mutation addComment($shipmentId: ID!, $body: String!): CommentGql!
+```
+
+**Example**
+
+```graphql
+mutation AddComment($shipmentId: ID!, $body: String!) {
+  addComment(shipmentId: $shipmentId, body: $body) {
+    id
+    shipmentId
+    authorAddress
+    body
+    createdAt
+  }
+}
+```
+
+Variables:
+
+```json
+{ "shipmentId": "clx1abc2def3ghi4jkl5", "body": "Proof of delivery uploaded to IPFS." }
+```
+
+curl:
+
+```bash
+curl -s -X POST https://api.example.com/graphql \
+  -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation AddComment($shipmentId: ID!, $body: String!) { addComment(shipmentId: $shipmentId, body: $body) { id body createdAt } }",
+    "variables": { "shipmentId": "clx1abc2def3ghi4jkl5", "body": "Proof of delivery uploaded to IPFS." }
+  }'
+```
+
+---
+
+### editComment
+
+Updates the body of an existing comment. Only the comment's author (or an admin) may edit it.
+
+**Signature**
+
+```graphql
+mutation editComment($id: ID!, $body: String!): CommentGql!
+```
+
+**Example**
+
+```graphql
+mutation EditComment($id: ID!, $body: String!) {
+  editComment(id: $id, body: $body) {
+    id
+    body
+    updatedAt
+  }
+}
+```
+
+Variables:
+
+```json
+{ "id": "cmt7abc2def3ghi4jkl5", "body": "Proof of delivery uploaded to IPFS (corrected CID)." }
+```
+
+curl:
+
+```bash
+curl -s -X POST https://api.example.com/graphql \
+  -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation EditComment($id: ID!, $body: String!) { editComment(id: $id, body: $body) { id body updatedAt } }",
+    "variables": { "id": "cmt7abc2def3ghi4jkl5", "body": "Proof of delivery uploaded to IPFS (corrected CID)." }
+  }'
+```
+
+---
+
+### deleteComment
+
+Deletes a comment. Only the comment's author (or an admin) may delete it.
+
+**Signature**
+
+```graphql
+mutation deleteComment($id: ID!): Boolean!
+```
+
+**Example**
+
+```graphql
+mutation DeleteComment($id: ID!) {
+  deleteComment(id: $id)
+}
+```
+
+Variables:
+
+```json
+{ "id": "cmt7abc2def3ghi4jkl5" }
+```
+
+curl:
+
+```bash
+curl -s -X POST https://api.example.com/graphql \
+  -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation DeleteComment($id: ID!) { deleteComment(id: $id) }",
+    "variables": { "id": "cmt7abc2def3ghi4jkl5" }
+  }'
+```
+
+---
+
 ## Subscriptions
 
 Subscriptions deliver real-time pushes when on-chain events are processed. They use the `graphql-ws` protocol over a persistent WebSocket connection.
@@ -463,6 +621,56 @@ const unsubscribe = client.subscribe(
   },
   {
     next: (data) => console.log('Milestone update:', data),
+    error: (err) => console.error(err),
+    complete: () => console.log('Done'),
+  },
+);
+```
+
+---
+
+### commentAdded
+
+Fires whenever a new comment is created on the given shipment (via `addComment`). Filtered server-side by `shipmentId`. Edits and deletions do not emit events.
+
+**Signature**
+
+```graphql
+subscription commentAdded($shipmentId: ID!): CommentGql!
+```
+
+**Example**
+
+```graphql
+subscription WatchComments($shipmentId: ID!) {
+  commentAdded(shipmentId: $shipmentId) {
+    id
+    authorAddress
+    body
+    createdAt
+  }
+}
+```
+
+**graphql-ws client example (TypeScript)**
+
+```typescript
+const unsubscribe = client.subscribe(
+  {
+    query: `
+      subscription WatchComments($shipmentId: ID!) {
+        commentAdded(shipmentId: $shipmentId) {
+          id
+          authorAddress
+          body
+          createdAt
+        }
+      }
+    `,
+    variables: { shipmentId: 'clx1abc2def3ghi4jkl5' },
+  },
+  {
+    next: (data) => console.log('New comment:', data),
     error: (err) => console.error(err),
     complete: () => console.log('Done'),
   },
@@ -637,12 +845,13 @@ This means fetching 20 shipments with their milestones costs 2 database queries 
 | You need a single shipment with milestones and events in one round-trip | **GraphQL** — `shipment` query returns everything nested |
 | You want live updates when a milestone confirms | **GraphQL** — `milestoneUpdated` subscription |
 | You are building a dashboard that lists shipments with variable columns | **GraphQL** — request only the fields rendered |
-| You are submitting a proof, confirming a milestone, or any write operation | **REST** — GraphQL exposes no mutations; all writes go through REST |
+| You are posting, editing, or deleting a shipment comment | **GraphQL** — `addComment`, `editComment`, `deleteComment` mutations, plus the `commentAdded` subscription |
+| You are submitting a proof, confirming a milestone, or any other write operation | **REST** — GraphQL only exposes comment mutations; all other writes go through REST |
 | You are a CI pipeline or script using an API key | **REST** — API key auth is not supported on the GraphQL endpoint |
 | You want Swagger-generated docs or SDK types | **REST** — the OpenAPI spec and TypeScript SDK are REST-only |
 | You need paginated event history beyond the 10 most recent | **REST** — `GET /api/v1/events?shipmentId=...` supports full pagination |
 
-In short: **read** with GraphQL when you benefit from field selection or subscriptions; **write** with REST.
+In short: **read** with GraphQL when you benefit from field selection or subscriptions; use GraphQL **mutations** for the comment thread; **write** everything else with REST.
 
 ---
 
