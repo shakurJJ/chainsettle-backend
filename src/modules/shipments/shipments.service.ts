@@ -20,7 +20,7 @@ import { AuditLogService } from '../audit-logs/audit-log.service';
 import { KycService } from '../kyc/kyc.service';
 import { ShipmentApprovalsService } from './shipment-approvals.service';
 import { FxRateService } from '../../common/fx/fx-rate.service';
-import { CreateShipmentDto, CloneShipmentDto } from './dto/create-shipment.dto';
+import { CreateShipmentDto, CloneShipmentDto, UpdateShipmentDto } from './dto/create-shipment.dto';
 import { CreateTrackingDto } from './dto/tracking.dto';
 import { ShipmentDocumentDto } from './dto/shipment-document.dto';
 import { ShipmentStatus, NotificationType, ArbiterStatus, CommentVisibility } from '@prisma/client';
@@ -31,6 +31,7 @@ import Ajv from 'ajv';
 import { metadataSchemas } from './schemas/metadata.schemas';
 import { pickFields } from './shipment-fields';
 import { computeShipmentRisk, RiskLevel, ShipmentRiskResult } from './utils/risk.util';
+import { lineItemsExceedTotalAmount } from './line-items.util';
 
 const DUPLICATE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -182,6 +183,15 @@ export class ShipmentsService {
       throw new BadRequestException(`Token ${tokenAddress} is deprecated and cannot be used for new shipments`);
     }
 
+    if (
+      dto.lineItems?.length &&
+      lineItemsExceedTotalAmount(dto.lineItems, totalAmountBigInt, token.decimals)
+    ) {
+      throw new BadRequestException(
+        'The sum of line item values (quantity × unitPrice) must not exceed the shipment totalAmount.',
+      );
+    }
+
     // Per-token min/max shipment value (#304) — no-op for tokens without bounds.
     this.tokenRegistry.assertValueWithinBounds(tokenAddress, totalAmountBigInt);
 
@@ -227,7 +237,7 @@ export class ShipmentsService {
                   quantity: item.quantity,
                   unit: item.unit ?? 'unit',
                   unitPrice: item.unitPrice,
-                  currency: item.currency ?? 'USDC',
+                  currency: item.currency ?? token.symbol,
                 })),
               },
             }
@@ -911,7 +921,7 @@ export class ShipmentsService {
    * Only the buyer can update a shipment.
    * Financial fields and addresses are immutable and ignored if provided.
    */
-  async update(id: string, buyerAddress: string, dto: any, ifMatch?: string) {
+  async update(id: string, buyerAddress: string, dto: UpdateShipmentDto, ifMatch?: string) {
     const shipment = await this.prisma.shipment.findUnique({
       where: { id },
     });
@@ -955,15 +965,15 @@ export class ShipmentsService {
         throw new ConflictException('Line items can only be edited while the shipment is in DRAFT status');
       }
 
-      // Validate sum does not exceed totalAmount before persisting.
-      const totalHuman = Number(shipment.totalAmount) / 1e7;
-      const lineItemsSum = dto.lineItems.reduce((acc: number, item: any) => {
-        return acc + Number(item.quantity) * parseFloat(item.unitPrice);
-      }, 0);
-      if (lineItemsSum > totalHuman) {
+      if (
+        lineItemsExceedTotalAmount(
+          dto.lineItems,
+          shipment.totalAmount,
+          shipment.tokenDecimals,
+        )
+      ) {
         throw new BadRequestException(
-          `The sum of line item values (quantity × unitPrice = ${lineItemsSum.toFixed(6)}) ` +
-          `must not exceed the shipment totalAmount (${totalHuman.toFixed(6)}).`,
+          'The sum of line item values (quantity × unitPrice) must not exceed the shipment totalAmount.',
         );
       }
 
@@ -975,7 +985,7 @@ export class ShipmentsService {
           quantity: item.quantity,
           unit: item.unit ?? 'unit',
           unitPrice: item.unitPrice,
-          currency: item.currency ?? 'USDC',
+          currency: item.currency ?? shipment.tokenSymbol,
         })),
       };
     }

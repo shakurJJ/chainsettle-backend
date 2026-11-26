@@ -16,11 +16,11 @@ import {
   IsPositive,
   IsNumber,
   IsUUID,
+  Matches,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
 import { IsMilestoneSumValid } from '../../../common/validators/milestone-sum.validator';
-import { IsLineItemsSumValid } from '../../../common/validators/line-items-sum.validator';
 import { IsStellarAddress } from '../../../common/decorators/is-stellar-address.decorator';
 
 export class LineItemDto {
@@ -37,7 +37,7 @@ export class LineItemDto {
   name: string;
 
   @ApiProperty({ example: 10, description: 'Quantity (supports decimals, e.g. 1.5 kg)' })
-  @IsNumber({ allowInfinity: false, allowNaN: false })
+  @IsNumber({ allowInfinity: false, allowNaN: false, maxDecimalPlaces: 6 })
   @IsPositive()
   quantity: number;
 
@@ -49,9 +49,10 @@ export class LineItemDto {
 
   @ApiProperty({ example: '500.00', description: 'Price per unit in human-readable token amount (not stroops)' })
   @IsNumberString()
+  @Matches(/^\d{1,12}(\.\d{1,6})?$/)
   unitPrice: string;
 
-  @ApiProperty({ required: false, example: 'USDC', description: 'Currency / token symbol (default: USDC)' })
+  @ApiProperty({ required: false, example: 'USDC', description: 'Currency / token symbol (defaults to the shipment token)' })
   @IsOptional()
   @IsString()
   @MaxLength(10)
@@ -185,14 +186,13 @@ export class CreateShipmentDto {
     required: false,
     description:
       'Structured list of goods in this shipment. The sum of (quantity × unitPrice) ' +
-      'across all items must not exceed totalAmount (converted to human-readable units).',
+      'across all items must not exceed totalAmount in the shipment token units.',
   })
   @IsOptional()
   @IsArray()
   @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => LineItemDto)
-  @IsLineItemsSumValid()
   lineItems?: LineItemDto[];
 }
 
@@ -252,7 +252,6 @@ export class UpdateShipmentDto {
   })
   @IsOptional()
   @IsArray()
-  @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => LineItemDto)
   lineItems?: LineItemDto[];

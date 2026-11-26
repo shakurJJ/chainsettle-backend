@@ -58,6 +58,20 @@ ACTIVE ──────> COMPLETED
 
 ---
 
+## Shipment Line Items
+
+`POST /shipments` accepts an optional `lineItems` array containing each
+product's SKU, name, quantity, unit, unit price, and currency. Line-item
+quantities and unit prices support up to six decimal places, and their total
+must not exceed the shipment's `totalAmount`.
+
+`PATCH /shipments/:id` replaces the full line-item list only while
+`isDraft=true`; send `lineItems: []` to clear it. The total check uses the
+shipment token's configured decimal precision. Shipment detail responses
+include line items, and CSV/PDF exports include their product details.
+
+---
+
 ## Milestone State Machine
 
 Each shipment is divided into **Milestones**, representing incremental delivery checkpoints. Milestones transition through the following states:

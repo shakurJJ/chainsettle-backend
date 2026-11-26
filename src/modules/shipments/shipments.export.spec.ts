@@ -22,6 +22,17 @@ const mockShipments = [
     tokenSymbol: 'USDC',
     createdAt: new Date('2025-01-01T00:00:00Z'),
     expectedDeliveryAt: new Date('2025-01-10T00:00:00Z'),
+    fxRateAtCreation: 1,
+    lineItems: [
+      {
+        sku: 'PUMP-1',
+        name: 'Industrial Pump',
+        quantity: '2',
+        unit: 'pcs',
+        unitPrice: '50.25',
+        currency: 'USDC',
+      },
+    ],
     milestones: [
       {
         id: 'm-1',
@@ -128,7 +139,10 @@ describe('ShipmentsService — export', () => {
       expect(header).toBe(
         'shipmentId,buyerAddress,supplierAddress,logisticsAddress,arbiterAddress,' +
         'totalAmount,releasedAmount,status,createdAt,expectedDeliveryAt,' +
-        'milestoneName,milestoneIndex,paymentPercent,milestoneStatus,proofHash,confirmedAt',
+        'fxRateAtCreation,totalAmountUsd,' +
+        'milestoneName,milestoneIndex,paymentPercent,milestoneStatus,proofHash,confirmedAt,' +
+        'fxRateAtRelease,paymentReleasedUsd,lineItemSku,lineItemName,' +
+        'lineItemQuantity,lineItemUnit,lineItemUnitPrice,lineItemCurrency',
       );
     });
 
@@ -156,6 +170,13 @@ describe('ShipmentsService — export', () => {
       expect(csv).toContain('Qm123');
       expect(csv).toContain('CONFIRMED');
       expect(csv).toContain('PENDING');
+    });
+
+    it('includes shipment line-item details', () => {
+      const csv = service.buildCsv(mockShipments);
+      expect(csv).toContain('PUMP-1');
+      expect(csv).toContain('Industrial Pump');
+      expect(csv).toContain('2,pcs,50.25,USDC');
     });
 
     it('emits a single empty-milestone row for shipments with no milestones', () => {
